@@ -25,6 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Project root. Can be passed multiple times for watcher commands.",
     )
     parser.add_argument("--state-dir", default=core.DEFAULT_STATE_DIR)
+    parser.add_argument("--layout", choices=sorted(core.LAYOUTS), default="default")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     emit = subparsers.add_parser("emit")
@@ -103,12 +104,17 @@ def main(argv: list[str] | None = None) -> int:
                 result_path=args.result,
                 evidence_path=args.evidence,
                 state_dir=args.state_dir,
+                layout=args.layout,
                 event_id=args.event_id,
             )
             print_json(output)
         elif args.command == "inbox":
             output = {
-                str(root): core.inbox(root, state_dir=args.state_dir)
+                str(root): core.inbox(
+                    root,
+                    state_dir=args.state_dir,
+                    layout=args.layout,
+                )
                 for root in roots
             }
             print_json(output)
@@ -120,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
             output = core.cleanup(
                 roots[0],
                 state_dir=args.state_dir,
+                layout=args.layout,
                 retention_days=args.retention_days,
                 log_max_bytes=args.log_max_bytes,
                 log_keep_bytes=args.log_keep_bytes,
@@ -143,6 +150,7 @@ def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object |
         return watcher.scan_once(
             roots,
             state_dir=args.state_dir,
+            layout=args.layout,
             state_path=args.state_file,
             action=args.action,
             target_thread_id=args.target_thread_id,
@@ -152,6 +160,7 @@ def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object |
         watcher.watch(
             roots,
             state_dir=args.state_dir,
+            layout=args.layout,
             interval_seconds=args.interval_seconds,
             state_path=args.state_file,
             action=args.action,
@@ -168,6 +177,7 @@ def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object |
         return watcher.start_service(
             roots,
             state_dir=args.state_dir,
+            layout=args.layout,
             interval_seconds=args.interval_seconds,
             state_path=args.state_file,
             service_file=args.service_file,
@@ -180,12 +190,14 @@ def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object |
         return watcher.service_status(
             roots,
             state_dir=args.state_dir,
+            layout=args.layout,
             service_file=args.service_file,
         )
     if args.service_command == "stop":
         return watcher.stop_service(
             roots,
             state_dir=args.state_dir,
+            layout=args.layout,
             service_file=args.service_file,
             timeout_seconds=args.timeout_seconds,
         )
@@ -193,12 +205,14 @@ def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object |
         watcher.stop_service(
             roots,
             state_dir=args.state_dir,
+            layout=args.layout,
             service_file=args.service_file,
             timeout_seconds=args.timeout_seconds,
         )
         return watcher.start_service(
             roots,
             state_dir=args.state_dir,
+            layout=args.layout,
             interval_seconds=args.interval_seconds,
             state_path=args.state_file,
             service_file=args.service_file,

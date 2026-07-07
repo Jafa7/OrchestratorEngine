@@ -134,9 +134,10 @@ def thread_wakeup_receipt_path(
     event_id: str,
     *,
     state_dir: str = core.DEFAULT_STATE_DIR,
+    layout: str = "default",
 ) -> Path:
     return (
-        core.inbox_root(project_root, state_dir=state_dir)
+        core.inbox_root(project_root, state_dir=state_dir, layout=layout)
         / "thread-wakeups"
         / f"{event_id}.json"
     )
@@ -172,6 +173,7 @@ def wake_current_thread(
     *,
     target_thread_id: str,
     state_dir: str = core.DEFAULT_STATE_DIR,
+    layout: str = "default",
     codex: str = "codex",
     server_factory=AppServer,
 ) -> dict[str, Any]:
@@ -185,7 +187,12 @@ def wake_current_thread(
         raise CodexAppError("signal has invalid event_path")
 
     project = project_root.expanduser().resolve()
-    receipt_path = thread_wakeup_receipt_path(project, event_id, state_dir=state_dir)
+    receipt_path = thread_wakeup_receipt_path(
+        project,
+        event_id,
+        state_dir=state_dir,
+        layout=layout,
+    )
     if receipt_path.exists():
         existing = core.load_object(receipt_path)
         if existing.get("status") == "woken":
@@ -200,7 +207,7 @@ def wake_current_thread(
     event_path = Path(event_path_value).expanduser().resolve()
     event = core.verify_terminal_event(event_path)
     log_path = (
-        core.inbox_root(project, state_dir=state_dir)
+        core.inbox_root(project, state_dir=state_dir, layout=layout)
         / "logs"
         / f"{event_id}.thread-wakeup.app-server.log"
     )

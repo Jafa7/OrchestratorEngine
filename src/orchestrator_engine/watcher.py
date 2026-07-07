@@ -33,33 +33,46 @@ def default_state_path(
     project_root: Path,
     *,
     state_dir: str = core.DEFAULT_STATE_DIR,
+    layout: str = "default",
 ) -> Path:
-    return core.inbox_root(project_root, state_dir=state_dir) / "watcher-state.json"
+    return (
+        core.inbox_root(project_root, state_dir=state_dir, layout=layout)
+        / "watcher-state.json"
+    )
 
 
 def default_service_path(
     project_root: Path,
     *,
     state_dir: str = core.DEFAULT_STATE_DIR,
+    layout: str = "default",
 ) -> Path:
-    return core.inbox_root(project_root, state_dir=state_dir) / "watcher-service.json"
+    return (
+        core.inbox_root(project_root, state_dir=state_dir, layout=layout)
+        / "watcher-service.json"
+    )
 
 
 def default_heartbeat_path(
     project_root: Path,
     *,
     state_dir: str = core.DEFAULT_STATE_DIR,
+    layout: str = "default",
 ) -> Path:
-    return core.inbox_root(project_root, state_dir=state_dir) / "watcher-heartbeat.json"
+    return (
+        core.inbox_root(project_root, state_dir=state_dir, layout=layout)
+        / "watcher-heartbeat.json"
+    )
 
 
 def default_service_log_path(
     project_root: Path,
     *,
     state_dir: str = core.DEFAULT_STATE_DIR,
+    layout: str = "default",
 ) -> Path:
     return (
-        core.inbox_root(project_root, state_dir=state_dir)
+        core.inbox_root(project_root, state_dir=state_dir, layout=layout)
         / "logs"
         / "watcher-service.log"
     )
@@ -99,9 +112,13 @@ def notify_signal(
     signal: dict[str, Any],
     *,
     state_dir: str = core.DEFAULT_STATE_DIR,
+    layout: str = "default",
 ) -> Path:
     event_id = str(signal["event_id"])
-    root = core.inbox_root(project_root, state_dir=state_dir) / "notifications"
+    root = (
+        core.inbox_root(project_root, state_dir=state_dir, layout=layout)
+        / "notifications"
+    )
     path = root / f"{event_id}.json"
     core.atomic_json(
         path,
@@ -221,10 +238,32 @@ def write_heartbeat(
     )
 
 
+def pending_signal_count(
+    project_roots: list[Path],
+    *,
+    state_dir: str,
+    layout: str,
+    state_file: Path,
+) -> int:
+    try:
+        state = load_state(state_file)
+        seen = set(state["seen_event_ids"])
+    except (OSError, RuntimeError, ValueError):
+        seen = set()
+    count = 0
+    for project in project_roots:
+        for signal in core.inbox(project, state_dir=state_dir, layout=layout):
+            event_id = signal.get("event_id")
+            if isinstance(event_id, str) and event_id not in seen:
+                count += 1
+    return count
+
+
 def scan_once(
     project_roots: list[Path],
     *,
     state_dir: str = core.DEFAULT_STATE_DIR,
+    layout: str = "default",
     state_path: Path | None = None,
     action: str = "notify",
     target_thread_id: str | None = None,
@@ -237,7 +276,11 @@ def scan_once(
         raise WatcherError("target thread id is required for current-thread-callback")
 
     projects = [path.expanduser().resolve() for path in project_roots]
-    state_file = state_path or default_state_path(projects[0], state_dir=state_dir)
+    state_file = state_path or default_state_path(
+        projects[0],
+        state_dir=state_dir,
+        layout=layout,
+    )
     state = load_state(state_file)
     seen = set(state["seen_event_ids"])
     deferred_events: dict[str, dict[str, Any]] = state["deferred_events"]
@@ -248,7 +291,7 @@ def scan_once(
     action_errors: list[dict[str, str]] = []
 
     for project in projects:
-        for signal in core.inbox(project, state_dir=state_dir):
+        for signal in core.inbox(project, state_dir=state_dir, layout=layout):
             event_id = signal.get("event_id")
             if not isinstance(event_id, str) or event_id in seen:
                 continue
@@ -263,13 +306,23 @@ def scan_once(
                 if action == "record":
                     pass
                 elif action == "notify":
-                    notifications.append(str(notify_signal(project, signal)))
+                    notifications.append(
+                        str(
+                            notify_signal(
+                                project,
+                                signal,
+                                state_dir=state_dir,
+                                layout=layout,
+                            )
+                        )
+                    )
                 elif action == "current-thread-callback":
                     wakeup = codex_app.wake_current_thread(
                         project,
                         signal,
                         target_thread_id=str(target_thread_id),
                         state_dir=state_dir,
+                        layout=layout,
                         codex=codex,
                         server_factory=server_factory,
                     )
@@ -329,6 +382,7 @@ def service_status(
     project_roots: list[Path],
     *,
     state_dir: str = core.DEFAULT_STATE_DIR,
+    layout: str = "default",
     service_file: Path | None = None,
     process_checker=process_alive,
 ) -> dict[str, Any]:
@@ -336,12 +390,23 @@ def service_status(
     service_path = service_file or default_service_path(
         projects[0],
         state_dir=state_dir,
+        layout=layout,
     )
     state = load_optional_object(service_path)
-    heartbeat_path = default_heartbeat_path(projects[0], state_dir=state_dir)
+    heartbeat_path = default_heartbeat_path(
+        projects[0],
+        state_dir=state_dir,
+        layout=layout,
+    )
     heartbeat = load_optional_object(heartbeat_path)
-    inbox_count = sum(
-        len(core.inbox(project, state_dir=state_dir)) for project in projects
+    state_file = default_state_path(projects[0], state_dir=state_dir, layout=layout)
+    if state and isinstance(state.get("state_path"), str):
+        state_file = Path(state["state_path"])
+    inbox_count = pending_signal_count(
+        projects,
+        state_dir=state_dir,
+        layout=layout,
+        state_file=state_file,
     )
     if not state:
         return {
@@ -392,6 +457,7 @@ def start_service(
     project_roots: list[Path],
     *,
     state_dir: str = core.DEFAULT_STATE_DIR,
+    layout: str = "default",
     interval_seconds: float,
     state_path: Path | None,
     service_file: Path | None,
@@ -409,6 +475,7 @@ def start_service(
     service_path = service_file or default_service_path(
         projects[0],
         state_dir=state_dir,
+        layout=layout,
     )
     existing = load_optional_object(service_path)
     existing_pid = existing.get("pid") if existing else None
@@ -418,16 +485,33 @@ def start_service(
                 f"watcher service is already running with pid {existing_pid}; "
                 "use service restart or --replace"
             )
-        stop_service(projects, state_dir=state_dir, service_file=service_path)
+        stop_service(
+            projects,
+            state_dir=state_dir,
+            layout=layout,
+            service_file=service_path,
+        )
 
-    watcher_state = state_path or default_state_path(projects[0], state_dir=state_dir)
-    heartbeat_path = default_heartbeat_path(projects[0], state_dir=state_dir)
-    log_path = default_service_log_path(projects[0], state_dir=state_dir)
+    watcher_state = state_path or default_state_path(
+        projects[0],
+        state_dir=state_dir,
+        layout=layout,
+    )
+    heartbeat_path = default_heartbeat_path(
+        projects[0],
+        state_dir=state_dir,
+        layout=layout,
+    )
+    log_path = default_service_log_path(
+        projects[0],
+        state_dir=state_dir,
+        layout=layout,
+    )
     log_path.parent.mkdir(parents=True, exist_ok=True)
     command = [sys.executable, "-m", "orchestrator_engine.cli"]
     for project in projects:
         command.extend(["--project-root", str(project)])
-    command.extend(["--state-dir", state_dir, "watcher"])
+    command.extend(["--state-dir", state_dir, "--layout", layout, "watcher"])
     command.extend(
         [
             "--state-file",
@@ -469,6 +553,7 @@ def start_service(
         "started_at": core.utc_now(),
         "project_roots": [str(path) for path in projects],
         "state_dir": state_dir,
+        "layout": layout,
         "action": action,
         "target_thread_id": target_thread_id,
         "interval_seconds": interval_seconds,
@@ -485,6 +570,7 @@ def stop_service(
     project_roots: list[Path],
     *,
     state_dir: str = core.DEFAULT_STATE_DIR,
+    layout: str = "default",
     service_file: Path | None = None,
     timeout_seconds: float = 5.0,
     process_checker=process_alive,
@@ -494,6 +580,7 @@ def stop_service(
     service_path = service_file or default_service_path(
         projects[0],
         state_dir=state_dir,
+        layout=layout,
     )
     state = load_optional_object(service_path)
     if not state:
@@ -541,6 +628,7 @@ def watch(
     project_roots: list[Path],
     *,
     state_dir: str,
+    layout: str,
     interval_seconds: float,
     state_path: Path | None,
     action: str,
@@ -553,11 +641,13 @@ def watch(
     heartbeat_path = heartbeat_file or default_heartbeat_path(
         project_roots[0].expanduser().resolve(),
         state_dir=state_dir,
+        layout=layout,
     )
     while True:
         result = scan_once(
             project_roots,
             state_dir=state_dir,
+            layout=layout,
             state_path=state_path,
             action=action,
             target_thread_id=target_thread_id,

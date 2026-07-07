@@ -12,6 +12,7 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 DEFAULT_STATE_DIR = ".orchestrator"
+LAYOUTS = {"default", "paradigmarium"}
 TERMINAL_STATUSES = {
     "completed",
     "failed",
@@ -60,16 +61,41 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def state_root(project_root: Path, *, state_dir: str = DEFAULT_STATE_DIR) -> Path:
-    return project_root.expanduser().resolve() / state_dir
+def state_root(
+    project_root: Path,
+    *,
+    state_dir: str = DEFAULT_STATE_DIR,
+    layout: str = "default",
+) -> Path:
+    if layout == "default":
+        return project_root.expanduser().resolve() / state_dir
+    if layout == "paradigmarium":
+        return project_root.expanduser().resolve() / ".paradigmarium" / "orchestration"
+    raise OrchestratorError(f"unsupported layout: {layout}")
 
 
-def events_root(project_root: Path, *, state_dir: str = DEFAULT_STATE_DIR) -> Path:
-    return state_root(project_root, state_dir=state_dir) / "events"
+def events_root(
+    project_root: Path,
+    *,
+    state_dir: str = DEFAULT_STATE_DIR,
+    layout: str = "default",
+) -> Path:
+    root = state_root(project_root, state_dir=state_dir, layout=layout)
+    if layout == "paradigmarium":
+        return root / "supervisor" / "events"
+    return root / "events"
 
 
-def inbox_root(project_root: Path, *, state_dir: str = DEFAULT_STATE_DIR) -> Path:
-    return state_root(project_root, state_dir=state_dir) / "inbox"
+def inbox_root(
+    project_root: Path,
+    *,
+    state_dir: str = DEFAULT_STATE_DIR,
+    layout: str = "default",
+) -> Path:
+    root = state_root(project_root, state_dir=state_dir, layout=layout)
+    if layout == "paradigmarium":
+        return root / "orchestrator-inbox"
+    return root / "inbox"
 
 
 def event_path_for(
@@ -77,8 +103,13 @@ def event_path_for(
     event_id: str,
     *,
     state_dir: str = DEFAULT_STATE_DIR,
+    layout: str = "default",
 ) -> Path:
-    return events_root(project_root, state_dir=state_dir) / f"{event_id}.json"
+    return events_root(
+        project_root,
+        state_dir=state_dir,
+        layout=layout,
+    ) / f"{event_id}.json"
 
 
 def signal_path_for(
@@ -86,9 +117,10 @@ def signal_path_for(
     event_id: str,
     *,
     state_dir: str = DEFAULT_STATE_DIR,
+    layout: str = "default",
 ) -> Path:
     return (
-        inbox_root(project_root, state_dir=state_dir)
+        inbox_root(project_root, state_dir=state_dir, layout=layout)
         / "signals"
         / f"{event_id}.json"
     )
@@ -113,6 +145,7 @@ def write_terminal_event(
     result_path: Path,
     evidence_path: Path,
     state_dir: str = DEFAULT_STATE_DIR,
+    layout: str = "default",
     event_id: str | None = None,
 ) -> dict[str, Any]:
     """Write a terminal event and matching orchestrator inbox signal."""
@@ -125,8 +158,18 @@ def write_terminal_event(
     result = ensure_file(result_path, field="result")
     evidence = ensure_file(evidence_path, field="evidence")
     event_id = event_id or str(uuid.uuid4())
-    event_path = event_path_for(project, event_id, state_dir=state_dir)
-    signal_path = signal_path_for(project, event_id, state_dir=state_dir)
+    event_path = event_path_for(
+        project,
+        event_id,
+        state_dir=state_dir,
+        layout=layout,
+    )
+    signal_path = signal_path_for(
+        project,
+        event_id,
+        state_dir=state_dir,
+        layout=layout,
+    )
     event = {
         "schema_version": SCHEMA_VERSION,
         "kind": "WORKER_TERMINAL",
@@ -193,8 +236,9 @@ def inbox(
     project_root: Path,
     *,
     state_dir: str = DEFAULT_STATE_DIR,
+    layout: str = "default",
 ) -> list[dict[str, Any]]:
-    signals = inbox_root(project_root, state_dir=state_dir) / "signals"
+    signals = inbox_root(project_root, state_dir=state_dir, layout=layout) / "signals"
     rows: list[dict[str, Any]] = []
     for path in sorted(signals.glob("*.json")):
         signal = load_object(path)
@@ -224,6 +268,7 @@ def cleanup(
     project_root: Path,
     *,
     state_dir: str = DEFAULT_STATE_DIR,
+    layout: str = "default",
     retention_days: int = 30,
     log_max_bytes: int = 50 * 1024 * 1024,
     log_keep_bytes: int = 10 * 1024 * 1024,
@@ -238,7 +283,7 @@ def cleanup(
         raise OrchestratorError("log retention sizes are invalid")
     current = now or datetime.now(UTC)
     cutoff = (current - timedelta(days=retention_days)).timestamp()
-    root = inbox_root(project_root, state_dir=state_dir)
+    root = inbox_root(project_root, state_dir=state_dir, layout=layout)
     removed: list[str] = []
     compacted: list[str] = []
 

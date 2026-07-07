@@ -142,6 +142,30 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(watcher_state["seen_event_ids"], [])
         self.assertIn("event-active", watcher_state["deferred_events"])
 
+    def test_watcher_reads_paradigmarium_layout_signals(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            result = root / "result.json"
+            evidence = root / "evidence.json"
+            result.write_text("result", encoding="utf-8")
+            evidence.write_text("evidence", encoding="utf-8")
+            core.write_terminal_event(
+                root,
+                task_id="TASK-001",
+                terminal_status="completed",
+                result_path=result,
+                evidence_path=evidence,
+                event_id="event-legacy",
+                layout="paradigmarium",
+            )
+            result = watcher.scan_once(
+                [root],
+                layout="paradigmarium",
+                action="record",
+            )
+        self.assertEqual(result["new_count"], 1)
+        self.assertIn("orchestrator-inbox", result["state_path"])
+
     def test_service_start_writes_state_and_command(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -196,6 +220,39 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(status["status"], "degraded")
         self.assertFalse(status["heartbeat_healthy"])
         self.assertEqual(status["heartbeat_status"], "pid_mismatch")
+
+    def test_service_status_counts_only_unseen_signals(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-seen")
+            write_event(root, event_id="event-new")
+            state_path = watcher.default_state_path(root)
+            service_file = watcher.default_service_path(root)
+            core.atomic_json(
+                state_path,
+                {
+                    "schema_version": 1,
+                    "seen_event_ids": ["event-seen"],
+                    "deferred_events": {},
+                },
+            )
+            core.atomic_json(
+                service_file,
+                {
+                    "schema_version": 1,
+                    "kind": watcher.SERVICE_KIND,
+                    "status": "running",
+                    "pid": 4242,
+                    "process_group": 4242,
+                    "interval_seconds": 5,
+                    "state_path": str(state_path),
+                },
+            )
+            status = watcher.service_status(
+                [root],
+                process_checker=lambda _pid: False,
+            )
+        self.assertEqual(status["pending_inbox_count"], 1)
 
 
 if __name__ == "__main__":

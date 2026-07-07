@@ -51,6 +51,33 @@ class CoreTests(unittest.TestCase):
             with self.assertRaises(core.OrchestratorError):
                 core.verify_terminal_event(Path(output["event_path"]))
 
+    def test_paradigmarium_layout_uses_existing_orchestration_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            result = root / "result.json"
+            evidence = root / "evidence.json"
+            result.write_text("result", encoding="utf-8")
+            evidence.write_text("evidence", encoding="utf-8")
+            output = core.write_terminal_event(
+                root,
+                task_id="TASK-001",
+                terminal_status="completed",
+                result_path=result,
+                evidence_path=evidence,
+                event_id="event-1",
+                layout="paradigmarium",
+            )
+            inbox = core.inbox(root, layout="paradigmarium")
+        self.assertEqual(
+            Path(output["event_path"]).relative_to(root),
+            Path(".paradigmarium/orchestration/supervisor/events/event-1.json"),
+        )
+        self.assertEqual(
+            Path(output["signal_path"]).relative_to(root),
+            Path(".paradigmarium/orchestration/orchestrator-inbox/signals/event-1.json"),
+        )
+        self.assertEqual(len(inbox), 1)
+
     def test_cleanup_prunes_old_notifications_and_compacts_service_log(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
