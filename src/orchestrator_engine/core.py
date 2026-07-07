@@ -216,11 +216,24 @@ def inbox(
     project_root: Path,
     *,
     state_dir: str = DEFAULT_STATE_DIR,
+    invalid_sink: list[dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
+    """List inbox signals.
+
+    With `invalid_sink`, unreadable signal files (e.g. written non-atomically
+    by a project-side supervisor) are reported there and skipped instead of
+    failing the whole listing — a long-running watcher must survive them.
+    """
     signals = inbox_root(project_root, state_dir=state_dir) / "signals"
     rows: list[dict[str, Any]] = []
     for path in sorted(signals.glob("*.json")):
-        signal = load_object(path)
+        try:
+            signal = load_object(path)
+        except (OSError, OrchestratorError) as error:
+            if invalid_sink is None:
+                raise
+            invalid_sink.append({"signal_path": str(path), "error": str(error)})
+            continue
         signal["signal_path"] = str(path)
         rows.append(signal)
     return rows

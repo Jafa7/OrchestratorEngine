@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import contextlib
+import io
+import sys
 import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
@@ -15,17 +18,16 @@ class FakeThreadServer:
     reads = 0
     resumes = 0
     awaits = 0
+    closes = 0
     turn_status = "completed"
     turn_error_message: str | None = None
+    auto_declined: ClassVar[list[str]] = []
 
     def __init__(self, *_: object, **__: object) -> None:
         pass
 
-    def __enter__(self) -> FakeThreadServer:
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        pass
+    def close(self) -> None:
+        self.__class__.closes += 1
 
     def notify(self, *_: object, **__: object) -> None:
         pass
@@ -49,10 +51,12 @@ class FakeThreadServer:
             return {"turn": {"id": "turn-1", "status": "inProgress"}}
         raise AssertionError(f"unexpected request: {method}")
 
-    def await_turn_completion(
-        self, _thread_id: str, turn_id: str, **__: object
-    ) -> dict:
+    def await_turn_outcome(
+        self, _thread_id: str, turn_id: str, *, window_seconds: float
+    ) -> dict | None:
         self.__class__.awaits += 1
+        if self.turn_status == "running":
+            return None
         turn = {"id": turn_id, "status": self.turn_status}
         if self.turn_status != "completed":
             turn["error"] = {"message": self.turn_error_message or "boom"}
@@ -75,8 +79,10 @@ def reset_fake_server(status: str = "idle") -> None:
     FakeThreadServer.reads = 0
     FakeThreadServer.resumes = 0
     FakeThreadServer.awaits = 0
+    FakeThreadServer.closes = 0
     FakeThreadServer.turn_status = "completed"
     FakeThreadServer.turn_error_message = None
+    FakeThreadServer.auto_declined = []
 
 
 def write_event(root: Path, event_id: str = "event-1") -> None:
@@ -340,15 +346,32 @@ class WatcherTests(unittest.TestCase):
         self.assertFalse(status["heartbeat_healthy"])
         self.assertEqual(status["heartbeat_status"], "not_alive")
 
-    def test_callback_requires_binding(self) -> None:
+    def test_callback_without_binding_degrades_to_error(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             write_event(root)
+            result = watcher.scan_once(
+                [root],
+                state_path=root / "watcher-state.json",
+                action="callback",
+            )
+        self.assertEqual(result["new_count"], 0)
+        self.assertEqual(len(result["action_errors"]), 1)
+        self.assertIn("no binding found", result["action_errors"][0]["error"])
+
+    def test_callback_service_start_requires_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
             with self.assertRaises(RuntimeError):
-                watcher.scan_once(
+                watcher.start_service(
                     [root],
+                    interval_seconds=5,
                     state_path=root / "watcher-state.json",
+                    service_file=root / "service.json",
                     action="callback",
+                    target_thread_id=None,
+                    codex="codex",
+                    popen_factory=FakePopen,
                 )
 
     def test_callback_dispatches_to_bound_codex_adapter(self) -> None:
@@ -377,12 +400,60 @@ class WatcherTests(unittest.TestCase):
             root = Path(temporary).resolve()
             binding.write_binding(root, host="claude")
             write_event(root)
-            with self.assertRaises(watcher.WatcherError):
-                watcher.scan_once(
+            result = watcher.scan_once(
+                [root],
+                state_path=root / "watcher-state.json",
+                action="callback",
+            )
+        self.assertEqual(result["new_count"], 0)
+        self.assertIn("stream", result["action_errors"][0]["error"])
+
+    def test_scan_skips_malformed_signal_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-good")
+            signals_dir = core.inbox_root(root) / "signals"
+            (signals_dir / "junk.json").write_text("not json", encoding="utf-8")
+            result = watcher.scan_once(
+                [root],
+                state_path=root / "watcher-state.json",
+                action="record",
+            )
+        self.assertEqual(result["new_count"], 1)
+        self.assertEqual(result["new_signals"][0]["event_id"], "event-good")
+        self.assertTrue(
+            any(
+                "junk.json" in error.get("signal_path", "")
+                for error in result["action_errors"]
+            )
+        )
+
+    def test_watch_survives_scan_errors_and_keeps_heartbeat(self) -> None:
+        calls = {"count": 0}
+
+        def flaky_scan(_projects, **_kwargs):
+            calls["count"] += 1
+            raise OSError("disk hiccup")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            heartbeat = root / "heartbeat.json"
+            with contextlib.redirect_stdout(io.StringIO()):
+                watcher.watch(
                     [root],
+                    state_dir=core.DEFAULT_STATE_DIR,
+                    interval_seconds=0.01,
                     state_path=root / "watcher-state.json",
-                    action="callback",
+                    action="record",
+                    target_thread_id=None,
+                    codex="codex",
+                    heartbeat_file=heartbeat,
+                    max_scans=2,
+                    scan=flaky_scan,
                 )
+            heartbeat_data = core.load_object(heartbeat)
+        self.assertEqual(calls["count"], 2)
+        self.assertEqual(heartbeat_data["action_error_count"], 1)
 
     def test_heartbeat_age_never_goes_negative(self) -> None:
         age = watcher.heartbeat_age_seconds(
@@ -490,6 +561,112 @@ class CodexActivationTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "woken")
         self.assertEqual(receipt["activation"], "failed")
 
+    def test_running_turn_hands_off_to_finalizer_without_closing(self) -> None:
+        reset_fake_server("idle")
+        FakeThreadServer.turn_status = "running"
+        captured: dict = {}
+
+        def fake_finalizer(server, *, target_thread_id, turn_id, receipt_path):
+            captured.update(
+                server=server,
+                target_thread_id=target_thread_id,
+                turn_id=turn_id,
+                receipt_path=receipt_path,
+            )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-long-turn")
+            signals = core.inbox(root)
+            receipt = codex_app.wake_current_thread(
+                root,
+                signals[0],
+                target_thread_id="thread-1",
+                server_factory=FakeThreadServer,
+                activator=lambda _t: {"activation": "requested"},
+                finalizer=fake_finalizer,
+            )
+        self.assertEqual(receipt["status"], "woken")
+        self.assertEqual(receipt["turn_status"], "running")
+        self.assertEqual(FakeThreadServer.closes, 0)
+        self.assertEqual(captured["turn_id"], "turn-1")
+        self.assertEqual(captured["target_thread_id"], "thread-1")
+
+    def test_interrupted_turn_is_woken_not_retried(self) -> None:
+        reset_fake_server("idle")
+        FakeThreadServer.turn_status = "interrupted"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-interrupted")
+            signals = core.inbox(root)
+            receipt = codex_app.wake_current_thread(
+                root,
+                signals[0],
+                target_thread_id="thread-1",
+                server_factory=FakeThreadServer,
+                activator=lambda _t: {"activation": "requested"},
+            )
+        self.assertEqual(receipt["status"], "woken")
+        self.assertEqual(receipt["turn_status"], "interrupted")
+        self.assertEqual(FakeThreadServer.closes, 1)
+
+    def test_completed_turn_closes_server(self) -> None:
+        reset_fake_server("idle")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-closed")
+            signals = core.inbox(root)
+            receipt = codex_app.wake_current_thread(
+                root,
+                signals[0],
+                target_thread_id="thread-1",
+                server_factory=FakeThreadServer,
+                activator=lambda _t: {"activation": "requested"},
+            )
+        self.assertEqual(receipt["turn_status"], "completed")
+        self.assertEqual(FakeThreadServer.closes, 1)
+
+    def test_finalize_turn_updates_receipt_and_closes_server(self) -> None:
+        reset_fake_server("idle")
+        FakeThreadServer.turn_status = "completed"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            receipt_path = root / "receipt.json"
+            core.atomic_json(
+                receipt_path,
+                {"status": "woken", "turn_status": "running"},
+            )
+            codex_app.finalize_turn(
+                FakeThreadServer(),
+                target_thread_id="thread-1",
+                turn_id="turn-1",
+                receipt_path=receipt_path,
+            )
+            receipt = core.load_object(receipt_path)
+        self.assertEqual(receipt["turn_status"], "completed")
+        self.assertIn("finalized_at", receipt)
+        self.assertEqual(FakeThreadServer.closes, 1)
+
+    def test_receipt_records_auto_declined_requests(self) -> None:
+        reset_fake_server("idle")
+        FakeThreadServer.auto_declined = ["execCommandApproval"]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-declined")
+            signals = core.inbox(root)
+            receipt = codex_app.wake_current_thread(
+                root,
+                signals[0],
+                target_thread_id="thread-1",
+                server_factory=FakeThreadServer,
+                activator=lambda _t: {"activation": "requested"},
+            )
+        self.assertEqual(receipt["status"], "woken")
+        self.assertEqual(
+            receipt["auto_declined_requests"],
+            ["execCommandApproval"],
+        )
+
     def test_activate_thread_window_builds_deep_link(self) -> None:
         commands: list[list[str]] = []
 
@@ -508,6 +685,63 @@ class CodexActivationTests(unittest.TestCase):
         outcome = codex_app.activate_thread_window("thread-7", runner=runner)
         self.assertEqual(outcome["activation"], "failed")
         self.assertIn("not found", outcome["activation_error"])
+
+
+class AutoDeclineTests(unittest.TestCase):
+    def test_build_auto_response_declines_known_requests(self) -> None:
+        cases = {
+            "execCommandApproval": {"decision": "denied"},
+            "applyPatchApproval": {"decision": "denied"},
+            "item/commandExecution/requestApproval": {"decision": "decline"},
+            "item/fileChange/requestApproval": {"decision": "decline"},
+            "mcpServer/elicitation/request": {"action": "decline"},
+            "item/tool/requestUserInput": {"answers": {}},
+        }
+        for method, expected in cases.items():
+            response = codex_app.build_auto_response(
+                {"id": 7, "method": method, "params": {}}
+            )
+            self.assertEqual(response["id"], 7)
+            self.assertEqual(response["result"], expected)
+
+    def test_build_auto_response_errors_unknown_requests(self) -> None:
+        response = codex_app.build_auto_response(
+            {"id": 9, "method": "some/unknown/request", "params": {}}
+        )
+        self.assertEqual(response["id"], 9)
+        self.assertNotIn("result", response)
+        self.assertIn("auto-declined", response["error"]["message"])
+
+    def test_app_server_auto_declines_live_server_request(self) -> None:
+        script = "\n".join(
+            [
+                "import json, sys",
+                "print(json.dumps({",
+                "    'id': 7,",
+                "    'method': 'execCommandApproval',",
+                "    'params': {},",
+                "}), flush=True)",
+                "line = sys.stdin.readline()",
+                "print(json.dumps({",
+                "    'method': 'echo',",
+                "    'params': {'got': json.loads(line)},",
+                "}), flush=True)",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            server = codex_app.AppServer(
+                "codex",
+                stderr_path=root / "stderr.log",
+                command=[sys.executable, "-c", script],
+            )
+            try:
+                echo = server._messages.get(timeout=10)
+            finally:
+                server.close()
+        self.assertEqual(echo["method"], "echo")
+        self.assertEqual(echo["params"]["got"]["result"]["decision"], "denied")
+        self.assertEqual(server.auto_declined, ["execCommandApproval"])
 
 
 if __name__ == "__main__":

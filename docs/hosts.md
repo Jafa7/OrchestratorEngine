@@ -26,8 +26,17 @@ orchestrator-engine --project-root /path/to/project watcher \
 
 Notes:
 
-- The injected turn only reports success after the App Server confirms the
-  turn completed; rate-limited or failed turns are retried with backoff.
+- Rate-limited or immediately failing turns are detected within a 2-minute
+  failure window and retried with backoff. Turns still running after the
+  window (orchestrator reviews may take hours) are reported `woken` with
+  `turn_status: "running"` and finalized in the background — use the service
+  mode above, not `watcher once`, so the finalizer has a long-lived process.
+- Stopping the watcher service also stops in-flight wakeup turns it started
+  (they run inside App Server processes in the service's process group).
+- Approval prompts raised by a wakeup turn are auto-declined (never
+  auto-approved) and recorded in the receipt as `auto_declined_requests` — no
+  human is attached to the injected client. If receipts show declines, relax
+  the thread's approval policy enough for read-only verification commands.
 - The deep link (`Start-Process 'codex://threads/...'` through
   `powershell.exe`) brings the thread to the foreground. If it fails, the
   receipt records `activation: "failed"` but the wakeup itself stays valid.
@@ -47,6 +56,10 @@ orchestrator-engine --project-root /path/to/project watcher stream
 
 Every new inbox signal is printed as one JSON line and wakes the chat. The
 stream shares the standard watcher state, so each signal is delivered once.
+Delivery is at-most-once: a signal is marked seen when its line is printed, so
+if the armed watch dies at that exact moment the line is lost — check
+`orchestrator-engine inbox` output against recent task results after re-arming
+a watch that was down.
 
 Optionally record the intent for other tooling:
 

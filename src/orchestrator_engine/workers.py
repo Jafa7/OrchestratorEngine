@@ -8,6 +8,7 @@ exit — which is what wakes the host chat again.
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
 import sys
 import time
@@ -21,6 +22,10 @@ WORKERS_CONFIG_NAME = "workers.toml"
 PROMPT_MODES = {"arg", "stdin"}
 TASK_KIND = "WORKER_TASK"
 RESERVED_KEYS = {"enabled", "command", "prompt_via", "timeout_seconds"}
+# Workers may legitimately run for hours with no configured timeout; the
+# supervisor refreshes the task descriptor on this cadence so long tasks stay
+# observable (`last_alive_at`) instead of looking stuck.
+TASK_HEARTBEAT_INTERVAL_SECONDS = 30.0
 
 
 class WorkerError(RuntimeError):
@@ -170,9 +175,14 @@ def run_worker(
     prompt = core.ensure_file(prompt_file, field="prompt")
     task_dir = task_dir_for(project, task_id, state_dir=state_dir)
     descriptor_path = task_dir / "task.json"
-    if descriptor_path.exists():
-        raise WorkerError(f"task already exists: {descriptor_path}")
     task_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        # Exclusive create claims the task id atomically (no check-then-act
+        # race between concurrent dispatches).
+        with descriptor_path.open("x", encoding="utf-8") as handle:
+            handle.write("{}\n")
+    except FileExistsError:
+        raise WorkerError(f"task already exists: {descriptor_path}") from None
     supervisor_log = task_dir / "supervisor.log"
     command = [
         sys.executable,
@@ -217,6 +227,16 @@ def run_worker(
     return {**descriptor, "descriptor_path": str(descriptor_path)}
 
 
+def touch_descriptor(task_dir: Path, updates: dict[str, Any]) -> None:
+    descriptor_path = task_dir / "task.json"
+    try:
+        descriptor = core.load_object(descriptor_path)
+    except (OSError, core.OrchestratorError):
+        descriptor = {}
+    descriptor.update(updates)
+    core.atomic_json(descriptor_path, descriptor)
+
+
 def supervise_worker(
     project_root: Path,
     *,
@@ -225,6 +245,7 @@ def supervise_worker(
     prompt_file: Path,
     state_dir: str = core.DEFAULT_STATE_DIR,
     popen_factory=subprocess.Popen,
+    heartbeat_interval_seconds: float = TASK_HEARTBEAT_INTERVAL_SECONDS,
 ) -> dict[str, Any]:
     """Run the worker CLI to completion and emit the terminal event."""
     project = project_root.expanduser().resolve()
@@ -266,15 +287,41 @@ def supervise_worker(
                 assert process.stdin is not None
                 process.stdin.write(stdin_payload.encode("utf-8"))
                 process.stdin.close()
-            try:
-                exit_code = process.wait(timeout=config["timeout_seconds"])
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-                terminal_status = "timed_out"
-                failure_reason = (
-                    f"worker exceeded {config['timeout_seconds']} seconds"
-                )
+            timeout_seconds = config["timeout_seconds"]
+            deadline = (
+                start + float(timeout_seconds)
+                if timeout_seconds is not None
+                else None
+            )
+            while True:
+                poll_timeout = heartbeat_interval_seconds
+                if deadline is not None:
+                    poll_timeout = min(
+                        poll_timeout,
+                        max(deadline - time.monotonic(), 0.1),
+                    )
+                try:
+                    exit_code = process.wait(timeout=poll_timeout)
+                    break
+                except subprocess.TimeoutExpired:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        process.kill()
+                        process.wait()
+                        terminal_status = "timed_out"
+                        failure_reason = (
+                            f"worker exceeded {timeout_seconds} seconds"
+                        )
+                        break
+                    # No timeout configured means the worker may run for
+                    # hours; refresh the descriptor so it stays observable.
+                    touch_descriptor(
+                        task_dir,
+                        {
+                            "status": "running",
+                            "worker_pid": process.pid,
+                            "last_alive_at": core.utc_now(),
+                        },
+                    )
     except OSError as error:
         terminal_status = "failed"
         failure_reason = str(error)
@@ -331,18 +378,18 @@ def supervise_worker(
     )
 
     descriptor_path = task_dir / "task.json"
+    descriptor = {
+        "schema_version": core.SCHEMA_VERSION,
+        "kind": TASK_KIND,
+        "task_id": task_id,
+        "worker": worker,
+        "prompt_file": str(prompt),
+        "task_dir": str(task_dir),
+        "created_at": started_at,
+    }
     if descriptor_path.exists():
-        descriptor = core.load_object(descriptor_path)
-    else:
-        descriptor = {
-            "schema_version": core.SCHEMA_VERSION,
-            "kind": TASK_KIND,
-            "task_id": task_id,
-            "worker": worker,
-            "prompt_file": str(prompt),
-            "task_dir": str(task_dir),
-            "created_at": started_at,
-        }
+        with contextlib.suppress(OSError, core.OrchestratorError):
+            descriptor.update(core.load_object(descriptor_path))
     descriptor.update(
         status=terminal_status,
         finished_at=result["finished_at"],

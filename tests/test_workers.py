@@ -23,6 +23,17 @@ prompt_via = "stdin"
 [workers.disabled]
 enabled = false
 command = ["true"]
+
+[workers.sleeper]
+enabled = true
+command = ["{python}", "-c", "import sys,time; sys.stdin.read(); time.sleep(0.7)"]
+prompt_via = "stdin"
+
+[workers.stuck]
+enabled = true
+command = ["{python}", "-c", "import time; time.sleep(30)"]
+prompt_via = "stdin"
+timeout_seconds = 1
 """.replace("{python}", sys.executable)
 
 
@@ -180,6 +191,44 @@ class WorkerSuperviseTests(unittest.TestCase):
             expected_hash = core.sha256_file(prompt)
         self.assertEqual(evidence["prompt_sha256"], expected_hash)
         self.assertEqual(evidence["worker_config"]["effort"], "high")
+
+    def test_supervise_touches_descriptor_while_worker_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            prompt = write_prompt(root)
+            summary = workers.supervise_worker(
+                root,
+                worker="sleeper",
+                task_id="T-LONG",
+                prompt_file=prompt,
+                heartbeat_interval_seconds=0.2,
+            )
+            descriptor = core.load_object(
+                workers.task_dir_for(root, "T-LONG") / "task.json"
+            )
+        self.assertEqual(summary["status"], "completed")
+        self.assertIn("last_alive_at", descriptor)
+        self.assertEqual(descriptor["status"], "completed")
+
+    def test_supervise_kills_worker_after_configured_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            prompt = write_prompt(root)
+            summary = workers.supervise_worker(
+                root,
+                worker="stuck",
+                task_id="T-STUCK",
+                prompt_file=prompt,
+                heartbeat_interval_seconds=0.2,
+            )
+            result = core.load_object(
+                workers.task_dir_for(root, "T-STUCK") / "result.json"
+            )
+        self.assertEqual(summary["status"], "timed_out")
+        self.assertEqual(result["terminal_status"], "timed_out")
+        self.assertIn("exceeded", result["failure_reason"])
 
     def test_invalid_toml_raises_worker_error(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

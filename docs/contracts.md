@@ -116,6 +116,11 @@ On worker exit the supervisor calls the standard terminal event contract:
 `completed` on exit code 0, `failed` otherwise, `timed_out` when
 `timeout_seconds` is exceeded.
 
+Workers without `timeout_seconds` may run indefinitely (hours-long tasks are
+expected). While a worker runs, the supervisor refreshes `task.json` every 30
+seconds with `status: "running"`, `worker_pid` and `last_alive_at`, so long
+tasks stay observable instead of looking stuck.
+
 ## Watcher state
 
 The watcher writes:
@@ -128,11 +133,31 @@ The watcher writes:
 An event is marked seen only after a successful action or deterministic skip.
 Transient App Server failures, active target threads, failed or rate-limited
 turns and failed VS Code chat invocations remain retryable with exponential
-backoff.
+backoff. A broken binding or an unreadable signal file degrades to an entry in
+`action_errors` — it never takes the watcher down.
 
-A Codex wakeup is reported `woken` only after the App Server confirms the
-injected turn completed. The receipt also records the desktop deep-link
-activation outcome (`activation: "requested"` or `"failed"`).
+Codex wakeup turns are watched for a short failure window (2 minutes) after
+`turn/start`: failures inside the window (rate limits, validation errors)
+defer the event for retry. A turn still running at the end of the window was
+delivered — orchestrator turns may legitimately run for hours — so the receipt
+is written as `woken` with `turn_status: "running"` and a background finalizer
+keeps the App Server connection open until the turn ends, then updates the
+receipt (`turn_status`, `finalized_at`, optional `turn_error`). A turn the
+user interrupts is recorded as `woken` with `turn_status: "interrupted"` and
+is not retried. The receipt also records the desktop deep-link activation
+outcome (`activation: "requested"` or `"failed"`).
+
+Long-running wakeups do not starve health reporting: the watch loop keeps the
+heartbeat fresh from a background ticker while a scan is busy.
+
+Approval requests raised by an injected turn (command/patch approvals,
+elicitations, user-input prompts) are answered with the protocol's decline
+decision — never auto-approved — because no human is attached to the injected
+client. The turn continues and finishes with a text answer instead of hanging;
+declined request methods are recorded in the receipt as
+`auto_declined_requests`. Threads used for orchestration should run with an
+approval policy that permits the read-only verification the wakeup prompt asks
+for.
 
 `watcher service status` reports:
 

@@ -7,6 +7,7 @@ import os
 import signal as signal_module
 import subprocess
 import sys
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -51,24 +52,37 @@ HOST_ADAPTERS = {
 }
 
 
+def resolve_project_binding(
+    project: Path,
+    *,
+    state_dir: str,
+    host_adapters: dict | None = None,
+) -> dict[str, Any]:
+    adapters = HOST_ADAPTERS if host_adapters is None else host_adapters
+    bound = binding_module.require_binding(project, state_dir=state_dir)
+    host = bound["host"]
+    if host not in adapters:
+        raise WatcherError(
+            f"host {host} does not support callback wakeups; "
+            "use `watcher stream` from the host chat instead"
+        )
+    return bound
+
+
 def resolve_callback_bindings(
     projects: list[Path],
     *,
     state_dir: str,
     host_adapters: dict | None = None,
 ) -> dict[Path, dict[str, Any]]:
-    adapters = HOST_ADAPTERS if host_adapters is None else host_adapters
-    bindings: dict[Path, dict[str, Any]] = {}
-    for project in projects:
-        bound = binding_module.require_binding(project, state_dir=state_dir)
-        host = bound["host"]
-        if host not in adapters:
-            raise WatcherError(
-                f"host {host} does not support callback wakeups; "
-                "use `watcher stream` from the host chat instead"
-            )
-        bindings[project] = bound
-    return bindings
+    return {
+        project: resolve_project_binding(
+            project,
+            state_dir=state_dir,
+            host_adapters=host_adapters,
+        )
+        for project in projects
+    }
 
 
 def unix_now() -> float:
@@ -289,7 +303,11 @@ def pending_signal_count(
         seen = set()
     count = 0
     for project in project_roots:
-        for signal in core.inbox(project, state_dir=state_dir):
+        try:
+            signals = core.inbox(project, state_dir=state_dir, invalid_sink=[])
+        except OSError:
+            continue
+        for signal in signals:
             event_id = signal.get("event_id")
             if isinstance(event_id, str) and event_id not in seen:
                 count += 1
@@ -314,13 +332,6 @@ def scan_once(
 
     adapters = HOST_ADAPTERS if host_adapters is None else host_adapters
     projects = [path.expanduser().resolve() for path in project_roots]
-    callback_bindings: dict[Path, dict[str, Any]] = {}
-    if action == "callback":
-        callback_bindings = resolve_callback_bindings(
-            projects,
-            state_dir=state_dir,
-            host_adapters=adapters,
-        )
     state_file = state_path or default_state_path(
         projects[0],
         state_dir=state_dir,
@@ -335,7 +346,30 @@ def scan_once(
     action_errors: list[dict[str, str]] = []
 
     for project in projects:
-        for signal in core.inbox(project, state_dir=state_dir):
+        # A broken binding or an unreadable signal file must degrade to a
+        # reported error, never take down a long-running watcher.
+        bound: dict[str, Any] | None = None
+        if action == "callback":
+            try:
+                bound = resolve_project_binding(
+                    project,
+                    state_dir=state_dir,
+                    host_adapters=adapters,
+                )
+            except (OSError, RuntimeError, ValueError) as error:
+                action_errors.append(
+                    {"project_root": str(project), "error": str(error)}
+                )
+                continue
+        invalid_signals: list[dict[str, str]] = []
+        signals = core.inbox(
+            project,
+            state_dir=state_dir,
+            invalid_sink=invalid_signals,
+        )
+        for invalid in invalid_signals:
+            action_errors.append({"project_root": str(project), **invalid})
+        for signal in signals:
             event_id = signal.get("event_id")
             if not isinstance(event_id, str) or event_id in seen:
                 continue
@@ -373,7 +407,7 @@ def scan_once(
                         mark_seen = False
                         defer_reason = str(wakeup.get("reason", "deferred"))
                 elif action == "callback":
-                    bound = callback_bindings[project]
+                    assert bound is not None
                     wake = adapters[bound["host"]]
                     wakeup = wake(
                         project,
@@ -682,28 +716,87 @@ def watch(
     target_thread_id: str | None,
     codex: str,
     heartbeat_file: Path | None = None,
+    max_scans: int | None = None,
+    scan=scan_once,
 ) -> None:
     if interval_seconds <= 0:
         raise WatcherError("interval must be positive")
+    projects = [path.expanduser().resolve() for path in project_roots]
     heartbeat_path = heartbeat_file or default_heartbeat_path(
-        project_roots[0].expanduser().resolve(),
+        projects[0],
         state_dir=state_dir,
     )
-    while True:
-        result = scan_once(
-            project_roots,
-            state_dir=state_dir,
-            state_path=state_path,
-            action=action,
-            target_thread_id=target_thread_id,
-            codex=codex,
-        )
-        write_heartbeat(
-            heartbeat_path,
-            result,
-            action=action,
-            interval_seconds=interval_seconds,
-        )
-        if result["new_count"]:
-            print(json.dumps(result, ensure_ascii=False, sort_keys=True), flush=True)
-        time.sleep(interval_seconds)
+    state_file = state_path or default_state_path(projects[0], state_dir=state_dir)
+
+    def empty_result(errors: list[dict[str, str]]) -> dict[str, Any]:
+        return {
+            "schema_version": core.SCHEMA_VERSION,
+            "checked_at": core.utc_now(),
+            "project_roots": [str(path) for path in projects],
+            "new_count": 0,
+            "new_signals": [],
+            "notifications": [],
+            "thread_wakeups": [],
+            "action_errors": errors,
+            "state_path": str(state_file),
+        }
+
+    # Wakeups can legitimately take a long time (orchestrator turns may run
+    # for hours); a background ticker keeps the heartbeat fresh so service
+    # status does not degrade while a scan is busy.
+    snapshot: dict[str, Any] = {"result": empty_result([])}
+    snapshot_lock = threading.Lock()
+    stop_ticker = threading.Event()
+
+    def beat() -> None:
+        while not stop_ticker.wait(min(interval_seconds, 10.0)):
+            with snapshot_lock:
+                result = dict(snapshot["result"])
+            result["checked_at"] = core.utc_now()
+            try:
+                write_heartbeat(
+                    heartbeat_path,
+                    result,
+                    action=action,
+                    interval_seconds=interval_seconds,
+                )
+            except OSError:
+                continue
+
+    ticker = threading.Thread(target=beat, name="watcher-heartbeat", daemon=True)
+    ticker.start()
+    scans = 0
+    try:
+        while max_scans is None or scans < max_scans:
+            try:
+                result = scan(
+                    projects,
+                    state_dir=state_dir,
+                    state_path=state_path,
+                    action=action,
+                    target_thread_id=target_thread_id,
+                    codex=codex,
+                )
+            except (OSError, RuntimeError, ValueError) as error:
+                # A single failing scan must not take down a long-running
+                # watcher; report it and keep scanning.
+                result = empty_result([{"error": str(error)}])
+            with snapshot_lock:
+                snapshot["result"] = result
+            write_heartbeat(
+                heartbeat_path,
+                result,
+                action=action,
+                interval_seconds=interval_seconds,
+            )
+            if result["new_count"] or result["action_errors"]:
+                print(
+                    json.dumps(result, ensure_ascii=False, sort_keys=True),
+                    flush=True,
+                )
+            scans += 1
+            if max_scans is not None and scans >= max_scans:
+                break
+            time.sleep(interval_seconds)
+    finally:
+        stop_ticker.set()
