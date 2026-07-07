@@ -27,7 +27,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--state-dir", default=core.DEFAULT_STATE_DIR)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    emit = subparsers.add_parser("emit")
+    emit = subparsers.add_parser(
+        "emit",
+        help="Write a terminal event and matching inbox signal.",
+    )
     emit.add_argument("--task-id", required=True)
     emit.add_argument(
         "--terminal-status",
@@ -38,15 +41,24 @@ def build_parser() -> argparse.ArgumentParser:
     emit.add_argument("--evidence", type=Path, required=True)
     emit.add_argument("--event-id")
 
-    subparsers.add_parser("inbox")
+    subparsers.add_parser("inbox", help="List pending inbox signals.")
 
-    cleanup = subparsers.add_parser("cleanup")
+    cleanup = subparsers.add_parser(
+        "cleanup",
+        help=(
+            "Prune old notifications, thread-wakeup receipts and rotated logs. "
+            "Terminal events and inbox signals are kept as the durable audit trail."
+        ),
+    )
     cleanup.add_argument("--retention-days", type=int, default=30)
     cleanup.add_argument("--log-max-bytes", type=int, default=50 * 1024 * 1024)
     cleanup.add_argument("--log-keep-bytes", type=int, default=10 * 1024 * 1024)
     cleanup.add_argument("--dry-run", action="store_true")
 
-    watcher_parser = subparsers.add_parser("watcher")
+    watcher_parser = subparsers.add_parser(
+        "watcher",
+        help="Scan the inbox and act on unseen terminal signals.",
+    )
     watcher_parser.add_argument("--state-file", type=Path)
     watcher_parser.add_argument("--codex", default="codex")
     watcher_parser.add_argument(
@@ -62,23 +74,41 @@ def build_parser() -> argparse.ArgumentParser:
         dest="watcher_command",
         required=True,
     )
-    watcher_subparsers.add_parser("once")
-    watch = watcher_subparsers.add_parser("watch")
+    watcher_subparsers.add_parser("once", help="Run a single watcher scan and exit.")
+    watch = watcher_subparsers.add_parser(
+        "watch",
+        help="Run the watcher scan loop in the foreground.",
+    )
     watch.add_argument("--interval-seconds", type=float, default=30)
     watch.add_argument("--heartbeat-file", type=Path)
-    service = watcher_subparsers.add_parser("service")
+    service = watcher_subparsers.add_parser(
+        "service",
+        help="Control a detached background watcher process.",
+    )
     service.add_argument("--service-file", type=Path)
     service_subparsers = service.add_subparsers(
         dest="service_command",
         required=True,
     )
-    service_start = service_subparsers.add_parser("start")
+    service_start = service_subparsers.add_parser(
+        "start",
+        help="Start a detached watcher process.",
+    )
     service_start.add_argument("--interval-seconds", type=float, default=5)
     service_start.add_argument("--replace", action="store_true")
-    service_subparsers.add_parser("status")
-    service_stop = service_subparsers.add_parser("stop")
+    service_subparsers.add_parser(
+        "status",
+        help="Report watcher process health and pending inbox count.",
+    )
+    service_stop = service_subparsers.add_parser(
+        "stop",
+        help="Stop a running watcher process.",
+    )
     service_stop.add_argument("--timeout-seconds", type=float, default=5)
-    service_restart = service_subparsers.add_parser("restart")
+    service_restart = service_subparsers.add_parser(
+        "restart",
+        help="Stop and start the watcher process.",
+    )
     service_restart.add_argument("--interval-seconds", type=float, default=5)
     service_restart.add_argument("--timeout-seconds", type=float, default=5)
     return parser

@@ -97,6 +97,20 @@ Stop:
 orchestrator-engine --project-root /path/to/project watcher service stop
 ```
 
+Prune stale notifications, thread-wakeup receipts and rotate the watcher
+service log:
+
+```bash
+orchestrator-engine --project-root /path/to/project cleanup
+```
+
+`cleanup` only removes ephemeral watcher output (notifications,
+thread-wakeup receipts, non-current log files) older than
+`--retention-days` (default 30) and compacts `watcher-service.log` once it
+exceeds `--log-max-bytes`. Terminal events and inbox signals are never
+removed by `cleanup`; they are the durable audit trail and are the
+responsibility of the adopting project to retire.
+
 ## Current-thread wakeup contract
 
 The watcher sends a short deterministic prompt:

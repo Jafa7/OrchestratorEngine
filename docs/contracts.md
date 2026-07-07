@@ -55,6 +55,7 @@ Required fields:
   "terminal_status": "completed",
   "result_path": "/absolute/result.json",
   "evidence_path": "/absolute/evidence.json",
+  "created_at": "2026-07-07T00:00:00.000+00:00",
   "requires": "ORCHESTRATOR_REVIEW"
 }
 ```
@@ -73,3 +74,11 @@ The watcher writes:
 
 An event is marked seen only after a successful action or deterministic skip.
 Transient App Server failures and active target threads remain retryable.
+
+## Retention
+
+The `cleanup` command prunes `notifications/`, `thread-wakeups/` and rotated
+log files older than a retention window, and compacts `watcher-service.log`
+once it exceeds a size limit. It never removes `events/<event_id>.json` or
+`inbox/signals/<event_id>.json`: those are the durable audit trail. A project
+that wants to retire old terminal events and signals must do so itself.

@@ -155,8 +155,17 @@ def heartbeat_max_age_seconds(service_state: dict[str, Any]) -> float:
 def heartbeat_health(
     service_state: dict[str, Any],
     heartbeat: dict[str, Any] | None,
+    *,
+    alive: bool = True,
 ) -> dict[str, Any]:
     max_age = heartbeat_max_age_seconds(service_state)
+    if not alive:
+        return {
+            "healthy": False,
+            "reason": "not_alive",
+            "age_seconds": heartbeat_age_seconds(heartbeat),
+            "max_age_seconds": max_age,
+        }
     if heartbeat is None:
         return {
             "healthy": False,
@@ -397,7 +406,7 @@ def service_status(
         }
     pid = state.get("pid")
     alive = isinstance(pid, int) and process_checker(pid)
-    heartbeat_status = heartbeat_health(state, heartbeat)
+    heartbeat_status = heartbeat_health(state, heartbeat, alive=alive)
     if alive and heartbeat_status["healthy"]:
         status = "running"
     elif alive:

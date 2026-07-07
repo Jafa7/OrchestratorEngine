@@ -230,6 +230,42 @@ class WatcherTests(unittest.TestCase):
             )
         self.assertEqual(status["pending_inbox_count"], 1)
 
+    def test_service_status_reports_unhealthy_heartbeat_when_process_dead(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            service_file = watcher.default_service_path(root)
+            heartbeat_file = watcher.default_heartbeat_path(root)
+            core.atomic_json(
+                service_file,
+                {
+                    "schema_version": 1,
+                    "kind": watcher.SERVICE_KIND,
+                    "status": "stopped",
+                    "pid": 4242,
+                    "process_group": 4242,
+                    "interval_seconds": 5,
+                },
+            )
+            core.atomic_json(
+                heartbeat_file,
+                {
+                    "schema_version": 1,
+                    "kind": "LOCAL_AI_ORCHESTRATOR_WATCHER_HEARTBEAT",
+                    "pid": 4242,
+                    "checked_at": core.utc_now(),
+                },
+            )
+            status = watcher.service_status(
+                [root],
+                process_checker=lambda _pid: False,
+            )
+        self.assertEqual(status["status"], "stopped")
+        self.assertFalse(status["alive"])
+        self.assertFalse(status["heartbeat_healthy"])
+        self.assertEqual(status["heartbeat_status"], "not_alive")
+
     def test_heartbeat_age_never_goes_negative(self) -> None:
         age = watcher.heartbeat_age_seconds(
             {
