@@ -118,18 +118,31 @@ Expect `"host"` to match, and for codex a non-empty `"target_thread_id"`.
 ## Step 3 — Configure workers
 
 Create `/path/to/project/.orchestrator/workers.toml` with only the CLIs that
-are actually installed. Known-good templates:
+are actually installed. **Model and effort are encoded in `command` via each
+CLI's own flags** — the engine does not interpret free-form keys like `model`
+or `effort` (they are only recorded in `evidence.json` for audit). Define
+several profiles per CLI so the orchestrating agent can match worker cost to
+task complexity at dispatch time:
 
 ```toml
-[workers.claude]
+[workers.claude-fast]                      # trivial checks, small edits
 enabled = true
-command = ["claude", "-p", "--permission-mode", "acceptEdits"]
+command = ["claude", "-p", "--model", "haiku",
+           "--permission-mode", "acceptEdits"]
 prompt_via = "stdin"
 timeout_seconds = 3600
 
+[workers.claude-deep]                      # reviews, refactors, hard bugs
+enabled = true
+command = ["claude", "-p", "--model", "opus", "--effort", "xhigh",
+           "--permission-mode", "acceptEdits"]
+prompt_via = "stdin"
+timeout_seconds = 14400
+
 [workers.codex]
 enabled = true
-command = ["codex", "exec", "--json"]
+command = ["codex", "exec", "--json",
+           "-c", "model_reasoning_effort=\"high\""]
 prompt_via = "arg"
 timeout_seconds = 3600
 
@@ -140,6 +153,9 @@ prompt_via = "arg"
 timeout_seconds = 3600
 ```
 
+Ask the user which profiles they want (model tiers, effort levels, timeouts)
+instead of inventing them.
+
 Notes:
 
 - `prompt_via = "arg"` appends the prompt text as the final argument;
@@ -147,8 +163,8 @@ Notes:
 - `codex exec` refuses untrusted directories. Either the user marks the
   project trusted in `~/.codex/config.toml`, or add
   `--skip-git-repo-check` to the command after confirming with the user.
-- Free-form keys (`effort`, `model`, ...) are allowed and recorded in each
-  task's `evidence.json`.
+- Omitted `timeout_seconds` means the worker may run for hours; the
+  supervisor keeps `task.json` fresh (`last_alive_at`) while it runs.
 
 **Check:**
 
@@ -237,10 +253,14 @@ Add this to the adopted project's agent instructions file (`AGENTS.md`,
 
 To delegate a task to a CLI worker:
 
-1. Write the full task prompt to a file (e.g. `.orchestrator/prompts/<task-id>.md`).
-2. Dispatch: `orchestrator-engine --project-root <root> worker run \
-   --worker <name> --task-id <TASK-ID> --prompt-file <file>`
-3. End the turn. Do not poll; the watcher wakes this chat when workers finish.
+1. Check available worker profiles: `orchestrator-engine --project-root <root> worker list`.
+2. Pick the profile matching the task: cheap/fast profiles for trivial checks
+   and mechanical edits, deep/high-effort profiles for reviews, refactors and
+   hard bugs. The user can override your choice in chat.
+3. Write the full task prompt to a file (e.g. `.orchestrator/prompts/<task-id>.md`).
+4. Dispatch: `orchestrator-engine --project-root <root> worker run \
+   --worker <profile> --task-id <TASK-ID> --prompt-file <file>`
+5. End the turn. Do not poll; the watcher wakes this chat when workers finish.
 
 When woken by a `LOCAL_AI_ORCHESTRATOR_WAKEUP` message:
 

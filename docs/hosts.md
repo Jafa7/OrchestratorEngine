@@ -87,7 +87,9 @@ Notes:
 ## Dispatching workers
 
 Configure the CLI workers once in `.orchestrator/workers.toml` (see
-[contracts.md](contracts.md)), then dispatch from the host chat:
+[contracts.md](contracts.md)). Model and effort live in each worker's
+`command`; define several profiles (fast/deep) so the orchestrating agent can
+pick one per task. Then dispatch from the host chat:
 
 ```bash
 orchestrator-engine --project-root /path/to/project worker run \

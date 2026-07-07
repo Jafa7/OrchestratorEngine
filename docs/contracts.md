@@ -93,14 +93,45 @@ Path:
 
 - `.orchestrator/workers.toml`
 
+Reserved keys the engine acts on:
+
 ```toml
 [workers.claude]
-enabled = true
-command = ["claude", "-p"]
+enabled = true                # disabled workers cannot be dispatched
+command = ["claude", "-p"]    # the CLI invocation, including model/effort flags
 prompt_via = "stdin"          # "arg" appends the prompt text as the last argument
 timeout_seconds = 3600        # optional; exceeded -> terminal_status "timed_out"
-effort = "high"               # free-form keys are recorded in evidence.json
 ```
+
+**Model and effort selection happens inside `command`.** The engine does not
+interpret keys like `model` or `effort` — free-form keys are recorded in each
+task's `evidence.json` as audit metadata only. To control which AI runs and
+how hard it thinks, pass the CLI's own flags:
+
+```toml
+[workers.claude-fast]                      # cheap: trivial checks, small edits
+enabled = true
+command = ["claude", "-p", "--model", "haiku"]
+prompt_via = "stdin"
+
+[workers.claude-deep]                      # expensive: reviews, refactors
+enabled = true
+command = ["claude", "-p", "--model", "opus", "--effort", "xhigh"]
+prompt_via = "stdin"
+timeout_seconds = 14400
+
+[workers.codex-deep]
+enabled = true
+command = ["codex", "exec", "--json",
+           "-c", "model_reasoning_effort=\"high\""]
+prompt_via = "arg"
+```
+
+This profile pattern is the intended division of labor: the project owner
+defines the menu of profiles once; the orchestrating agent chooses a profile
+per task at dispatch time (`worker run --worker claude-deep ...`), matching
+worker cost to task complexity. The user can always override the choice in
+chat.
 
 ## Worker tasks
 
