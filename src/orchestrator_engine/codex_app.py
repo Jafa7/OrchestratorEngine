@@ -10,11 +10,49 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import core
+from . import core, wakeup
 
 
 class CodexAppError(RuntimeError):
     """A deterministic Codex App Server adapter failure."""
+
+
+DEFAULT_TURN_TIMEOUT_SECONDS = 1800
+DEEP_LINK_COMMAND = [
+    "powershell.exe",
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+]
+
+
+def activate_thread_window(
+    thread_id: str,
+    *,
+    runner=subprocess.run,
+) -> dict[str, Any]:
+    """Bring the Codex Desktop thread to the foreground via its deep link.
+
+    The injected turn lands in shared thread storage, but the live window is a
+    separate process that does not refresh on its own; the `codex://threads/`
+    deep link is how the desktop app opens a specific thread.
+    """
+    url = f"codex://threads/{thread_id}"
+    try:
+        completed = runner(
+            [*DEEP_LINK_COMMAND, f"Start-Process '{url}'"],
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        return {"activation": "failed", "activation_error": str(error)}
+    if completed.returncode != 0:
+        return {
+            "activation": "failed",
+            "activation_error": f"exit code {completed.returncode}",
+        }
+    return {"activation": "requested", "activation_url": url}
 
 
 class AppServer:
@@ -100,6 +138,43 @@ class AppServer:
                 raise CodexAppError(f"App Server {method} returned invalid result")
             return result
 
+    def await_turn_completion(
+        self,
+        thread_id: str,
+        turn_id: str,
+        *,
+        timeout: float = DEFAULT_TURN_TIMEOUT_SECONDS,
+    ) -> dict[str, Any]:
+        """Block until the server reports the given turn as finished.
+
+        `turn/start` only acknowledges that a turn was accepted; failures
+        (including rate limits) surface later as a `turn/completed`
+        notification with `status: "failed"`. Returning right after the
+        initial ack would report a wakeup as successful even when the turn
+        never actually ran.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise CodexAppError(f"turn {turn_id} did not complete before deadline")
+            try:
+                message = self._messages.get(timeout=min(remaining, 1))
+            except queue.Empty:
+                if self._process.poll() is not None:
+                    raise CodexAppError(
+                        f"App Server exited with code {self._process.returncode}"
+                    ) from None
+                continue
+            if message.get("method") != "turn/completed":
+                continue
+            params = message.get("params")
+            if not isinstance(params, dict) or params.get("threadId") != thread_id:
+                continue
+            turn = params.get("turn")
+            if isinstance(turn, dict) and turn.get("id") == turn_id:
+                return turn
+
     def close(self) -> None:
         if self._process.poll() is None:
             self._process.terminate()
@@ -147,23 +222,7 @@ def build_current_thread_wakeup_message(
     signal: dict[str, Any],
     event: dict[str, Any],
 ) -> str:
-    return "\n".join(
-        [
-            "LOCAL_AI_ORCHESTRATOR_WAKEUP v1",
-            f"project: {project_root}",
-            f"event_id: {event['event_id']}",
-            f"task_id: {event['task_id']}",
-            f"terminal_status: {event['terminal_status']}",
-            f"event: {signal['event_path']}",
-            f"evidence: {event['evidence_path']}",
-            f"result: {event['result_path']}",
-            "requires: ORCHESTRATOR_FOLLOWUP",
-            "",
-            "Read the event/evidence. Verify state and decide the next safe action.",
-            "If review is required, inspect the real diff and checks before accepting.",
-            "Do not commit or push unless the user explicitly requested it.",
-        ]
-    )
+    return wakeup.build_wakeup_message(project_root, signal, event)
 
 
 def wake_current_thread(
@@ -174,6 +233,7 @@ def wake_current_thread(
     state_dir: str = core.DEFAULT_STATE_DIR,
     codex: str = "codex",
     server_factory=AppServer,
+    activator=activate_thread_window,
 ) -> dict[str, Any]:
     if not target_thread_id:
         raise CodexAppError("target thread id is required")
@@ -253,7 +313,7 @@ def wake_current_thread(
                 core.atomic_json(receipt_path, receipt)
                 return {**receipt, "receipt": str(receipt_path)}
             server.request("thread/resume", {"threadId": target_thread_id})
-            turn = server.request(
+            started = server.request(
                 "turn/start",
                 {
                     "threadId": target_thread_id,
@@ -269,6 +329,24 @@ def wake_current_thread(
                     ],
                 },
             )
+            started_turn = started.get("turn")
+            turn_id = (
+                started_turn.get("id") if isinstance(started_turn, dict) else None
+            )
+            if not isinstance(turn_id, str) or not turn_id:
+                raise CodexAppError("turn/start returned no turn id")
+            turn = server.await_turn_completion(target_thread_id, turn_id)
+            if turn.get("status") != "completed":
+                turn_error = turn.get("error")
+                message = (
+                    turn_error.get("message")
+                    if isinstance(turn_error, dict)
+                    else None
+                )
+                raise CodexAppError(
+                    f"turn ended with status {turn.get('status')!r}: "
+                    f"{message or 'no error detail'}"
+                )
     except (OSError, RuntimeError, ValueError) as error:
         receipt = {
             "schema_version": core.SCHEMA_VERSION,
@@ -282,8 +360,8 @@ def wake_current_thread(
         core.atomic_json(receipt_path, receipt)
         return {**receipt, "receipt": str(receipt_path)}
 
-    turn_value = turn.get("turn")
-    turn_id = turn_value.get("id") if isinstance(turn_value, dict) else None
+    turn_id = turn.get("id")
+    activation = activator(target_thread_id)
     receipt = {
         "schema_version": core.SCHEMA_VERSION,
         "kind": "CURRENT_THREAD_WAKEUP",
@@ -293,6 +371,7 @@ def wake_current_thread(
         "status": "woken",
         "turn_id": turn_id,
         "created_at": core.utc_now(),
+        **activation,
     }
     core.atomic_json(receipt_path, receipt)
     return {**receipt, "receipt": str(receipt_path)}

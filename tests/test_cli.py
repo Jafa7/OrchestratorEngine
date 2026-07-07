@@ -74,6 +74,82 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("ERROR:", error_out.getvalue())
 
+    def test_bind_status_and_clear_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            bind_out = io.StringIO()
+            with contextlib.redirect_stdout(bind_out):
+                bind_code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "bind",
+                        "--host",
+                        "codex",
+                        "--thread-id",
+                        "thread-1",
+                    ]
+                )
+            status_out = io.StringIO()
+            with contextlib.redirect_stdout(status_out):
+                status_code = cli.main(
+                    ["--project-root", str(root), "bind", "--status"]
+                )
+            clear_out = io.StringIO()
+            with contextlib.redirect_stdout(clear_out):
+                clear_code = cli.main(
+                    ["--project-root", str(root), "bind", "--clear"]
+                )
+        self.assertEqual((bind_code, status_code, clear_code), (0, 0, 0))
+        self.assertEqual(json.loads(bind_out.getvalue())["host"], "codex")
+        status = json.loads(status_out.getvalue())
+        self.assertEqual(status["target_thread_id"], "thread-1")
+        self.assertEqual(json.loads(clear_out.getvalue())["status"], "cleared")
+
+    def test_bind_codex_without_thread_id_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            error_out = io.StringIO()
+            with contextlib.redirect_stderr(error_out):
+                code = cli.main(
+                    ["--project-root", str(root), "bind", "--host", "codex"]
+                )
+        self.assertEqual(code, 1)
+        self.assertIn("thread id", error_out.getvalue())
+
+    def test_worker_list_reports_empty_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = cli.main(["--project-root", str(root), "worker", "list"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output.getvalue())["workers"], {})
+
+    def test_worker_run_reports_unknown_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("task", encoding="utf-8")
+            error_out = io.StringIO()
+            with contextlib.redirect_stderr(error_out):
+                code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "worker",
+                        "run",
+                        "--worker",
+                        "ghost",
+                        "--task-id",
+                        "T-1",
+                        "--prompt-file",
+                        str(prompt),
+                    ]
+                )
+        self.assertEqual(code, 1)
+        self.assertIn("no workers configured", error_out.getvalue())
+
     def test_cleanup_dry_run_reports_zero_removals_on_empty_inbox(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

@@ -12,9 +12,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import codex_app, core
+from . import binding as binding_module
+from . import codex_app, core, vscode_chat
 
-WATCHER_ACTIONS = {"record", "notify", "current-thread-callback"}
+WATCHER_ACTIONS = {"record", "notify", "callback", "current-thread-callback"}
 DEFER_BASE_SECONDS = 30
 DEFER_MAX_SECONDS = 300
 SERVICE_KIND = "LOCAL_AI_ORCHESTRATOR_WATCHER_SERVICE"
@@ -23,6 +24,51 @@ MIN_HEARTBEAT_MAX_AGE_SECONDS = 30.0
 
 class WatcherError(RuntimeError):
     """A deterministic watcher failure."""
+
+
+def _wake_codex(project, signal, *, binding, state_dir, codex, server_factory):
+    return codex_app.wake_current_thread(
+        project,
+        signal,
+        target_thread_id=str(binding["target_thread_id"]),
+        state_dir=state_dir,
+        codex=codex,
+        server_factory=server_factory,
+    )
+
+
+def _wake_vscode(project, signal, *, binding, state_dir, codex, server_factory):
+    return vscode_chat.wake_chat(project, signal, state_dir=state_dir)
+
+
+# Hosts a background watcher can push a wakeup to. The claude host is
+# deliberately absent: a Claude session arms its own harness watch on
+# `watcher stream`, so a push-style callback service must not consume its
+# signals.
+HOST_ADAPTERS = {
+    "codex": _wake_codex,
+    "vscode": _wake_vscode,
+}
+
+
+def resolve_callback_bindings(
+    projects: list[Path],
+    *,
+    state_dir: str,
+    host_adapters: dict | None = None,
+) -> dict[Path, dict[str, Any]]:
+    adapters = HOST_ADAPTERS if host_adapters is None else host_adapters
+    bindings: dict[Path, dict[str, Any]] = {}
+    for project in projects:
+        bound = binding_module.require_binding(project, state_dir=state_dir)
+        host = bound["host"]
+        if host not in adapters:
+            raise WatcherError(
+                f"host {host} does not support callback wakeups; "
+                "use `watcher stream` from the host chat instead"
+            )
+        bindings[project] = bound
+    return bindings
 
 
 def unix_now() -> float:
@@ -259,13 +305,22 @@ def scan_once(
     target_thread_id: str | None = None,
     codex: str = "codex",
     server_factory=codex_app.AppServer,
+    host_adapters: dict | None = None,
 ) -> dict[str, Any]:
     if action not in WATCHER_ACTIONS:
         raise WatcherError(f"unsupported watcher action: {action}")
     if action == "current-thread-callback" and not target_thread_id:
         raise WatcherError("target thread id is required for current-thread-callback")
 
+    adapters = HOST_ADAPTERS if host_adapters is None else host_adapters
     projects = [path.expanduser().resolve() for path in project_roots]
+    callback_bindings: dict[Path, dict[str, Any]] = {}
+    if action == "callback":
+        callback_bindings = resolve_callback_bindings(
+            projects,
+            state_dir=state_dir,
+            host_adapters=adapters,
+        )
     state_file = state_path or default_state_path(
         projects[0],
         state_dir=state_dir,
@@ -309,6 +364,21 @@ def scan_once(
                         project,
                         signal,
                         target_thread_id=str(target_thread_id),
+                        state_dir=state_dir,
+                        codex=codex,
+                        server_factory=server_factory,
+                    )
+                    thread_wakeups.append(wakeup)
+                    if wakeup.get("status") == "deferred":
+                        mark_seen = False
+                        defer_reason = str(wakeup.get("reason", "deferred"))
+                elif action == "callback":
+                    bound = callback_bindings[project]
+                    wake = adapters[bound["host"]]
+                    wakeup = wake(
+                        project,
+                        signal,
+                        binding=bound,
                         state_dir=state_dir,
                         codex=codex,
                         server_factory=server_factory,
@@ -456,6 +526,8 @@ def start_service(
     if action == "current-thread-callback" and not target_thread_id:
         raise WatcherError("target thread id is required for current-thread-callback")
     projects = [path.expanduser().resolve() for path in project_roots]
+    if action == "callback":
+        resolve_callback_bindings(projects, state_dir=state_dir)
     service_path = service_file or default_service_path(
         projects[0],
         state_dir=state_dir,

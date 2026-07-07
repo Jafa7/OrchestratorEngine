@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import ClassVar
 
-from orchestrator_engine import codex_app, core, watcher
+from orchestrator_engine import binding, codex_app, core, vscode_chat, watcher
 
 
 class FakeThreadServer:
@@ -14,6 +14,9 @@ class FakeThreadServer:
     starts = 0
     reads = 0
     resumes = 0
+    awaits = 0
+    turn_status = "completed"
+    turn_error_message: str | None = None
 
     def __init__(self, *_: object, **__: object) -> None:
         pass
@@ -43,8 +46,17 @@ class FakeThreadServer:
             return {"thread": {"id": params["threadId"], "status": {"type": "idle"}}}
         if method == "turn/start":
             self.__class__.starts += 1
-            return {"turn": {"id": "turn-1", "status": "running"}}
+            return {"turn": {"id": "turn-1", "status": "inProgress"}}
         raise AssertionError(f"unexpected request: {method}")
+
+    def await_turn_completion(
+        self, _thread_id: str, turn_id: str, **__: object
+    ) -> dict:
+        self.__class__.awaits += 1
+        turn = {"id": turn_id, "status": self.turn_status}
+        if self.turn_status != "completed":
+            turn["error"] = {"message": self.turn_error_message or "boom"}
+        return turn
 
 
 class FakePopen:
@@ -62,6 +74,9 @@ def reset_fake_server(status: str = "idle") -> None:
     FakeThreadServer.starts = 0
     FakeThreadServer.reads = 0
     FakeThreadServer.resumes = 0
+    FakeThreadServer.awaits = 0
+    FakeThreadServer.turn_status = "completed"
+    FakeThreadServer.turn_error_message = None
 
 
 def write_event(root: Path, event_id: str = "event-1") -> None:
@@ -141,6 +156,29 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(result["thread_wakeups"][0]["status"], "deferred")
         self.assertEqual(watcher_state["seen_event_ids"], [])
         self.assertIn("event-active", watcher_state["deferred_events"])
+
+    def test_current_thread_callback_defers_when_turn_fails(self) -> None:
+        reset_fake_server("idle")
+        FakeThreadServer.turn_status = "failed"
+        FakeThreadServer.turn_error_message = "You've hit your usage limit."
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            state = root / "watcher-state.json"
+            write_event(root, event_id="event-rate-limited")
+            result = watcher.scan_once(
+                [root],
+                state_path=state,
+                action="current-thread-callback",
+                target_thread_id="thread-1",
+                server_factory=FakeThreadServer,
+            )
+            watcher_state = watcher.load_state(state)
+        wakeup = result["thread_wakeups"][0]
+        self.assertEqual(wakeup["status"], "deferred")
+        self.assertIn("usage limit", wakeup["reason"])
+        self.assertEqual(FakeThreadServer.awaits, 1)
+        self.assertEqual(watcher_state["seen_event_ids"], [])
+        self.assertIn("event-rate-limited", watcher_state["deferred_events"])
 
     def test_service_start_writes_state_and_command(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -302,6 +340,50 @@ class WatcherTests(unittest.TestCase):
         self.assertFalse(status["heartbeat_healthy"])
         self.assertEqual(status["heartbeat_status"], "not_alive")
 
+    def test_callback_requires_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root)
+            with self.assertRaises(RuntimeError):
+                watcher.scan_once(
+                    [root],
+                    state_path=root / "watcher-state.json",
+                    action="callback",
+                )
+
+    def test_callback_dispatches_to_bound_codex_adapter(self) -> None:
+        reset_fake_server("idle")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            binding.write_binding(root, host="codex", target_thread_id="thread-9")
+            write_event(root, event_id="event-callback")
+            calls: list[dict] = []
+
+            def fake_codex(project, signal, **kwargs):
+                calls.append({"signal": signal, **kwargs})
+                return {"status": "woken", "event_id": signal["event_id"]}
+
+            result = watcher.scan_once(
+                [root],
+                state_path=root / "watcher-state.json",
+                action="callback",
+                host_adapters={"codex": fake_codex},
+            )
+        self.assertEqual(result["thread_wakeups"][0]["status"], "woken")
+        self.assertEqual(calls[0]["binding"]["target_thread_id"], "thread-9")
+
+    def test_callback_rejects_stream_only_host(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            binding.write_binding(root, host="claude")
+            write_event(root)
+            with self.assertRaises(watcher.WatcherError):
+                watcher.scan_once(
+                    [root],
+                    state_path=root / "watcher-state.json",
+                    action="callback",
+                )
+
     def test_heartbeat_age_never_goes_negative(self) -> None:
         age = watcher.heartbeat_age_seconds(
             {
@@ -311,6 +393,121 @@ class WatcherTests(unittest.TestCase):
             }
         )
         self.assertEqual(age, 0.0)
+
+
+class FakeCompleted:
+    def __init__(self, returncode: int = 0, stderr: bytes = b"") -> None:
+        self.returncode = returncode
+        self.stderr = stderr
+
+
+class VscodeChatTests(unittest.TestCase):
+    def test_wake_chat_writes_woken_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-vscode")
+            signals = core.inbox(root)
+            commands: list[list[str]] = []
+
+            def runner(command, **_kwargs):
+                commands.append(command)
+                return FakeCompleted(0)
+
+            receipt = vscode_chat.wake_chat(root, signals[0], runner=runner)
+        self.assertEqual(receipt["status"], "woken")
+        self.assertEqual(commands[0][:3], ["code", "chat", "--reuse-window"])
+        self.assertIn("LOCAL_AI_ORCHESTRATOR_WAKEUP v1", commands[0][3])
+
+    def test_wake_chat_defers_on_nonzero_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-vscode-fail")
+            signals = core.inbox(root)
+            receipt = vscode_chat.wake_chat(
+                root,
+                signals[0],
+                runner=lambda *_a, **_k: FakeCompleted(1, b"no window"),
+            )
+        self.assertEqual(receipt["status"], "deferred")
+        self.assertIn("no window", receipt["reason"])
+
+    def test_wake_chat_skips_already_woken_event(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-vscode-dup")
+            signals = core.inbox(root)
+            first = vscode_chat.wake_chat(
+                root,
+                signals[0],
+                runner=lambda *_a, **_k: FakeCompleted(0),
+            )
+            second = vscode_chat.wake_chat(
+                root,
+                signals[0],
+                runner=lambda *_a, **_k: FakeCompleted(0),
+            )
+        self.assertEqual(first["status"], "woken")
+        self.assertEqual(second["status"], "skipped")
+
+
+class CodexActivationTests(unittest.TestCase):
+    def test_woken_receipt_includes_activation(self) -> None:
+        reset_fake_server("idle")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-activate")
+            signals = core.inbox(root)
+            receipt = codex_app.wake_current_thread(
+                root,
+                signals[0],
+                target_thread_id="thread-1",
+                server_factory=FakeThreadServer,
+                activator=lambda thread_id: {
+                    "activation": "requested",
+                    "activation_url": f"codex://threads/{thread_id}",
+                },
+            )
+        self.assertEqual(receipt["status"], "woken")
+        self.assertEqual(receipt["activation"], "requested")
+        self.assertEqual(receipt["activation_url"], "codex://threads/thread-1")
+
+    def test_activation_failure_does_not_invalidate_woken(self) -> None:
+        reset_fake_server("idle")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-activate-fail")
+            signals = core.inbox(root)
+            receipt = codex_app.wake_current_thread(
+                root,
+                signals[0],
+                target_thread_id="thread-1",
+                server_factory=FakeThreadServer,
+                activator=lambda _thread_id: {
+                    "activation": "failed",
+                    "activation_error": "boom",
+                },
+            )
+        self.assertEqual(receipt["status"], "woken")
+        self.assertEqual(receipt["activation"], "failed")
+
+    def test_activate_thread_window_builds_deep_link(self) -> None:
+        commands: list[list[str]] = []
+
+        def runner(command, **_kwargs):
+            commands.append(command)
+            return FakeCompleted(0)
+
+        outcome = codex_app.activate_thread_window("thread-7", runner=runner)
+        self.assertEqual(outcome["activation"], "requested")
+        self.assertIn("Start-Process 'codex://threads/thread-7'", commands[0][-1])
+
+    def test_activate_thread_window_reports_launcher_failure(self) -> None:
+        def runner(*_args, **_kwargs):
+            raise OSError("powershell.exe not found")
+
+        outcome = codex_app.activate_thread_window("thread-7", runner=runner)
+        self.assertEqual(outcome["activation"], "failed")
+        self.assertIn("not found", outcome["activation_error"])
 
 
 if __name__ == "__main__":

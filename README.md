@@ -1,18 +1,37 @@
 # OrchestratorEngine
 
 OrchestratorEngine is a small event-driven coordination layer for AI worker
-processes. It is designed for workflows where a worker runs outside the active
-orchestrator turn, writes a terminal event to disk, and a local watcher wakes the
-orchestrator only when there is real work to review.
+processes. A user orchestrates from a host chat (Codex Desktop, Claude Code /
+Claude for Windows, VS Code Copilot), dispatches tasks to CLI workers, and ends
+the turn. Workers run detached, write a terminal event to disk when they
+finish, and a local watcher wakes the exact chat the user was working in —
+without API keys and without token-spending heartbeat prompts.
 
-The initial target is Codex Desktop current-thread wakeup without API keys or
-model polling.
+Supported host/worker combinations are symmetric: any host chat can manage any
+CLI workers (Claude, Codex, Copilot, or any other command-line worker).
+
+## Connecting the engine to your project
+
+**If you are an AI agent** asked to set this up: follow
+[docs/setup-guide.md](docs/setup-guide.md) step by step. It contains every
+command, a check after each step, and a troubleshooting table. Do not improvise
+a different layout — the file contract is what makes wakeups work.
+
+**If you are a human**: paste this to the agent in the chat you orchestrate
+from:
+
+```text
+Connect OrchestratorEngine to this project.
+Repository: https://github.com/Jafa7/OrchestratorEngine
+Read docs/setup-guide.md in that repository and follow it exactly.
+I orchestrate from this chat; ask me anything the guide says to ask.
+```
 
 ## Goals
 
 - Run workers detached from the active orchestrator turn.
 - Store terminal events and inbox signals as durable JSON files.
-- Wake an orchestrator thread with a bounded pointer to event/evidence/result.
+- Wake the host chat with a bounded pointer to event/evidence/result.
 - Avoid token-spending heartbeat prompts.
 - Keep provider integrations at explicit adapter boundaries.
 - Provide service-style watcher control: start, status, stop and restart.
@@ -24,15 +43,38 @@ model polling.
 - This does not replace Codex, Claude, Copilot or project-local review logic.
 - This does not use provider API keys for orchestration.
 
+## How it fits together
+
+1. **Bind** the project to the host chat once
+   (`bind --host codex|claude|vscode`).
+2. **Dispatch** tasks from the host chat (`worker run`), which returns
+   immediately; a detached supervisor runs the worker CLI and emits a terminal
+   event on exit.
+3. **Wake**: a watcher service (`--action callback`) pushes a wakeup to the
+   bound host — or, for Claude, the session itself watches `watcher stream`.
+
+Per-host setup details: [docs/hosts.md](docs/hosts.md).
+
 ## File layout inside an adopted project
 
-By default the orchestrator writes under `.orchestrator/` in the target project:
+By default the orchestrator writes under `.orchestrator/` in the target
+project:
 
 ```text
 .orchestrator/
+  workers.toml
   events/
     <event_id>.json
+  tasks/
+    <task_id>/
+      task.json
+      worker-stdout.log
+      worker-stderr.log
+      result.json
+      evidence.json
+      supervisor.log
   inbox/
+    binding.json
     signals/
       <event_id>.json
     notifications/
@@ -51,9 +93,60 @@ different state directory, but the directory must still follow the
 OrchestratorEngine contract. Product-specific legacy layouts should be adapted
 by the product, not by OrchestratorEngine core.
 
-## Quick smoke workflow
+## Quick start
 
-Create a terminal event and inbox signal:
+Bind the project to the host chat (example: Codex Desktop):
+
+```bash
+orchestrator-engine --project-root /path/to/project bind \
+  --host codex --thread-id THREAD_ID
+```
+
+Configure workers in `/path/to/project/.orchestrator/workers.toml`:
+
+```toml
+[workers.claude]
+enabled = true
+command = ["claude", "-p"]
+prompt_via = "stdin"
+
+[workers.codex]
+enabled = true
+command = ["codex", "exec", "--json"]
+prompt_via = "arg"
+```
+
+Start the wakeup watcher:
+
+```bash
+orchestrator-engine --project-root /path/to/project watcher \
+  --action callback service start --interval-seconds 5
+```
+
+Dispatch a task from the host chat and end the turn:
+
+```bash
+orchestrator-engine --project-root /path/to/project worker run \
+  --worker claude --task-id TASK-001 --prompt-file task-001.md
+```
+
+Check health / list pending signals / stop:
+
+```bash
+orchestrator-engine --project-root /path/to/project watcher service status
+orchestrator-engine --project-root /path/to/project inbox
+orchestrator-engine --project-root /path/to/project watcher service stop
+```
+
+For a Claude host there is no push service; arm a watch from the Claude chat
+on:
+
+```bash
+orchestrator-engine --project-root /path/to/project watcher stream
+```
+
+Manual event emission (for project-side supervisors that run workers
+themselves):
 
 ```bash
 orchestrator-engine --project-root /path/to/project emit \
@@ -61,40 +154,6 @@ orchestrator-engine --project-root /path/to/project emit \
   --terminal-status completed \
   --result /path/to/project/result.json \
   --evidence /path/to/project/evidence.json
-```
-
-List pending signals:
-
-```bash
-orchestrator-engine --project-root /path/to/project inbox
-```
-
-Run one watcher pass:
-
-```bash
-orchestrator-engine --project-root /path/to/project watcher \
-  --action record once
-```
-
-Start a current Codex thread wakeup watcher:
-
-```bash
-orchestrator-engine --project-root /path/to/project watcher \
-  --action current-thread-callback \
-  --target-thread-id THREAD_ID \
-  service start --interval-seconds 5
-```
-
-Check health:
-
-```bash
-orchestrator-engine --project-root /path/to/project watcher service status
-```
-
-Stop:
-
-```bash
-orchestrator-engine --project-root /path/to/project watcher service stop
 ```
 
 Prune stale notifications, thread-wakeup receipts and rotate the watcher
@@ -111,9 +170,10 @@ exceeds `--log-max-bytes`. Terminal events and inbox signals are never
 removed by `cleanup`; they are the durable audit trail and are the
 responsibility of the adopting project to retire.
 
-## Current-thread wakeup contract
+## Wakeup contract
 
-The watcher sends a short deterministic prompt:
+The watcher delivers a short deterministic prompt (injected as a Codex turn,
+a VS Code chat message, or a JSON stream line for Claude):
 
 ```text
 LOCAL_AI_ORCHESTRATOR_WAKEUP v1
@@ -140,5 +200,7 @@ ruff check .
 
 Additional documentation:
 
+- [Setup guide (start here)](docs/setup-guide.md)
 - [Contracts](docs/contracts.md)
+- [Host setup](docs/hosts.md)
 - [Project adoption](docs/project-adoption.md)

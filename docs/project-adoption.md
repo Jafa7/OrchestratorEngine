@@ -1,5 +1,9 @@
 # Project adoption
 
+For the standard end-to-end setup (install, bind, workers, watcher, smoke
+test) follow [setup-guide.md](setup-guide.md). This document covers the
+adoption contract itself and bridging legacy layouts.
+
 Projects integrate with OrchestratorEngine by implementing its standard file
 contract. OrchestratorEngine should not grow project-specific layouts.
 
@@ -32,13 +36,18 @@ Recommended bridge behavior:
 
 ## Watcher ownership
 
-Once a project writes standard signals, start the watcher against the project
-root:
+Once a project writes standard signals, bind the host chat and start the
+watcher against the project root:
 
 ```bash
+orchestrator-engine --project-root /path/to/project bind \
+  --host codex --thread-id THREAD_ID
+
 orchestrator-engine --project-root /path/to/project watcher \
-  --action current-thread-callback \
-  --target-thread-id THREAD_ID \
-  service start --interval-seconds 5
+  --action callback service start --interval-seconds 5
 ```
+
+See [hosts.md](hosts.md) for Claude and VS Code hosts. The legacy invocation
+`--action current-thread-callback --target-thread-id THREAD_ID` remains
+supported and is equivalent to a codex binding.
 

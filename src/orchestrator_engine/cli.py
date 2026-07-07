@@ -8,7 +8,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import core, watcher
+from . import binding, claude_stream, core, watcher, workers
 
 
 def print_json(value: object) -> None:
@@ -42,6 +42,55 @@ def build_parser() -> argparse.ArgumentParser:
     emit.add_argument("--event-id")
 
     subparsers.add_parser("inbox", help="List pending inbox signals.")
+
+    bind = subparsers.add_parser(
+        "bind",
+        help="Declare which host chat the watcher should wake.",
+    )
+    bind_group = bind.add_mutually_exclusive_group()
+    bind_group.add_argument(
+        "--host",
+        choices=sorted(binding.SUPPORTED_HOSTS),
+        help="Host kind to bind the project to.",
+    )
+    bind_group.add_argument(
+        "--status",
+        action="store_true",
+        help="Show the current binding.",
+    )
+    bind_group.add_argument(
+        "--clear",
+        action="store_true",
+        help="Remove the current binding.",
+    )
+    bind.add_argument(
+        "--thread-id",
+        help="Target thread id (required for --host codex).",
+    )
+
+    worker = subparsers.add_parser(
+        "worker",
+        help="Manage and dispatch CLI workers.",
+    )
+    worker_subparsers = worker.add_subparsers(dest="worker_command", required=True)
+    worker_subparsers.add_parser(
+        "list",
+        help="List configured workers and their enabled state.",
+    )
+    worker_run = worker_subparsers.add_parser(
+        "run",
+        help="Dispatch a task to a worker detached and return immediately.",
+    )
+    worker_run.add_argument("--worker", required=True)
+    worker_run.add_argument("--task-id", required=True)
+    worker_run.add_argument("--prompt-file", type=Path, required=True)
+    worker_supervise = worker_subparsers.add_parser(
+        "supervise",
+        help="Internal: run a worker to completion and emit its terminal event.",
+    )
+    worker_supervise.add_argument("--worker", required=True)
+    worker_supervise.add_argument("--task-id", required=True)
+    worker_supervise.add_argument("--prompt-file", type=Path, required=True)
 
     cleanup = subparsers.add_parser(
         "cleanup",
@@ -81,6 +130,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     watch.add_argument("--interval-seconds", type=float, default=30)
     watch.add_argument("--heartbeat-file", type=Path)
+    stream = watcher_subparsers.add_parser(
+        "stream",
+        help=(
+            "Print one JSON line per new inbox signal; arm a host-native "
+            "watch (e.g. a Claude session Monitor) on this command."
+        ),
+    )
+    stream.add_argument("--interval-seconds", type=float, default=2)
     service = watcher_subparsers.add_parser(
         "service",
         help="Control a detached background watcher process.",
@@ -156,6 +213,18 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
             )
             print_json(output)
+        elif args.command == "bind":
+            if len(roots) != 1:
+                raise core.OrchestratorError("bind requires exactly one project root")
+            output = run_bind_command(args, roots[0])
+            print_json(output)
+        elif args.command == "worker":
+            if len(roots) != 1:
+                raise core.OrchestratorError(
+                    "worker requires exactly one project root"
+                )
+            output = run_worker_cli_command(args, roots[0])
+            print_json(output)
         elif args.command == "watcher":
             output = run_watcher_command(args, roots)
             if output is not None:
@@ -166,6 +235,53 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
     return 0
+
+
+def run_bind_command(args: argparse.Namespace, root: Path) -> object:
+    if args.status:
+        bound = binding.load_binding(root, state_dir=args.state_dir)
+        if bound is None:
+            return {
+                "schema_version": core.SCHEMA_VERSION,
+                "kind": binding.BINDING_KIND,
+                "status": "absent",
+                "binding_path": str(
+                    binding.binding_path(root, state_dir=args.state_dir)
+                ),
+            }
+        return bound
+    if args.clear:
+        return binding.clear_binding(root, state_dir=args.state_dir)
+    if not args.host:
+        raise binding.BindingError("bind requires --host, --status or --clear")
+    return binding.write_binding(
+        root,
+        host=args.host,
+        target_thread_id=args.thread_id,
+        state_dir=args.state_dir,
+    )
+
+
+def run_worker_cli_command(args: argparse.Namespace, root: Path) -> object:
+    if args.worker_command == "list":
+        return workers.list_workers(root, state_dir=args.state_dir)
+    if args.worker_command == "run":
+        return workers.run_worker(
+            root,
+            worker=args.worker,
+            task_id=args.task_id,
+            prompt_file=args.prompt_file,
+            state_dir=args.state_dir,
+        )
+    if args.worker_command == "supervise":
+        return workers.supervise_worker(
+            root,
+            worker=args.worker,
+            task_id=args.task_id,
+            prompt_file=args.prompt_file,
+            state_dir=args.state_dir,
+        )
+    raise workers.WorkerError(f"unsupported worker command: {args.worker_command}")
 
 
 def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object | None:
@@ -188,6 +304,14 @@ def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object |
             target_thread_id=args.target_thread_id,
             codex=args.codex,
             heartbeat_file=args.heartbeat_file,
+        )
+        return None
+    if args.watcher_command == "stream":
+        claude_stream.stream_signals(
+            roots,
+            state_dir=args.state_dir,
+            state_path=args.state_file,
+            interval_seconds=args.interval_seconds,
         )
         return None
     if args.watcher_command != "service":

@@ -1,5 +1,8 @@
 # Codex current-thread watcher example
 
+> Legacy invocation. For new setups prefer `bind --host codex` +
+> `watcher --action callback` — see [docs/setup-guide.md](../docs/setup-guide.md).
+
 This example starts a watcher that wakes an existing Codex Desktop thread when a
 worker writes a terminal event.
 
