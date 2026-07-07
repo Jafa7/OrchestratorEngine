@@ -228,6 +228,7 @@ def inbox(
 
 def compact_line_log(path: Path, *, keep_bytes: int) -> None:
     with path.open("a+b") as handle:
+        handle.seek(0)
         rows = handle.read().splitlines(keepends=True)
         kept: list[bytes] = []
         size = 0

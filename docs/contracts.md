@@ -75,6 +75,14 @@ The watcher writes:
 An event is marked seen only after a successful action or deterministic skip.
 Transient App Server failures and active target threads remain retryable.
 
+`watcher service status` reports:
+
+- `not_started` when no service file exists.
+- `running` when the process is alive and heartbeat is fresh.
+- `degraded` when the process is alive but heartbeat is unhealthy.
+- `stopped` after an intentional stop.
+- `crashed` when the service file was left behind by a dead process.
+
 ## Retention
 
 The `cleanup` command prunes `notifications/`, `thread-wakeups/` and rotated

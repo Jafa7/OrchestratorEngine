@@ -80,13 +80,30 @@ class CoreTests(unittest.TestCase):
             notification_exists = notification.exists()
             wakeup_exists = wakeup.exists()
             app_log_exists = app_log.exists()
+            service_log_content = service_log.read_text(encoding="utf-8")
             service_log_size = service_log.stat().st_size
         self.assertFalse(notification_exists)
         self.assertFalse(wakeup_exists)
         self.assertFalse(app_log_exists)
         self.assertLess(service_log_size, 100)
+        self.assertGreater(service_log_size, 0)
+        self.assertIn("row 9 ", service_log_content)
         self.assertEqual(result["removed_count"], 3)
         self.assertIn(str(service_log), result["compacted"])
+
+    def test_compact_line_log_keeps_tail_and_drops_head(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "watcher-service.log"
+            path.write_text(
+                "".join(f"line-{index}\n" for index in range(100)),
+                encoding="utf-8",
+            )
+            core.compact_line_log(path, keep_bytes=50)
+            content = path.read_text(encoding="utf-8")
+        self.assertGreater(len(content), 0)
+        self.assertIn("line-99\n", content)
+        self.assertNotIn("line-0\n", content)
+        self.assertLessEqual(len(content.encode("utf-8")), 50 + len("line-99\n"))
 
 
 if __name__ == "__main__":

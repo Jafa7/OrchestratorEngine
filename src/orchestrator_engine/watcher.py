@@ -411,8 +411,10 @@ def service_status(
         status = "running"
     elif alive:
         status = "degraded"
+    elif state.get("status") == "stopped":
+        status = "stopped"
     else:
-        status = state.get("status", "stopped")
+        status = "crashed"
     return {
         "schema_version": core.SCHEMA_VERSION,
         "kind": "LOCAL_AI_ORCHESTRATOR_WATCHER_SERVICE_STATUS",
