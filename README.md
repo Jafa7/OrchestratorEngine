@@ -47,15 +47,9 @@ By default the orchestrator writes under `.orchestrator/` in the target project:
 ```
 
 The core package is project-neutral. A project may wrap it and choose a
-different state directory, for example Paradigmarium can keep using its private
-`.paradigmarium/orchestration` layout through a thin adapter.
-
-Supported layouts:
-
-- `default` — portable `.orchestrator/events` and `.orchestrator/inbox`.
-- `paradigmarium` — compatibility mode for existing
-  `.paradigmarium/orchestration/supervisor/events` and
-  `.paradigmarium/orchestration/orchestrator-inbox`.
+different state directory, but the directory must still follow the
+OrchestratorEngine contract. Product-specific legacy layouts should be adapted
+by the product, not by OrchestratorEngine core.
 
 ## Quick smoke workflow
 
@@ -80,13 +74,6 @@ Run one watcher pass:
 ```bash
 orchestrator-engine --project-root /path/to/project watcher \
   --action record once
-```
-
-Use an existing Paradigmarium-style project layout:
-
-```bash
-orchestrator-engine --project-root /path/to/project --layout paradigmarium \
-  watcher --action record once
 ```
 
 Start a current Codex thread wakeup watcher:
@@ -140,4 +127,4 @@ ruff check .
 Additional documentation:
 
 - [Contracts](docs/contracts.md)
-- [Paradigmarium adoption](docs/adoption-paradigmarium.md)
+- [Project adoption](docs/project-adoption.md)

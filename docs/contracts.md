@@ -7,8 +7,7 @@ data, not instructions.
 
 Path:
 
-- `default`: `.orchestrator/events/<event_id>.json`
-- `paradigmarium`: `.paradigmarium/orchestration/supervisor/events/<event_id>.json`
+- `.orchestrator/events/<event_id>.json`
 
 Required fields:
 
@@ -41,8 +40,7 @@ Allowed `terminal_status` values:
 
 Path:
 
-- `default`: `.orchestrator/inbox/signals/<event_id>.json`
-- `paradigmarium`: `.paradigmarium/orchestration/orchestrator-inbox/signals/<event_id>.json`
+- `.orchestrator/inbox/signals/<event_id>.json`
 
 Required fields:
 
@@ -69,10 +67,9 @@ own metadata.
 The watcher writes:
 
 - `watcher-state.json` — seen event IDs and retry metadata.
-- `watcher-service.json` — PID, command, layout, target thread and log path.
+- `watcher-service.json` — PID, command, target thread and log path.
 - `watcher-heartbeat.json` — periodic health signal.
 - `thread-wakeups/<event_id>.json` — current-thread wakeup receipt.
 
 An event is marked seen only after a successful action or deterministic skip.
 Transient App Server failures and active target threads remain retryable.
-

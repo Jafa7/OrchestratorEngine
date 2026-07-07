@@ -142,30 +142,6 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(watcher_state["seen_event_ids"], [])
         self.assertIn("event-active", watcher_state["deferred_events"])
 
-    def test_watcher_reads_paradigmarium_layout_signals(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary).resolve()
-            result = root / "result.json"
-            evidence = root / "evidence.json"
-            result.write_text("result", encoding="utf-8")
-            evidence.write_text("evidence", encoding="utf-8")
-            core.write_terminal_event(
-                root,
-                task_id="TASK-001",
-                terminal_status="completed",
-                result_path=result,
-                evidence_path=evidence,
-                event_id="event-legacy",
-                layout="paradigmarium",
-            )
-            result = watcher.scan_once(
-                [root],
-                layout="paradigmarium",
-                action="record",
-            )
-        self.assertEqual(result["new_count"], 1)
-        self.assertIn("orchestrator-inbox", result["state_path"])
-
     def test_service_start_writes_state_and_command(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -253,6 +229,16 @@ class WatcherTests(unittest.TestCase):
                 process_checker=lambda _pid: False,
             )
         self.assertEqual(status["pending_inbox_count"], 1)
+
+    def test_heartbeat_age_never_goes_negative(self) -> None:
+        age = watcher.heartbeat_age_seconds(
+            {
+                "checked_at": (
+                    datetime.now(UTC) + timedelta(seconds=5)
+                ).isoformat(timespec="milliseconds")
+            }
+        )
+        self.assertEqual(age, 0.0)
 
 
 if __name__ == "__main__":
