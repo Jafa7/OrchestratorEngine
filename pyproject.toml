@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "orchestrator-engine"
+version = "0.1.0"
+description = "Local event-driven orchestration engine for AI worker processes and Codex review wakeups."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Jafa7" }]
+dependencies = []
+
+[project.scripts]
+orchestrator-engine = "orchestrator_engine.cli:main"
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "RUF", "SIM", "UP"]
