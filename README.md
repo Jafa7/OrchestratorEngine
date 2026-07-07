@@ -198,6 +198,10 @@ python -m unittest discover -s tests -p 'test_*.py'
 ruff check .
 ```
 
+The test suite includes an install smoke test that creates a temporary virtual
+environment, installs the package with `pip install .`, and verifies the CLI,
+worker supervisor and stream watcher without `PYTHONPATH`.
+
 Additional documentation:
 
 - [Setup guide (start here)](docs/setup-guide.md)

@@ -16,6 +16,9 @@ through explicit adapters and documented contracts.
 - Preserve existing user changes.
 - Do not commit, push, merge, rebase or perform destructive Git operations
   unless the user explicitly asks.
+- Run git stage/commit operations from inside WSL for this checkout. Do not
+  stage or commit from Windows Git over `\\wsl.localhost`; it can corrupt
+  executable-bit metadata for scripts.
 - Prefer deterministic file contracts, atomic writes and reproducible evidence.
 - Add or update tests for behavioral changes.
 
@@ -30,4 +33,3 @@ ruff check .
 
 If a dependency is unavailable, report the blocker and run the checks that are
 available.
-

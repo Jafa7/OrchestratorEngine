@@ -3,6 +3,40 @@
 OrchestratorEngine communicates through durable JSON files. Worker output is
 data, not instructions.
 
+## v0.1 stability scope
+
+Version 0.1 stabilizes the local file contract, the CLI commands that write
+and read it, and the host-neutral wakeup message. Adopting projects may depend
+on these behaviors:
+
+- Terminal events are written under `.orchestrator/events/` and paired with
+  inbox signals under `.orchestrator/inbox/signals/`.
+- Event, signal, binding, worker task, watcher state, heartbeat, service and
+  receipt documents are JSON objects with `schema_version: 1` and stable
+  `kind` values.
+- Artifact paths recorded in terminal events are absolute paths and are
+  protected by SHA-256 hashes.
+- `worker run` returns after launching a detached supervisor; the supervisor
+  writes `result.json`, `evidence.json`, captured stdout/stderr logs and then
+  emits the terminal event.
+- `watcher --action callback` uses the project binding to wake push-capable
+  hosts; `watcher stream` emits one JSON line per new signal for stream-based
+  hosts.
+- `cleanup` never removes terminal events or inbox signals.
+
+The following are intentionally not v0.1 core contracts:
+
+- Product-specific task formats, review rules, model choices or effort
+  policies.
+- Legacy project layouts and bridges into `.orchestrator/`.
+- Private backup, retention or archival policies for durable events and
+  signals.
+- Provider-specific semantics beyond the documented adapter boundary.
+
+Forward-compatible additions may add optional fields, new receipt kinds, new
+host adapters or new CLI flags. Breaking changes to required fields, `kind`
+values, path layout or terminal status names require a schema/version bump.
+
 ## Terminal event
 
 Path:
