@@ -1,8 +1,14 @@
 # Host setup
 
-OrchestratorEngine wakes the chat the user orchestrates from. Each host has a
-different wake mechanism; the binding contract tells the watcher which one to
-use.
+OrchestratorEngine routes worker completions back to the chat the user
+orchestrates from. Each host has a different wake mechanism; the binding
+contract tells the watcher which one to use. Distinguish durable delivery from
+live wakeup:
+
+- **Durable delivery** means the completion is written into the target host's
+  history or inbox and the audit trail points to event/result/evidence.
+- **Live wakeup** means the already-open host chat receives the message and
+  the active agent continues in that same visible session.
 
 Everything engine-side runs where the CLI workers run (typically WSL).
 Windows-side actions (the Codex deep link, `code` CLI) are reached through the
@@ -12,6 +18,14 @@ normal WSL interop.
 
 Wake mechanism: inject a turn through a Codex App Server process, then open the
 thread in the desktop app via its `codex://threads/<thread-id>` deep link.
+
+Live status: durable delivery only on Windows Desktop. The injected turn is
+handled by an App Server/headless engine and written to Codex thread storage.
+The already-open Desktop chat does not reliably wake as the same live agent;
+the new turn may become visible only after thread switch, reload, restart or
+delayed UI refresh. Treat the deep link and `live_refresh` fields as
+best-effort focus/refresh diagnostics, not proof that the visible Desktop
+agent woke.
 
 1. In the Codex chat you orchestrate from, find the thread id.
 2. Bind the project and start the watcher service:
@@ -44,12 +58,18 @@ Notes:
   App Server turn lands in session storage. On Windows, the adapter sends a
   best-effort `Ctrl+R` refresh pulse after deep-link activation; receipts record
   this as `live_refresh` / `live_refresh_strategy`.
+- For live orchestration, prefer Claude stream or VS Code chat as the host and
+  use `codex exec` as a worker profile. Codex Desktop remains useful for
+  dispatching work when delayed/history visibility is acceptable.
 
 ## Claude Code / Claude for Windows
 
 Wake mechanism: the Claude harness natively wakes a session when a watched
 command emits output. No push from the engine is needed — do not run a
 callback service for this host.
+
+Live status: recommended live host. The watched stream wakes the same Claude
+session that armed it.
 
 From the Claude chat you orchestrate from, arm a watch (Monitor / background
 task) on:
@@ -75,6 +95,9 @@ orchestrator-engine --project-root /path/to/project bind --host claude
 
 Wake mechanism: `code chat --reuse-window "<message>"` injects the wakeup
 prompt into the chat view of the last active VS Code window.
+
+Live status: live UI injection into the last active VS Code window, subject to
+the VS Code `code chat` command and the user's active window state.
 
 ```bash
 orchestrator-engine --project-root /path/to/project bind --host vscode

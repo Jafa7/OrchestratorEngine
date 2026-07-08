@@ -1,16 +1,25 @@
 # OrchestratorEngine
 
 OrchestratorEngine is a small event-driven coordination layer for AI worker
-processes. A user orchestrates from a host chat (Codex Desktop, Claude Code /
-Claude for Windows, VS Code Copilot), dispatches tasks to CLI workers, and ends
-the turn. Workers run detached, write a terminal event to disk when they
-finish, and a local watcher wakes the exact chat the user was working in —
-without API keys and without token-spending heartbeat prompts.
+processes. A user orchestrates from a host chat (Claude Code / Claude for
+Windows, VS Code Copilot, or Codex Desktop with the limitation documented
+below), dispatches tasks to CLI workers, and ends the turn. Workers run
+detached, write a terminal event to disk when they finish, and a local watcher
+routes the completion back to the dispatching chat — without API keys and
+without token-spending heartbeat prompts.
 
 Supported host/worker combinations are symmetric: any host chat can manage any
 CLI workers (Claude, Codex, Copilot, or any other command-line worker).
 Long verification runs can use the same flow: run checks detached, keep full
 logs as artifacts, and wake the chat with a compact pass/fail summary.
+
+Host wakeup quality is provider-specific. Claude stream wakeups are the
+recommended live orchestration path today: the already-open Claude chat wakes
+and continues in that session. VS Code uses its chat CLI. Codex Desktop on
+Windows can receive durable delivery into thread history and best-effort
+window focus/refresh, but it does not currently provide a reliable live wakeup
+channel for the already-open Desktop agent. Codex remains fully supported as a
+CLI worker through `codex exec`.
 
 ## Connecting the engine to your project
 

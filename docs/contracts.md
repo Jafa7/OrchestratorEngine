@@ -383,13 +383,20 @@ the receipt is written as `woken` with `turn_status: "running"` and a
 background finalizer keeps the App Server connection open until the turn ends,
 then updates the receipt (`turn_status`, `finalized_at`, optional
 `turn_error`). A turn the user interrupts is recorded as `woken` with
-`turn_status: "interrupted"` and is not retried. The receipt also records the
-desktop deep-link activation outcome (`activation: "requested"` or
-`"failed"`). Codex Desktop UI refresh is separate from wakeup delivery: on
-Windows the adapter first asks the desktop app to open the thread, then sends a
-best-effort refresh pulse for already-loaded threads. Receipts record that
-attempt with `live_refresh` and `live_refresh_strategy`; failure to refresh the
-visible UI does not erase the delivered turn from Codex thread storage.
+`turn_status: "interrupted"` and is not retried.
+
+For Codex Desktop on Windows, receipt `status: "woken"` means the callback turn
+was accepted by a Codex App Server/headless engine and written to Codex thread
+storage. It does not prove that the already-open Desktop UI agent woke in the
+same live session. The receipt also records the desktop deep-link activation
+outcome (`activation: "requested"` or `"failed"`). Codex Desktop UI refresh is
+separate from wakeup delivery: on Windows the adapter first asks the desktop
+app to open the thread, then sends a best-effort refresh pulse for
+already-loaded threads. Receipts record that attempt with `live_refresh` and
+`live_refresh_strategy`; failure to refresh the visible UI does not erase the
+delivered turn from Codex thread storage. Use Claude stream or VS Code chat as
+the host when a true live wakeup is required; Codex remains a normal CLI worker
+through `codex exec`.
 
 Long-running wakeups do not starve health reporting: the watch loop keeps the
 heartbeat fresh from a background ticker while a scan is busy.
