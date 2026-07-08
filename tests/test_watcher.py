@@ -167,6 +167,38 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(watcher_state["seen_event_ids"], [])
         self.assertIn("event-active", watcher_state["deferred_events"])
 
+    def test_current_thread_callback_defers_recently_active_thread(self) -> None:
+        reset_fake_server("idle")
+        original = codex_app.thread_recent_activity
+        codex_app.thread_recent_activity = lambda *_args, **_kwargs: {
+            "rollout_path": "/tmp/rollout.jsonl",
+            "age_seconds": 2.0,
+            "grace_seconds": 90.0,
+        }
+        try:
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                state = root / "watcher-state.json"
+                write_event(root, event_id="event-recent")
+                result = watcher.scan_once(
+                    [root],
+                    state_path=state,
+                    action="current-thread-callback",
+                    target_thread_id="thread-1",
+                    server_factory=FakeThreadServer,
+                )
+                watcher_state = watcher.load_state(state)
+        finally:
+            codex_app.thread_recent_activity = original
+        wakeup = result["thread_wakeups"][0]
+        self.assertEqual(wakeup["status"], "deferred")
+        self.assertEqual(wakeup["reason"], "thread_recently_active")
+        self.assertEqual(FakeThreadServer.reads, 1)
+        self.assertEqual(FakeThreadServer.resumes, 0)
+        self.assertEqual(FakeThreadServer.starts, 0)
+        self.assertEqual(watcher_state["seen_event_ids"], [])
+        self.assertIn("event-recent", watcher_state["deferred_events"])
+
     def test_current_thread_callback_defers_when_turn_fails(self) -> None:
         reset_fake_server("idle")
         FakeThreadServer.turn_status = "failed"
@@ -829,6 +861,30 @@ class CodexActivationTests(unittest.TestCase):
             )
         self.assertEqual(receipt["status"], "woken")
         self.assertEqual(receipt["activation"], "failed")
+
+    def test_wake_current_thread_defers_recent_rollout_activity(self) -> None:
+        reset_fake_server("idle")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-recent-direct")
+            signals = core.inbox(root)
+            receipt = codex_app.wake_current_thread(
+                root,
+                signals[0],
+                target_thread_id="thread-1",
+                server_factory=FakeThreadServer,
+                recent_activity_checker=lambda *_args, **_kwargs: {
+                    "rollout_path": "/tmp/rollout.jsonl",
+                    "age_seconds": 1.5,
+                    "grace_seconds": 90.0,
+                },
+            )
+        self.assertEqual(receipt["status"], "deferred")
+        self.assertEqual(receipt["reason"], "thread_recently_active")
+        self.assertEqual(receipt["age_seconds"], 1.5)
+        self.assertEqual(FakeThreadServer.resumes, 0)
+        self.assertEqual(FakeThreadServer.starts, 0)
+        self.assertEqual(FakeThreadServer.closes, 1)
 
     def test_running_turn_hands_off_to_finalizer_without_closing(self) -> None:
         reset_fake_server("idle")

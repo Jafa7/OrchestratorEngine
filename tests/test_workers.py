@@ -8,6 +8,9 @@ from typing import ClassVar
 
 from orchestrator_engine import binding, core, workers
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CHECK_RUNNER = REPO_ROOT / "examples" / "check_runner.py"
+
 WORKERS_TOML = """
 [workers.echo]
 enabled = true
@@ -34,6 +37,39 @@ enabled = true
 command = ["{python}", "-c", "import time; time.sleep(30)"]
 prompt_via = "stdin"
 timeout_seconds = 1
+
+[workers.copilot-risky]
+enabled = true
+command = ["copilot", "--prompt"]
+prompt_via = "arg"
+
+[workers.copilot-safe]
+enabled = true
+command = ["copilot", "--prompt", "--allow-all", "--no-ask-user"]
+prompt_via = "arg"
+
+[workers.codex-risky]
+enabled = true
+command = ["codex", "exec", "--json"]
+prompt_via = "arg"
+
+[workers.codex-safe]
+enabled = true
+command = ["codex", "exec", "--json",
+           "-c", "approval_policy=\\"never\\"",
+           "-c", "sandbox_mode=\\"danger-full-access\\""]
+prompt_via = "arg"
+
+[workers.claude-risky]
+enabled = true
+command = ["claude", "-p", "--model", "sonnet"]
+prompt_via = "stdin"
+
+[workers.claude-safe]
+enabled = true
+command = ["claude", "-p", "--model", "sonnet",
+           "--permission-mode", "acceptEdits"]
+prompt_via = "stdin"
 """.replace("{python}", sys.executable)
 
 
@@ -69,6 +105,47 @@ class WorkerRegistryTests(unittest.TestCase):
         self.assertTrue(listing["workers"]["echo"]["enabled"])
         self.assertFalse(listing["workers"]["disabled"]["enabled"])
         self.assertEqual(listing["workers"]["echo"]["effort"], "high")
+        self.assertEqual(listing["workers"]["echo"]["warnings"], [])
+
+    def test_list_workers_warns_for_copilot_without_noninteractive_flags(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            listing = workers.list_workers(root)
+        risky = listing["workers"]["copilot-risky"]
+        safe = listing["workers"]["copilot-safe"]
+        self.assertEqual(
+            risky["warnings"][0]["code"],
+            "copilot_may_request_approval",
+        )
+        self.assertIn("--no-ask-user", risky["warnings"][0]["message"])
+        self.assertEqual(safe["warnings"], [])
+
+    def test_list_workers_warns_for_codex_without_noninteractive_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            listing = workers.list_workers(root)
+        risky = listing["workers"]["codex-risky"]
+        safe = listing["workers"]["codex-safe"]
+        self.assertEqual(
+            [warning["code"] for warning in risky["warnings"]],
+            ["codex_may_request_approval", "codex_missing_sandbox_strategy"],
+        )
+        self.assertEqual(safe["warnings"], [])
+
+    def test_list_workers_warns_for_claude_without_permission_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            listing = workers.list_workers(root)
+        risky = listing["workers"]["claude-risky"]
+        safe = listing["workers"]["claude-safe"]
+        self.assertEqual(
+            risky["warnings"][0]["code"],
+            "claude_missing_permission_mode",
+        )
+        self.assertEqual(safe["warnings"], [])
 
     def test_missing_config_yields_empty_registry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -156,6 +233,23 @@ class WorkerRunTests(unittest.TestCase):
         self.assertEqual(
             stored["wake_target"]["codex_command"],
             "/mnt/c/apps/codex.exe",
+        )
+
+    def test_run_worker_returns_profile_warnings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            prompt = write_prompt(root)
+            descriptor = workers.run_worker(
+                root,
+                worker="copilot-risky",
+                task_id="T-WARN",
+                prompt_file=prompt,
+                popen_factory=FakePopen,
+            )
+        self.assertEqual(
+            descriptor["warnings"][0]["code"],
+            "copilot_may_request_approval",
         )
 
 
@@ -254,6 +348,44 @@ class WorkerSuperviseTests(unittest.TestCase):
         self.assertEqual(event["wake_target"]["target_thread_id"], "thread-origin")
         self.assertEqual(signal["wake_target"]["target_thread_id"], "thread-origin")
         self.assertEqual(evidence["wake_target"]["target_thread_id"], "thread-origin")
+
+    def test_supervise_can_run_reference_verification_runner(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            path = workers.workers_config_path(root)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                f"""
+[workers.check]
+enabled = true
+command = ["{sys.executable}", "{CHECK_RUNNER}", "--check-id", "CHECK-1",
+           "--label", "unit", "--", "{sys.executable}", "-c", "print('ok')"]
+prompt_via = "stdin"
+timeout_seconds = 30
+""",
+                encoding="utf-8",
+            )
+            prompt = write_prompt(root)
+            summary = workers.supervise_worker(
+                root,
+                worker="check",
+                task_id="T-CHECK",
+                prompt_file=prompt,
+            )
+            verification = core.load_object(
+                root
+                / ".orchestrator"
+                / "checks"
+                / "CHECK-1"
+                / "verification-result.json"
+            )
+            worker_stdout = (
+                workers.task_dir_for(root, "T-CHECK") / "worker-stdout.log"
+            ).read_text(encoding="utf-8")
+        self.assertEqual(summary["status"], "completed")
+        self.assertEqual(verification["kind"], "ORCHESTRATOR_VERIFICATION_RESULT")
+        self.assertEqual(verification["status"], "passed")
+        self.assertIn("Status: passed", worker_stdout)
 
     def test_supervise_touches_descriptor_while_worker_runs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

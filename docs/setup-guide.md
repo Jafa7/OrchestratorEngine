@@ -123,11 +123,15 @@ that launched it even if another chat rebinds the same project later.
 ## Step 3 — Configure workers
 
 Create `/path/to/project/.orchestrator/workers.toml` with only the CLIs that
-are actually installed. **Model and effort are encoded in `command` via each
-CLI's own flags** — the engine does not interpret free-form keys like `model`
-or `effort` (they are only recorded in `evidence.json` for audit). Define
-several profiles per CLI so the orchestrating agent can match worker cost to
-task complexity at dispatch time:
+are actually installed. Start from
+[`examples/workers.toml`](../examples/workers.toml) if you want a full
+fast/default/deep catalog, then enable only verified profiles. **Model, effort
+and permission behavior are encoded in `command` via each CLI's own flags** —
+the engine does not interpret provider flags. Free-form metadata such as
+`capability`, `permission_profile`, `cost` and `recommended_for` is preserved
+in evidence and helps the orchestrating agent choose a profile. Define several
+profiles per CLI so the agent can match worker cost and permissions to task
+complexity at dispatch time:
 
 ```toml
 [workers.claude-fast]                      # trivial checks, small edits
@@ -135,27 +139,37 @@ enabled = true
 command = ["claude", "-p", "--model", "haiku",
            "--permission-mode", "acceptEdits"]
 prompt_via = "stdin"
-timeout_seconds = 3600
+capability = "code-edit"
+permission_profile = "full"
+cost = "low"
 
 [workers.claude-deep]                      # reviews, refactors, hard bugs
 enabled = true
 command = ["claude", "-p", "--model", "opus", "--effort", "xhigh",
            "--permission-mode", "acceptEdits"]
 prompt_via = "stdin"
-timeout_seconds = 14400
+capability = "code-edit"
+permission_profile = "full"
+cost = "high"
 
 [workers.codex]
 enabled = true
 command = ["codex", "exec", "--json",
-           "-c", "model_reasoning_effort=\"high\""]
+           "-c", "model_reasoning_effort=\"high\"",
+           "-c", "approval_policy=\"never\"",
+           "-c", "sandbox_mode=\"danger-full-access\""]
 prompt_via = "arg"
-timeout_seconds = 3600
+capability = "code-edit"
+permission_profile = "full"
+cost = "medium"
 
 [workers.copilot]
 enabled = true
-command = ["copilot", "--prompt"]
+command = ["copilot", "--prompt", "--allow-all", "--no-ask-user"]
 prompt_via = "arg"
-timeout_seconds = 3600
+capability = "code-edit"
+permission_profile = "full"
+cost = "medium"
 ```
 
 Ask the user which profiles they want (model tiers, effort levels, timeouts)
@@ -168,8 +182,20 @@ Notes:
 - `codex exec` refuses untrusted directories. Either the user marks the
   project trusted in `~/.codex/config.toml`, or add
   `--skip-git-repo-check` to the command after confirming with the user.
-- Omitted `timeout_seconds` means the worker may run for hours; the
-  supervisor keeps `task.json` fresh (`last_alive_at`) while it runs.
+- Detached `codex exec` workers cannot handle interactive approval prompts.
+  Use an explicit non-interactive policy such as
+  `-c approval_policy="never"` and an intentional `sandbox_mode` in the
+  worker command or in the Codex config selected by that profile.
+- Detached `claude -p` workers should declare an explicit `--permission-mode`
+  that matches the project's automation policy.
+- Detached Copilot workers cannot answer approval prompts. Use
+  `--allow-all --no-ask-user` for fully autonomous local worker profiles, or
+  replace them with a narrower project-approved non-interactive policy if the
+  Copilot CLI supports one. `worker list` reports warnings for known profiles
+  that look interactive in detached mode.
+- Omit `timeout_seconds` for AI implementation/review workers that may run for
+  hours; the supervisor keeps `task.json` fresh (`last_alive_at`) while they
+  run. Add `timeout_seconds` to bounded smoke/check/script profiles.
 
 **Check:**
 
@@ -179,7 +205,93 @@ orchestrator-engine --project-root /path/to/project worker list
 
 Every intended worker appears with `"enabled": true`.
 
-## Step 4 — Start the wake channel
+## Step 4 — Configure verification workers
+
+For long test suites, do not keep the host chat open while tests stream
+output. Run checks as detached workers that write a compact verification
+result, then let the watcher wake the chat.
+
+Operational rule: dispatch the check worker from the chat that needs the
+answer, then end that turn. Do not run `pytest`, `ruff` or similar long checks
+directly in the host chat unless the user explicitly asked for an immediate
+foreground run. The `worker run` descriptor snapshots this chat as
+`wake_target`, so the completion wakeup returns to the chat that launched the
+check even when several chats share the same project.
+
+The repository includes `examples/check_runner.py` as a portable reference
+runner. Copy it into the adopted project (for example
+`scripts/orchestrator_check_runner.py`) or replace it with the project's
+native runner if that runner writes the same contract from
+[contracts.md](contracts.md#verification-result).
+
+Example project config:
+
+```toml
+# /path/to/project/.orchestrator/checks.toml
+[suites.fast]
+
+[[suites.fast.commands]]
+label = "unit"
+argv = ["uv", "run", "python", "-m", "unittest", "discover",
+        "-s", "tests", "-p", "test_*.py"]
+
+[[suites.fast.commands]]
+label = "ruff"
+argv = ["ruff", "check", "."]
+
+[suites.full]
+
+[[suites.full.commands]]
+label = "unit"
+argv = ["uv", "run", "python", "-m", "unittest", "discover",
+        "-s", "tests", "-p", "test_*.py"]
+
+[[suites.full.commands]]
+label = "ruff"
+argv = ["ruff", "check", "."]
+
+[[suites.full.commands]]
+label = "diff-check"
+argv = ["git", "diff", "--check"]
+```
+
+Example worker profiles:
+
+```toml
+[workers.check-fast]
+enabled = true
+command = ["python3", "scripts/orchestrator_check_runner.py",
+           "--suite", "fast"]
+prompt_via = "stdin"
+timeout_seconds = 3600
+
+[workers.check-full]
+enabled = true
+command = ["python3", "scripts/orchestrator_check_runner.py",
+           "--suite", "full"]
+prompt_via = "stdin"
+timeout_seconds = 14400
+```
+
+The prompt content is ignored by the reference runner, but keeping
+`prompt_via = "stdin"` lets agents dispatch checks through the same
+`worker run` command as other work.
+
+**Check:**
+
+```bash
+orchestrator-engine --project-root /path/to/project worker run \
+  --worker check-fast --task-id CHECK-SMOKE-1 --prompt-file /tmp/smoke-prompt.md
+
+cat /path/to/project/.orchestrator/checks/*/verification-result.json
+```
+
+If the verification result reports `"status": "passed"`, the woken agent
+should read only `verification-result.json` and `summary.txt`. If it reports
+`"failed"` or `"errored"`, the agent should inspect the failed command logs
+referenced by the JSON result.
+
+## Step 5 — Start the wake channel
 
 ### Hosts codex and vscode — push watcher service
 
@@ -214,7 +326,7 @@ service delivering Codex or VS Code signals from the same inbox.
 **Check:** run `watcher stream` with a pre-existing unseen signal (or after the
 smoke test below) and confirm it prints one line per signal.
 
-## Step 5 — End-to-end smoke test
+## Step 6 — End-to-end smoke test
 
 Add a throwaway worker to `workers.toml`:
 
@@ -253,7 +365,7 @@ Then confirm the wake actually reaches the user:
 Afterwards remove the `smoke` worker entry. Do not delete
 `.orchestrator/events/` or `inbox/signals/` — they are the audit trail.
 
-## Step 6 — Teach the orchestrating chat
+## Step 7 — Teach the orchestrating chat
 
 Add this to the adopted project's agent instructions file (`AGENTS.md`,
 `CLAUDE.md`, or `.github/copilot-instructions.md` — whichever the host reads):
@@ -280,9 +392,13 @@ To delegate a task to a CLI worker:
 When woken by a `LOCAL_AI_ORCHESTRATOR_WAKEUP` message:
 
 1. Read the referenced event, result and evidence files.
-2. Verify the worker's actual output (diffs, checks) before accepting it.
-3. Decide the next safe action; dispatch follow-up tasks the same way.
-4. Never commit or push unless the user explicitly asked.
+2. If the worker produced an `ORCHESTRATOR_VERIFICATION_RESULT`, read its
+   `verification-result.json` and `summary.txt` first. Do not read full logs
+   for a passed check unless the user asks; for failed checks, inspect only
+   the failed command logs referenced by the result.
+3. Verify the worker's actual output (diffs, checks) before accepting it.
+4. Decide the next safe action; dispatch follow-up tasks the same way.
+5. Never commit or push unless the user explicitly asked.
 ```
 
 Finally, tell the user what was configured: host binding, workers, watcher
@@ -295,10 +411,14 @@ state, and how to stop it (`watcher service stop`).
 | `no binding found` on watcher start | Run Step 2; `callback` requires `binding.json`. |
 | `host claude does not support callback wakeups` | Correct — use `watcher stream` (Step 4, claude). |
 | Codex receipt stuck on `deferred` with a usage-limit message | Codex quota exhausted; the watcher retries with backoff automatically once limits reset. |
+| Codex receipt `deferred` with `thread_active` or `thread_recently_active` | Normal guard: the worker finished while the target chat was still active or had just written to its rollout. End the orchestrating turn; watcher retries with backoff instead of injecting a parallel turn. The recent-activity grace window is short (30 seconds by default), so this trades a small delay for avoiding concurrent injected turns. |
 | Codex receipt `woken` with `turn_status: "running"` | Normal for long orchestrator turns; a background finalizer updates the receipt when the turn ends. Requires service mode (not `watcher once`). |
 | Codex receipt `woken` but window did not focus | Check `activation` field in the receipt; the deep link needs `powershell.exe` reachable (WSL interop) and the desktop app installed. |
 | Codex receipt `woken`, window focused, but no new visible turn | Check `live_refresh`; the turn was delivered to Codex storage, but Codex Desktop may not have reloaded the already-open thread. On Windows the adapter sends a best-effort `Ctrl+R` refresh pulse after deep-link activation. |
 | `code chat` exits non-zero | VS Code < 1.127 or `code` not on PATH; wakeup stays retryable. |
 | `worker run` → `task already exists` | Task ids are one-shot by design; pick a new id. |
+| Verification worker passed but logs are huge | Read `.orchestrator/checks/<check_id>/summary.txt`; full logs are durable artifacts and do not need to be pasted into chat. |
+| Verification worker failed | Read `verification-result.json`, then only the command logs referenced by failed command entries. |
+| Copilot worker stalls with `Permission denied and could not request permission from user` | The profile is interactive. Add autonomous Copilot flags such as `--allow-all --no-ask-user`, or configure a project-approved narrower non-interactive policy. |
 | Supervisor log shows `ModuleNotFoundError: orchestrator_engine` | Engine was run via ad-hoc `PYTHONPATH` instead of being installed; run `pip install .` (Step 1). |
 | Watcher status `degraded` / `crashed` | Read `.orchestrator/inbox/logs/watcher-service.log`, then `watcher service restart`. |

@@ -25,6 +25,10 @@ class CodexAppError(RuntimeError):
 # arbitrarily long orchestrator turns never block or break the watcher.
 TURN_FAILURE_WINDOW_SECONDS = 120
 FINALIZER_POLL_WINDOW_SECONDS = 3600
+# Desktop/app-server status can briefly report `idle` while the live Codex UI
+# is still completing or saving the user's turn. Treat a freshly modified
+# rollout as active too, so the watcher does not inject a parallel wakeup turn.
+THREAD_RECENT_ACTIVITY_GRACE_SECONDS = 30.0
 
 # Server->client requests raised by an injected turn (command approvals,
 # patch approvals, elicitations) would otherwise wait forever for a human who
@@ -517,6 +521,35 @@ def thread_status_type(response: dict[str, Any]) -> str | None:
     return None
 
 
+def thread_recent_activity(
+    thread_id: str,
+    *,
+    grace_seconds: float = THREAD_RECENT_ACTIVITY_GRACE_SECONDS,
+    now=time.time,
+    rollout_locator=locate_thread_rollout,
+) -> dict[str, Any] | None:
+    """Return recent rollout activity details when a thread looks live.
+
+    This is a conservative guard for Codex Desktop/App Server races: if a
+    target thread's rollout file was just modified, defer wakeup injection even
+    when `thread/read` currently reports `idle`.
+    """
+    rollout = rollout_locator(thread_id)
+    if rollout is None:
+        return None
+    try:
+        age_seconds = max(float(now()) - rollout.stat().st_mtime, 0.0)
+    except OSError:
+        return None
+    if age_seconds > grace_seconds:
+        return None
+    return {
+        "rollout_path": str(rollout),
+        "age_seconds": round(age_seconds, 3),
+        "grace_seconds": grace_seconds,
+    }
+
+
 def thread_wakeup_receipt_path(
     project_root: Path,
     event_id: str,
@@ -549,6 +582,8 @@ def wake_current_thread(
     activator=activate_thread_window,
     failure_window_seconds: float = TURN_FAILURE_WINDOW_SECONDS,
     finalizer=spawn_turn_finalizer,
+    recent_activity_seconds: float = THREAD_RECENT_ACTIVITY_GRACE_SECONDS,
+    recent_activity_checker=None,
 ) -> dict[str, Any]:
     if not target_thread_id:
         raise CodexAppError("target thread id is required")
@@ -626,6 +661,25 @@ def wake_current_thread(
                 "status": "deferred",
                 "reason": f"thread_status_{status or 'unknown'}",
                 "created_at": core.utc_now(),
+            }
+            core.atomic_json(receipt_path, receipt)
+            return {**receipt, "receipt": str(receipt_path)}
+        check_recent_activity = recent_activity_checker or thread_recent_activity
+        recent = check_recent_activity(
+            target_thread_id,
+            grace_seconds=recent_activity_seconds,
+        )
+        if recent is not None:
+            receipt = {
+                "schema_version": core.SCHEMA_VERSION,
+                "kind": "CURRENT_THREAD_WAKEUP",
+                "event_id": event_id,
+                "task_id": event["task_id"],
+                "target_thread_id": target_thread_id,
+                "status": "deferred",
+                "reason": "thread_recently_active",
+                "created_at": core.utc_now(),
+                **recent,
             }
             core.atomic_json(receipt_path, receipt)
             return {**receipt, "receipt": str(receipt_path)}

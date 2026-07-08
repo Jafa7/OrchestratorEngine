@@ -30,6 +30,9 @@ The following are intentionally not v0.1 core contracts:
 
 - Product-specific task formats, review rules, model choices or effort
   policies.
+- Project-specific verification suites (`pytest`, `ruff`, `vitest`, CI
+  profiles, phase gates). The engine documents a portable result shape but
+  does not choose or interpret project test commands.
 - Legacy project layouts and bridges into `.orchestrator/`.
 - Private backup, retention or archival policies for durable events and
   signals.
@@ -215,6 +218,95 @@ per task at dispatch time (`worker run --worker claude-deep ...`), matching
 worker cost to task complexity. The user can always override the choice in
 chat.
 
+`worker list` and `worker run` may include advisory `warnings` for profiles
+that look risky in detached, non-interactive execution. Warnings are
+machine-readable diagnostics only; they do not block dispatch and they do not
+rewrite commands. For example, a Copilot profile that omits autonomous flags
+such as `--allow-all --no-ask-user` is likely to stall on approval prompts, so
+the engine reports `copilot_may_request_approval`. Known advisory codes:
+
+- `copilot_may_request_approval` — Copilot profile lacks
+  `--allow-all --no-ask-user`.
+- `codex_may_request_approval` — `codex exec` profile lacks an explicit
+  `approval_policy="never"` override or equivalent non-interactive policy.
+- `codex_missing_sandbox_strategy` — `codex exec` profile lacks an explicit
+  `sandbox_mode` override; verify the selected config is intentional.
+- `claude_missing_permission_mode` — `claude -p` profile lacks an explicit
+  `--permission-mode`.
+
+## Verification result
+
+Long-running checks should run as detached workers instead of keeping a host
+chat open while output streams. A project may use any native runner as long as
+it writes a compact machine-readable result and durable logs. The bundled
+`examples/check_runner.py` is a portable reference implementation, not core
+runtime logic.
+
+The intended control flow is sleep/wake: the host chat dispatches a
+verification worker with `worker run`, then ends the current turn without
+polling. The worker terminal event carries the task's `wake_target`, so the
+watcher wakes the same chat that launched the check when the result is ready.
+This keeps long test suites from spending host-chat tokens while they are only
+waiting for local processes.
+
+Recommended path layout:
+
+- `.orchestrator/checks/<check_id>/verification-result.json`
+- `.orchestrator/checks/<check_id>/summary.txt`
+- `.orchestrator/checks/<check_id>/full.log`
+- `.orchestrator/checks/<check_id>/<command-label>.log`
+
+Reference JSON shape:
+
+```json
+{
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_VERIFICATION_RESULT",
+  "check_id": "CHECK-001",
+  "suite": "full",
+  "status": "passed",
+  "exit_code": 0,
+  "started_at": "2026-07-08T00:00:00.000+00:00",
+  "finished_at": "2026-07-08T00:02:39.000+00:00",
+  "duration_seconds": 159.0,
+  "commands": [
+    {
+      "label": "unit",
+      "required": true,
+      "status": "passed",
+      "exit_code": 0,
+      "duration_seconds": 104.4,
+      "cwd": ".",
+      "argv": ["uv", "run", "python", "-m", "unittest"],
+      "command": "uv run python -m unittest",
+      "log_path": ".orchestrator/checks/CHECK-001/unit.log",
+      "output_tail": [],
+      "output_line_count": 120
+    }
+  ],
+  "result_path": ".orchestrator/checks/CHECK-001/verification-result.json",
+  "summary_path": ".orchestrator/checks/CHECK-001/summary.txt",
+  "log_path": ".orchestrator/checks/CHECK-001/full.log"
+}
+```
+
+Allowed top-level `status` values:
+
+- `passed` — all required commands passed.
+- `failed` — at least one required command failed or timed out.
+- `errored` — the runner could not start or execute a required command.
+- `cancelled` — reserved for project runners that support cancellation.
+
+Command statuses may additionally use `timed_out`. Paths inside the project
+should be relative to the project root so results stay portable. Full stdout
+and stderr belong in log files; `verification-result.json` should keep only a
+short `output_tail` suitable for failure triage.
+
+When a host chat wakes for a verification worker, it should read
+`verification-result.json` and `summary.txt` first. If `status` is `passed`,
+do not read the full log unless the user asks. If `status` is not `passed`,
+read the relevant command log(s) referenced by failed command entries.
+
 ## Worker tasks
 
 `worker run` creates `.orchestrator/tasks/<task_id>/` containing:
@@ -249,21 +341,29 @@ turns and failed VS Code chat invocations remain retryable with exponential
 backoff. A broken binding or an unreadable signal file degrades to an entry in
 `action_errors` — it never takes the watcher down.
 
-Codex wakeup turns are watched for a short failure window (2 minutes) after
-`turn/start`: failures inside the window (rate limits, validation errors)
-defer the event for retry. A turn still running at the end of the window was
-delivered — orchestrator turns may legitimately run for hours — so the receipt
-is written as `woken` with `turn_status: "running"` and a background finalizer
-keeps the App Server connection open until the turn ends, then updates the
-receipt (`turn_status`, `finalized_at`, optional `turn_error`). A turn the
-user interrupts is recorded as `woken` with `turn_status: "interrupted"` and
-is not retried. The receipt also records the desktop deep-link activation
-outcome (`activation: "requested"` or `"failed"`). Codex Desktop UI refresh is
-separate from wakeup delivery: on Windows the adapter first asks the desktop app
-to open the thread, then sends a best-effort refresh pulse for already-loaded
-threads. Receipts record that attempt with `live_refresh` and
-`live_refresh_strategy`; failure to refresh the visible UI does not erase the
-delivered turn from Codex thread storage.
+Codex wakeup turns are guarded before injection. If `thread/read` reports the
+target thread as active, or if the target thread's rollout file was modified
+within the recent-activity grace window (30 seconds by default), the receipt is
+written as `deferred` (`reason: "thread_active"` or
+`"thread_recently_active"`) and the event remains retryable. This prevents a
+worker that finishes while the orchestrating turn is still running from
+creating a parallel injected turn in the same chat. The tradeoff is a short
+wakeup delay when a worker finishes immediately after the user's turn writes to
+the rollout. Once a wakeup turn is started, it is watched for a short failure
+window (2 minutes): failures inside the window (rate limits, validation
+errors) defer the event for retry. A turn still running at the end of the
+window was delivered — orchestrator turns may legitimately run for hours — so
+the receipt is written as `woken` with `turn_status: "running"` and a
+background finalizer keeps the App Server connection open until the turn ends,
+then updates the receipt (`turn_status`, `finalized_at`, optional
+`turn_error`). A turn the user interrupts is recorded as `woken` with
+`turn_status: "interrupted"` and is not retried. The receipt also records the
+desktop deep-link activation outcome (`activation: "requested"` or
+`"failed"`). Codex Desktop UI refresh is separate from wakeup delivery: on
+Windows the adapter first asks the desktop app to open the thread, then sends a
+best-effort refresh pulse for already-loaded threads. Receipts record that
+attempt with `live_refresh` and `live_refresh_strategy`; failure to refresh the
+visible UI does not erase the delivered turn from Codex thread storage.
 
 Long-running wakeups do not starve health reporting: the watch loop keeps the
 heartbeat fresh from a background ticker while a scan is busy.

@@ -9,6 +9,8 @@ without API keys and without token-spending heartbeat prompts.
 
 Supported host/worker combinations are symmetric: any host chat can manage any
 CLI workers (Claude, Codex, Copilot, or any other command-line worker).
+Long verification runs can use the same flow: run checks detached, keep full
+logs as artifacts, and wake the chat with a compact pass/fail summary.
 
 ## Connecting the engine to your project
 
@@ -73,6 +75,12 @@ project:
       result.json
       evidence.json
       supervisor.log
+  checks/
+    <check_id>/
+      verification-result.json
+      summary.txt
+      full.log
+      <command-label>.log
   inbox/
     binding.json
     signals/
@@ -109,12 +117,17 @@ Configure workers in `/path/to/project/.orchestrator/workers.toml`:
 enabled = true
 command = ["claude", "-p"]
 prompt_via = "stdin"
+permission_profile = "full"
 
 [workers.codex]
 enabled = true
 command = ["codex", "exec", "--json"]
 prompt_via = "arg"
+permission_profile = "full"
 ```
+
+For a fuller fast/default/deep profile catalog with autonomous and restricted
+examples, start from [examples/workers.toml](examples/workers.toml).
 
 Start the wakeup watcher:
 
@@ -155,6 +168,10 @@ orchestrator-engine --project-root /path/to/project emit \
   --result /path/to/project/result.json \
   --evidence /path/to/project/evidence.json
 ```
+
+For long checks, use the verification result contract documented in
+[docs/contracts.md](docs/contracts.md#verification-result). The portable
+reference runner is [examples/check_runner.py](examples/check_runner.py).
 
 Prune stale notifications, thread-wakeup receipts and rotate the watcher
 service log:

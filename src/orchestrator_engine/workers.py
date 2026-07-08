@@ -113,7 +113,88 @@ def validate_worker_config(name: str, config: object) -> dict[str, Any]:
         "prompt_via": prompt_via,
         "timeout_seconds": timeout_seconds,
         "extras": extras,
+        "warnings": worker_profile_warnings(
+            name=name,
+            command=list(command),
+            prompt_via=str(prompt_via),
+        ),
     }
+
+
+def worker_profile_warnings(
+    *,
+    name: str,
+    command: list[str],
+    prompt_via: str,
+) -> list[dict[str, str]]:
+    """Return advisory diagnostics for profiles likely to need interaction.
+
+    These warnings are intentionally non-blocking. Permission and autonomy
+    flags are provider-specific, so the engine surfaces known sharp edges
+    without rewriting commands or treating them as core policy.
+    """
+    if not command:
+        return []
+    executable = Path(command[0]).name.lower()
+    flags = set(command[1:])
+    command_text = " ".join(command[1:])
+    warnings: list[dict[str, str]] = []
+    if executable in {"copilot", "copilot.exe"} and (
+        "--allow-all" not in flags or "--no-ask-user" not in flags
+    ):
+        warnings.append(
+            {
+                "code": "copilot_may_request_approval",
+                "severity": "warning",
+                "message": (
+                    f"worker {name} runs Copilot detached with prompt_via="
+                    f"{prompt_via!r} but does not include both --allow-all "
+                    "and --no-ask-user; it may stall on approval prompts"
+                ),
+            }
+        )
+    if executable in {"codex", "codex.exe"} and "exec" in flags:
+        if "approval_policy" not in command_text or "never" not in command_text:
+            warnings.append(
+                {
+                    "code": "codex_may_request_approval",
+                    "severity": "warning",
+                    "message": (
+                        f"worker {name} runs codex exec detached but does not "
+                        "set approval_policy=\"never\" in the command or "
+                        "otherwise declare a non-interactive approval policy"
+                    ),
+                }
+            )
+        if "sandbox_mode" not in command_text:
+            warnings.append(
+                {
+                    "code": "codex_missing_sandbox_strategy",
+                    "severity": "warning",
+                    "message": (
+                        f"worker {name} runs codex exec detached without an "
+                        "explicit sandbox_mode override; ensure the selected "
+                        "Codex config is intentional for this worker profile"
+                    ),
+                }
+            )
+    if (
+        executable in {"claude", "claude.exe"}
+        and "-p" in flags
+        and "--permission-mode" not in flags
+    ):
+        warnings.append(
+            {
+                "code": "claude_missing_permission_mode",
+                "severity": "warning",
+                "message": (
+                    f"worker {name} runs claude -p detached without an "
+                    "explicit --permission-mode; it may stall or refuse "
+                    "tool use if the default mode is interactive"
+                ),
+            }
+        )
+    return warnings
 
 
 def require_worker(
@@ -153,6 +234,7 @@ def list_workers(
                 "command": config["command"],
                 "prompt_via": config["prompt_via"],
                 "timeout_seconds": config["timeout_seconds"],
+                "warnings": config["warnings"],
                 **config["extras"],
             }
             for name, config in sorted(registry.items())
@@ -171,7 +253,7 @@ def run_worker(
 ) -> dict[str, Any]:
     """Spawn a detached supervisor for the worker and return immediately."""
     project = project_root.expanduser().resolve()
-    require_worker(project, worker, state_dir=state_dir)
+    config = require_worker(project, worker, state_dir=state_dir)
     prompt = core.ensure_file(prompt_file, field="prompt")
     task_dir = task_dir_for(project, task_id, state_dir=state_dir)
     descriptor_path = task_dir / "task.json"
@@ -199,6 +281,8 @@ def run_worker(
         "supervisor_log": str(supervisor_log),
         "created_at": core.utc_now(),
     }
+    if config["warnings"]:
+        descriptor["warnings"] = config["warnings"]
     if wake_target is not None:
         descriptor["wake_target"] = wake_target
     core.atomic_json(descriptor_path, descriptor)
@@ -393,6 +477,7 @@ def supervise_worker(
         "worker_config": {
             "prompt_via": config["prompt_via"],
             "timeout_seconds": config["timeout_seconds"],
+            "warnings": config["warnings"],
             **config["extras"],
         },
         "started_at": started_at,
