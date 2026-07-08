@@ -16,7 +16,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from . import core
+from . import binding, core
 
 WORKERS_CONFIG_NAME = "workers.toml"
 PROMPT_MODES = {"arg", "stdin"}
@@ -184,6 +184,24 @@ def run_worker(
     except FileExistsError:
         raise WorkerError(f"task already exists: {descriptor_path}") from None
     supervisor_log = task_dir / "supervisor.log"
+    # Snapshot the dispatching chat BEFORE spawning: the supervisor reads
+    # wake_target from task.json, so it must be durable before the child can
+    # possibly look for it.
+    wake_target = capture_wake_target(project, state_dir=state_dir)
+    descriptor = {
+        "schema_version": core.SCHEMA_VERSION,
+        "kind": TASK_KIND,
+        "task_id": task_id,
+        "worker": worker,
+        "status": "starting",
+        "prompt_file": str(prompt),
+        "task_dir": str(task_dir),
+        "supervisor_log": str(supervisor_log),
+        "created_at": core.utc_now(),
+    }
+    if wake_target is not None:
+        descriptor["wake_target"] = wake_target
+    core.atomic_json(descriptor_path, descriptor)
     command = [
         sys.executable,
         "-m",
@@ -211,20 +229,26 @@ def run_worker(
             start_new_session=True,
             close_fds=True,
         )
-    descriptor = {
-        "schema_version": core.SCHEMA_VERSION,
-        "kind": TASK_KIND,
-        "task_id": task_id,
-        "worker": worker,
-        "status": "running",
-        "supervisor_pid": int(process.pid),
-        "prompt_file": str(prompt),
-        "task_dir": str(task_dir),
-        "supervisor_log": str(supervisor_log),
-        "created_at": core.utc_now(),
-    }
+    # Merge instead of overwrite: a very fast worker may already have
+    # finished and finalized the descriptor between spawn and this write.
+    with contextlib.suppress(OSError, core.OrchestratorError):
+        descriptor.update(core.load_object(descriptor_path))
+    if descriptor.get("status") == "starting":
+        descriptor["status"] = "running"
+    descriptor["supervisor_pid"] = int(process.pid)
     core.atomic_json(descriptor_path, descriptor)
     return {**descriptor, "descriptor_path": str(descriptor_path)}
+
+
+def capture_wake_target(
+    project_root: Path,
+    *,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+) -> dict[str, Any] | None:
+    bound = binding.load_binding(project_root, state_dir=state_dir)
+    if bound is None:
+        return None
+    return binding.wake_target_from_binding(bound)
 
 
 def touch_descriptor(task_dir: Path, updates: dict[str, Any]) -> None:
@@ -254,6 +278,15 @@ def supervise_worker(
     prompt_text = prompt.read_text(encoding="utf-8")
     task_dir = task_dir_for(project, task_id, state_dir=state_dir)
     task_dir.mkdir(parents=True, exist_ok=True)
+    wake_target: dict[str, Any] | None = None
+    descriptor_path = task_dir / "task.json"
+    if descriptor_path.exists():
+        with contextlib.suppress(OSError, core.OrchestratorError, binding.BindingError):
+            descriptor_snapshot = core.load_object(descriptor_path)
+            maybe_target = descriptor_snapshot.get("wake_target")
+            if isinstance(maybe_target, dict):
+                binding.validate_wake_target(maybe_target)
+                wake_target = maybe_target
     stdout_path = task_dir / "worker-stdout.log"
     stderr_path = task_dir / "worker-stderr.log"
 
@@ -365,6 +398,8 @@ def supervise_worker(
         "started_at": started_at,
         "finished_at": result["finished_at"],
     }
+    if wake_target is not None:
+        evidence["wake_target"] = wake_target
     evidence_path = task_dir / "evidence.json"
     core.atomic_json(evidence_path, evidence)
 
@@ -375,9 +410,9 @@ def supervise_worker(
         result_path=result_path,
         evidence_path=evidence_path,
         state_dir=state_dir,
+        wake_target=wake_target,
     )
 
-    descriptor_path = task_dir / "task.json"
     descriptor = {
         "schema_version": core.SCHEMA_VERSION,
         "kind": TASK_KIND,

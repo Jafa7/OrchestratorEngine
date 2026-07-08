@@ -8,7 +8,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import binding, claude_stream, core, watcher, workers
+from . import binding, claude_stream, codex_app, core, watcher, workers
 
 
 def print_json(value: object) -> None:
@@ -65,7 +65,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bind.add_argument(
         "--thread-id",
-        help="Target thread id (required for --host codex).",
+        help="Target thread id (auto-detected for --host codex when omitted).",
+    )
+    bind.add_argument(
+        "--codex-command",
+        help=(
+            "Codex launcher able to reach the bound thread "
+            "(auto-detected: codex.exe for Windows Desktop threads)."
+        ),
     )
 
     worker = subparsers.add_parser(
@@ -112,7 +119,7 @@ def build_parser() -> argparse.ArgumentParser:
     watcher_parser.add_argument("--codex", default="codex")
     watcher_parser.add_argument(
         "--target-thread-id",
-        default=os.environ.get("CODEX_THREAD_ID"),
+        default=None,
     )
     watcher_parser.add_argument(
         "--action",
@@ -254,12 +261,44 @@ def run_bind_command(args: argparse.Namespace, root: Path) -> object:
         return binding.clear_binding(root, state_dir=args.state_dir)
     if not args.host:
         raise binding.BindingError("bind requires --host, --status or --clear")
-    return binding.write_binding(
+    thread_id = args.thread_id
+    detection_source = "explicit" if thread_id else None
+    codex_command = args.codex_command
+    if args.host == "codex":
+        if not thread_id:
+            detected = codex_app.detect_thread_id(root)
+            if detected is None:
+                raise binding.BindingError(
+                    "could not auto-detect the codex thread id; run this "
+                    "from inside the codex chat being bound, or pass "
+                    "--thread-id"
+                )
+            thread_id = detected["thread_id"]
+            detection_source = detected["source"]
+        if not codex_command:
+            # Desktop threads live in the Windows-side session store and are
+            # only reachable through codex.exe; derive the launcher from
+            # where the thread's rollout actually lives.
+            source_path = (
+                detection_source
+                if detection_source not in (None, "env", "explicit")
+                else None
+            )
+            if source_path is None:
+                rollout = codex_app.locate_thread_rollout(thread_id)
+                source_path = str(rollout) if rollout else None
+            if source_path and source_path.startswith("/mnt/"):
+                codex_command = codex_app.default_windows_codex()
+    result = binding.write_binding(
         root,
         host=args.host,
-        target_thread_id=args.thread_id,
+        target_thread_id=thread_id,
+        codex_command=codex_command,
         state_dir=args.state_dir,
     )
+    if detection_source:
+        result["thread_id_source"] = detection_source
+    return result
 
 
 def run_worker_cli_command(args: argparse.Namespace, root: Path) -> object:
@@ -285,13 +324,14 @@ def run_worker_cli_command(args: argparse.Namespace, root: Path) -> object:
 
 
 def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object | None:
+    target_thread_id = watcher_target_thread_id(args)
     if args.watcher_command == "once":
         return watcher.scan_once(
             roots,
             state_dir=args.state_dir,
             state_path=args.state_file,
             action=args.action,
-            target_thread_id=args.target_thread_id,
+            target_thread_id=target_thread_id,
             codex=args.codex,
         )
     if args.watcher_command == "watch":
@@ -301,7 +341,7 @@ def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object |
             interval_seconds=args.interval_seconds,
             state_path=args.state_file,
             action=args.action,
-            target_thread_id=args.target_thread_id,
+            target_thread_id=target_thread_id,
             codex=args.codex,
             heartbeat_file=args.heartbeat_file,
         )
@@ -326,7 +366,7 @@ def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object |
             state_path=args.state_file,
             service_file=args.service_file,
             action=args.action,
-            target_thread_id=args.target_thread_id,
+            target_thread_id=target_thread_id,
             codex=args.codex,
             replace=args.replace,
         )
@@ -357,11 +397,19 @@ def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object |
             state_path=args.state_file,
             service_file=args.service_file,
             action=args.action,
-            target_thread_id=args.target_thread_id,
+            target_thread_id=target_thread_id,
             codex=args.codex,
             replace=True,
         )
     raise watcher.WatcherError(f"unsupported service command: {args.service_command}")
+
+
+def watcher_target_thread_id(args: argparse.Namespace) -> str | None:
+    if args.target_thread_id:
+        return args.target_thread_id
+    if args.action == "current-thread-callback":
+        return os.environ.get("CODEX_THREAD_ID")
+    return None
 
 
 if __name__ == "__main__":

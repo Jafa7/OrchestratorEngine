@@ -40,6 +40,10 @@ Notes:
 - The deep link (`Start-Process 'codex://threads/...'` through
   `powershell.exe`) brings the thread to the foreground. If it fails, the
   receipt records `activation: "failed"` but the wakeup itself stays valid.
+- Codex Desktop may keep an already-open thread in memory after an external
+  App Server turn lands in session storage. On Windows, the adapter sends a
+  best-effort `Ctrl+R` refresh pulse after deep-link activation; receipts record
+  this as `live_refresh` / `live_refresh_strategy`.
 
 ## Claude Code / Claude for Windows
 

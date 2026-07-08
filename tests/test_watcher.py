@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
+import os
 import sys
 import tempfile
 import unittest
@@ -22,9 +24,10 @@ class FakeThreadServer:
     turn_status = "completed"
     turn_error_message: str | None = None
     auto_declined: ClassVar[list[str]] = []
+    last_codex: ClassVar[str | None] = None
 
-    def __init__(self, *_: object, **__: object) -> None:
-        pass
+    def __init__(self, codex: str = "codex", **__: object) -> None:
+        type(self).last_codex = codex
 
     def close(self) -> None:
         self.__class__.closes += 1
@@ -83,6 +86,7 @@ def reset_fake_server(status: str = "idle") -> None:
     FakeThreadServer.turn_status = "completed"
     FakeThreadServer.turn_error_message = None
     FakeThreadServer.auto_declined = []
+    FakeThreadServer.last_codex = None
 
 
 def write_event(root: Path, event_id: str = "event-1") -> None:
@@ -346,7 +350,7 @@ class WatcherTests(unittest.TestCase):
         self.assertFalse(status["heartbeat_healthy"])
         self.assertEqual(status["heartbeat_status"], "not_alive")
 
-    def test_callback_without_binding_degrades_to_error(self) -> None:
+    def test_callback_without_binding_skips_unroutable_legacy_signal(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             write_event(root)
@@ -356,23 +360,22 @@ class WatcherTests(unittest.TestCase):
                 action="callback",
             )
         self.assertEqual(result["new_count"], 0)
-        self.assertEqual(len(result["action_errors"]), 1)
-        self.assertIn("no binding found", result["action_errors"][0]["error"])
+        self.assertEqual(result["action_errors"], [])
 
-    def test_callback_service_start_requires_binding(self) -> None:
+    def test_callback_service_can_start_without_fallback_binding(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
-            with self.assertRaises(RuntimeError):
-                watcher.start_service(
-                    [root],
-                    interval_seconds=5,
-                    state_path=root / "watcher-state.json",
-                    service_file=root / "service.json",
-                    action="callback",
-                    target_thread_id=None,
-                    codex="codex",
-                    popen_factory=FakePopen,
-                )
+            service = watcher.start_service(
+                [root],
+                interval_seconds=5,
+                state_path=root / "watcher-state.json",
+                service_file=root / "service.json",
+                action="callback",
+                target_thread_id=None,
+                codex="codex",
+                popen_factory=FakePopen,
+            )
+        self.assertEqual(service["status"], "running")
 
     def test_callback_dispatches_to_bound_codex_adapter(self) -> None:
         reset_fake_server("idle")
@@ -395,7 +398,68 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(result["thread_wakeups"][0]["status"], "woken")
         self.assertEqual(calls[0]["binding"]["target_thread_id"], "thread-9")
 
-    def test_callback_rejects_stream_only_host(self) -> None:
+    def test_callback_prefers_signal_wake_target_over_current_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            binding.write_binding(root, host="codex", target_thread_id="thread-new")
+            result_path = root / "result.json"
+            evidence_path = root / "evidence.json"
+            result_path.write_text('{"status":"ok"}', encoding="utf-8")
+            evidence_path.write_text('{"ok":true}', encoding="utf-8")
+            wake_target = {
+                "schema_version": 1,
+                "kind": binding.WAKE_TARGET_KIND,
+                "host": "codex",
+                "target_thread_id": "thread-origin",
+                "codex_command": "/mnt/c/apps/codex.exe",
+                "captured_at": "2026-07-08T00:00:00.000+00:00",
+            }
+            core.write_terminal_event(
+                root,
+                task_id="TASK-SNAPSHOT",
+                terminal_status="completed",
+                result_path=result_path,
+                evidence_path=evidence_path,
+                event_id="event-snapshot",
+                wake_target=wake_target,
+            )
+            calls: list[dict] = []
+
+            def fake_codex(project, signal, **kwargs):
+                calls.append({"signal": signal, **kwargs})
+                return {"status": "woken", "event_id": signal["event_id"]}
+
+            result = watcher.scan_once(
+                [root],
+                state_path=root / "watcher-state.json",
+                action="callback",
+                host_adapters={"codex": fake_codex},
+            )
+        self.assertEqual(result["thread_wakeups"][0]["status"], "woken")
+        self.assertEqual(calls[0]["binding"]["target_thread_id"], "thread-origin")
+        self.assertEqual(calls[0]["binding"]["codex_command"], "/mnt/c/apps/codex.exe")
+
+    def test_callback_uses_binding_codex_command(self) -> None:
+        reset_fake_server("idle")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            binding.write_binding(
+                root,
+                host="codex",
+                target_thread_id="thread-9",
+                codex_command="/mnt/c/apps/codex.exe",
+            )
+            write_event(root, event_id="event-win-codex")
+            result = watcher.scan_once(
+                [root],
+                state_path=root / "watcher-state.json",
+                action="callback",
+                server_factory=FakeThreadServer,
+            )
+        self.assertEqual(result["thread_wakeups"][0]["status"], "woken")
+        self.assertEqual(FakeThreadServer.last_codex, "/mnt/c/apps/codex.exe")
+
+    def test_callback_skips_stream_only_legacy_signal(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             binding.write_binding(root, host="claude")
@@ -406,7 +470,47 @@ class WatcherTests(unittest.TestCase):
                 action="callback",
             )
         self.assertEqual(result["new_count"], 0)
-        self.assertIn("stream", result["action_errors"][0]["error"])
+        self.assertEqual(result["action_errors"], [])
+
+    def test_callback_processes_signal_wake_target_when_binding_is_stream_host(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            binding.write_binding(root, host="claude")
+            result_path = root / "result.json"
+            evidence_path = root / "evidence.json"
+            result_path.write_text('{"status":"ok"}', encoding="utf-8")
+            evidence_path.write_text('{"ok":true}', encoding="utf-8")
+            core.write_terminal_event(
+                root,
+                task_id="TASK-SNAPSHOT",
+                terminal_status="completed",
+                result_path=result_path,
+                evidence_path=evidence_path,
+                event_id="event-snapshot",
+                wake_target={
+                    "schema_version": 1,
+                    "kind": binding.WAKE_TARGET_KIND,
+                    "host": "codex",
+                    "target_thread_id": "thread-origin",
+                    "captured_at": "2026-07-08T00:00:00.000+00:00",
+                },
+            )
+            calls: list[dict] = []
+
+            def fake_codex(project, signal, **kwargs):
+                calls.append({"signal": signal, **kwargs})
+                return {"status": "woken", "event_id": signal["event_id"]}
+
+            result = watcher.scan_once(
+                [root],
+                state_path=root / "watcher-state.json",
+                action="callback",
+                host_adapters={"codex": fake_codex},
+            )
+        self.assertEqual(result["thread_wakeups"][0]["status"], "woken")
+        self.assertEqual(calls[0]["binding"]["target_thread_id"], "thread-origin")
 
     def test_scan_skips_malformed_signal_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -464,6 +568,171 @@ class WatcherTests(unittest.TestCase):
             }
         )
         self.assertEqual(age, 0.0)
+
+
+class DetectThreadIdTests(unittest.TestCase):
+    @staticmethod
+    def write_rollout(
+        sessions: Path,
+        name: str,
+        *,
+        cwd: str,
+        thread_id: str,
+        mtime: float,
+        originator: str = "Codex Desktop",
+    ) -> None:
+        path = sessions / "2026" / "07" / "07" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "type": "session_meta",
+            "payload": {"id": thread_id, "cwd": cwd, "originator": originator},
+        }
+        path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
+        os.utime(path, (mtime, mtime))
+
+    def test_env_var_wins(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            detected = codex_app.detect_thread_id(
+                root,
+                session_roots=[root / "missing"],
+                environ={"CODEX_THREAD_ID": "thread-env"},
+            )
+        self.assertEqual(detected, {"thread_id": "thread-env", "source": "env"})
+
+    def test_picks_newest_interactive_rollout_with_matching_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            project = root / "project"
+            project.mkdir()
+            sessions = root / "sessions"
+            second_store = root / "windows-sessions"
+            self.write_rollout(
+                sessions,
+                "rollout-2026-07-07T10-00-00-old.jsonl",
+                cwd=str(project),
+                thread_id="thread-old",
+                mtime=1000,
+            )
+            self.write_rollout(
+                sessions,
+                "rollout-2026-07-07T11-00-00-other.jsonl",
+                cwd="/somewhere/else",
+                thread_id="thread-other",
+                mtime=3000,
+            )
+            # Headless exec runs are never the chat to wake, even when newest.
+            self.write_rollout(
+                sessions,
+                "rollout-2026-07-07T12-00-00-exec.jsonl",
+                cwd=str(project),
+                thread_id="thread-exec",
+                mtime=4000,
+                originator="codex_exec",
+            )
+            # Desktop sessions may live in a second store (Windows side).
+            self.write_rollout(
+                second_store,
+                "rollout-2026-07-07T10-30-00-new.jsonl",
+                cwd=str(project),
+                thread_id="thread-new",
+                mtime=2000,
+            )
+            detected = codex_app.detect_thread_id(
+                project,
+                session_roots=[sessions, second_store],
+                environ={},
+            )
+        self.assertIsNotNone(detected)
+        self.assertEqual(detected["thread_id"], "thread-new")
+
+    def test_returns_none_when_nothing_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            detected = codex_app.detect_thread_id(
+                root,
+                session_roots=[root / "sessions"],
+                environ={},
+            )
+        self.assertIsNone(detected)
+
+
+class ServiceDiagnosticsTests(unittest.TestCase):
+    def start_legacy_service(self, root: Path, thread_id: str = "thread-old"):
+        return watcher.start_service(
+            [root],
+            interval_seconds=5,
+            state_path=root / "watcher-state.json",
+            service_file=None,
+            action="current-thread-callback",
+            target_thread_id=thread_id,
+            codex="codex",
+            popen_factory=FakePopen,
+        )
+
+    def test_status_warns_on_stream_host_with_stale_callback_service(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            self.start_legacy_service(root)
+            # Binding switched to a stream-only host after the service was
+            # created — exactly the stale mixed state seen in the field.
+            binding.write_binding(root, host="claude")
+            write_event(root)
+            status = watcher.service_status(
+                [root],
+                process_checker=lambda _pid: False,
+            )
+        self.assertEqual(status["status"], "crashed")
+        self.assertEqual(status["binding_host"], "claude")
+        self.assertTrue(
+            any("watcher stream" in warning for warning in status["warnings"])
+        )
+        self.assertTrue(
+            any("pending signal" in warning for warning in status["warnings"])
+        )
+
+    def test_start_refuses_callback_service_for_stream_host(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            binding.write_binding(root, host="claude")
+            with self.assertRaises(watcher.WatcherError):
+                self.start_legacy_service(root)
+
+    def test_status_warns_on_target_thread_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            binding.write_binding(root, host="codex", target_thread_id="thread-new")
+            self.start_legacy_service(root, thread_id="thread-old")
+            status = watcher.service_status(
+                [root],
+                process_checker=lambda _pid: False,
+            )
+        self.assertTrue(
+            any("wrong chat" in warning for warning in status["warnings"])
+        )
+
+    def test_status_is_quiet_for_matching_codex_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            binding.write_binding(root, host="codex", target_thread_id="thread-1")
+            self.start_legacy_service(root, thread_id="thread-1")
+            status = watcher.service_status(
+                [root],
+                process_checker=lambda _pid: True,
+            )
+        self.assertEqual(status["binding_host"], "codex")
+        self.assertEqual(status["warnings"], [])
+
+    def test_not_started_status_hints_stream_for_pending_signals(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            binding.write_binding(root, host="claude")
+            write_event(root)
+            status = watcher.service_status([root])
+        self.assertEqual(status["status"], "not_started")
+        self.assertTrue(
+            any("watcher stream" in warning for warning in status["warnings"])
+        )
 
 
 class FakeCompleted:
@@ -674,15 +943,89 @@ class CodexActivationTests(unittest.TestCase):
             commands.append(command)
             return FakeCompleted(0)
 
-        outcome = codex_app.activate_thread_window("thread-7", runner=runner)
+        outcome = codex_app.activate_thread_window(
+            "thread-7",
+            runner=runner,
+            alternate_thread_finder=lambda _thread_id: None,
+        )
         self.assertEqual(outcome["activation"], "requested")
+        self.assertEqual(outcome["activation_strategy"], "single_deep_link")
         self.assertIn("Start-Process 'codex://threads/thread-7'", commands[0][-1])
+
+    def test_activate_thread_window_refreshes_via_alternate_thread(self) -> None:
+        commands: list[list[str]] = []
+        sleeps: list[float] = []
+
+        def runner(command, **_kwargs):
+            commands.append(command)
+            return FakeCompleted(0)
+
+        outcome = codex_app.activate_thread_window(
+            "thread-target",
+            runner=runner,
+            alternate_thread_finder=lambda _thread_id: "thread-other",
+            sleep=sleeps.append,
+            refresh_delay_seconds=0.1,
+        )
+        self.assertEqual(outcome["activation"], "requested")
+        self.assertEqual(outcome["activation_strategy"], "double_deep_link")
+        self.assertEqual(outcome["refresh_activation"], "requested")
+        self.assertIn(
+            "Start-Process 'codex://threads/thread-other'",
+            commands[0][-1],
+        )
+        self.assertIn(
+            "Start-Process 'codex://threads/thread-target'",
+            commands[1][-1],
+        )
+        self.assertIn("SendKeys('^r')", commands[2][-1])
+        self.assertEqual(sleeps, [0.1])
+
+    def test_activate_thread_window_can_skip_live_refresh(self) -> None:
+        commands: list[list[str]] = []
+
+        def runner(command, **_kwargs):
+            commands.append(command)
+            return FakeCompleted(0)
+
+        outcome = codex_app.activate_thread_window(
+            "thread-7",
+            runner=runner,
+            alternate_thread_finder=lambda _thread_id: None,
+            live_refresh=False,
+        )
+        self.assertEqual(outcome["activation"], "requested")
+        self.assertEqual(outcome["live_refresh"], "skipped")
+        self.assertEqual(len(commands), 1)
+
+    def test_activate_thread_window_records_live_refresh_failure(self) -> None:
+        commands: list[list[str]] = []
+
+        def runner(command, **_kwargs):
+            commands.append(command)
+            if "SendKeys" in command[-1]:
+                return FakeCompleted(2)
+            return FakeCompleted(0)
+
+        outcome = codex_app.activate_thread_window(
+            "thread-7",
+            runner=runner,
+            alternate_thread_finder=lambda _thread_id: None,
+        )
+        self.assertEqual(outcome["activation"], "requested")
+        self.assertEqual(outcome["live_refresh"], "failed")
+        self.assertEqual(outcome["live_refresh_strategy"], "windows_ctrl_r")
+        self.assertIn("exit code 2", outcome["live_refresh_error"])
 
     def test_activate_thread_window_reports_launcher_failure(self) -> None:
         def runner(*_args, **_kwargs):
             raise OSError("powershell.exe not found")
 
-        outcome = codex_app.activate_thread_window("thread-7", runner=runner)
+        outcome = codex_app.activate_thread_window(
+            "thread-7",
+            runner=runner,
+            alternate_thread_finder=lambda _thread_id: None,
+        )
         self.assertEqual(outcome["activation"], "failed")
         self.assertIn("not found", outcome["activation_error"])
 

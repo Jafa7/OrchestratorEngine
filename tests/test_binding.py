@@ -28,6 +28,18 @@ class BindingTests(unittest.TestCase):
             with self.assertRaises(binding.BindingError):
                 binding.write_binding(root, host="codex")
 
+    def test_codex_binding_stores_codex_command(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            binding.write_binding(
+                root,
+                host="codex",
+                target_thread_id="thread-1",
+                codex_command="/mnt/c/apps/codex.exe",
+            )
+            loaded = binding.load_binding(root)
+        self.assertEqual(loaded["codex_command"], "/mnt/c/apps/codex.exe")
+
     def test_vscode_binding_needs_no_thread_id(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

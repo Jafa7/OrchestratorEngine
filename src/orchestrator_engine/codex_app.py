@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import queue
 import subprocess
 import threading
@@ -67,14 +68,48 @@ def activate_thread_window(
     thread_id: str,
     *,
     runner=subprocess.run,
+    alternate_thread_finder=None,
+    sleep=time.sleep,
+    refresh_delay_seconds: float = 0.35,
+    live_refresh: bool = True,
+    live_refresh_delay_seconds: float = 0.6,
 ) -> dict[str, Any]:
     """Bring the Codex Desktop thread to the foreground via its deep link.
 
     The injected turn lands in shared thread storage, but the live window is a
-    separate process that does not refresh on its own; the `codex://threads/`
-    deep link is how the desktop app opens a specific thread.
+    separate process that often does not refresh an already-open thread on
+    its own. A best-effort "double deep link" (other thread, then target)
+    nudges the Desktop UI to unload and reload the target thread.
     """
     url = f"codex://threads/{thread_id}"
+
+    finder = alternate_thread_finder or find_alternate_thread_id
+    alternate_thread_id = finder(thread_id)
+    refresh: dict[str, Any] = {"activation_strategy": "single_deep_link"}
+    if alternate_thread_id:
+        refresh_url = f"codex://threads/{alternate_thread_id}"
+        refresh["activation_strategy"] = "double_deep_link"
+        refresh["refresh_thread_id"] = alternate_thread_id
+        refresh["refresh_activation_url"] = refresh_url
+        try:
+            refresh_completed = runner(
+                [*DEEP_LINK_COMMAND, f"Start-Process '{refresh_url}'"],
+                capture_output=True,
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            refresh["refresh_activation"] = "failed"
+            refresh["refresh_activation_error"] = str(error)
+        else:
+            if refresh_completed.returncode == 0:
+                refresh["refresh_activation"] = "requested"
+                sleep(refresh_delay_seconds)
+            else:
+                refresh["refresh_activation"] = "failed"
+                refresh["refresh_activation_error"] = (
+                    f"exit code {refresh_completed.returncode}"
+                )
     try:
         completed = runner(
             [*DEEP_LINK_COMMAND, f"Start-Process '{url}'"],
@@ -88,8 +123,43 @@ def activate_thread_window(
         return {
             "activation": "failed",
             "activation_error": f"exit code {completed.returncode}",
+            **refresh,
         }
-    return {"activation": "requested", "activation_url": url}
+    outcome = {"activation": "requested", "activation_url": url, **refresh}
+    if not live_refresh:
+        outcome["live_refresh"] = "skipped"
+        return outcome
+    try:
+        refresh_completed = runner(
+            [
+                *DEEP_LINK_COMMAND,
+                (
+                    "Start-Sleep -Milliseconds "
+                    f"{int(live_refresh_delay_seconds * 1000)}; "
+                    "$wshell = New-Object -ComObject WScript.Shell; "
+                    "if ($wshell.AppActivate('Codex')) { "
+                    "Start-Sleep -Milliseconds 150; "
+                    "$wshell.SendKeys('^r'); exit 0 "
+                    "} else { exit 2 }"
+                ),
+            ],
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        outcome["live_refresh"] = "failed"
+        outcome["live_refresh_error"] = str(error)
+        return outcome
+    outcome["live_refresh_strategy"] = "windows_ctrl_r"
+    if refresh_completed.returncode == 0:
+        outcome["live_refresh"] = "requested"
+    else:
+        outcome["live_refresh"] = "failed"
+        outcome["live_refresh_error"] = (
+            f"exit code {refresh_completed.returncode}"
+        )
+    return outcome
 
 
 class AppServer:
@@ -315,6 +385,124 @@ def spawn_turn_finalizer(
     )
     thread.start()
     return thread
+
+
+DETECT_SESSION_SCAN_LIMIT = 100
+# Headless one-shot sessions are never the chat a wakeup should target.
+DETECT_SKIP_ORIGINATORS = {"codex_exec"}
+
+
+def default_session_roots() -> list[Path]:
+    roots = [Path.home() / ".codex" / "sessions"]
+    # Codex Desktop on Windows stores its chat sessions on the Windows side;
+    # under WSL those are reachable through /mnt/c.
+    users = Path("/mnt/c/Users")
+    if users.is_dir():
+        roots.extend(users.glob("*/.codex/sessions"))
+    return [root for root in roots if root.is_dir()]
+
+
+def detect_thread_id(
+    project_root: Path,
+    *,
+    session_roots: list[Path] | None = None,
+    environ: dict[str, str] | None = None,
+) -> dict[str, str] | None:
+    """Best-effort detection of the calling Codex chat's thread id.
+
+    Meant to run from inside the chat being bound: the CODEX_THREAD_ID env
+    var wins when set; otherwise the most recently modified session rollout
+    whose recorded cwd matches the project is the calling chat with very
+    high probability (its rollout is being appended to during this turn).
+    Headless `codex exec` sessions are skipped.
+    """
+    env = os.environ if environ is None else environ
+    env_value = env.get("CODEX_THREAD_ID")
+    if env_value:
+        return {"thread_id": env_value, "source": "env"}
+    roots = default_session_roots() if session_roots is None else session_roots
+    project = str(project_root.expanduser().resolve())
+    candidates: list[Path] = []
+    for root in roots:
+        candidates.extend(root.glob("*/*/*/rollout-*.jsonl"))
+    candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    for path in candidates[:DETECT_SESSION_SCAN_LIMIT]:
+        try:
+            with path.open(encoding="utf-8") as handle:
+                first_line = handle.readline()
+            meta = json.loads(first_line)
+        except (OSError, json.JSONDecodeError):
+            continue
+        payload = meta.get("payload") if isinstance(meta, dict) else None
+        if not isinstance(payload, dict) or payload.get("cwd") != project:
+            continue
+        if payload.get("originator") in DETECT_SKIP_ORIGINATORS:
+            continue
+        thread_id = payload.get("id") or payload.get("session_id")
+        if isinstance(thread_id, str) and thread_id:
+            return {"thread_id": thread_id, "source": str(path)}
+    return None
+
+
+def locate_thread_rollout(
+    thread_id: str,
+    *,
+    session_roots: list[Path] | None = None,
+) -> Path | None:
+    """Find the session rollout for a thread id across all session stores."""
+    roots = default_session_roots() if session_roots is None else session_roots
+    for root in roots:
+        matches = list(root.glob(f"*/*/*/rollout-*{thread_id}.jsonl"))
+        if matches:
+            return matches[0]
+    return None
+
+
+def find_alternate_thread_id(
+    thread_id: str,
+    *,
+    session_roots: list[Path] | None = None,
+) -> str | None:
+    """Find a different interactive Codex thread for UI refresh activation."""
+    roots = default_session_roots() if session_roots is None else session_roots
+    candidates: list[Path] = []
+    for root in roots:
+        candidates.extend(root.glob("*/*/*/rollout-*.jsonl"))
+    candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    for path in candidates[:DETECT_SESSION_SCAN_LIMIT]:
+        try:
+            with path.open(encoding="utf-8") as handle:
+                first_line = handle.readline()
+            meta = json.loads(first_line)
+        except (OSError, json.JSONDecodeError):
+            continue
+        payload = meta.get("payload") if isinstance(meta, dict) else None
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("originator") in DETECT_SKIP_ORIGINATORS:
+            continue
+        candidate = payload.get("id") or payload.get("session_id")
+        if isinstance(candidate, str) and candidate and candidate != thread_id:
+            return candidate
+    return None
+
+
+def default_windows_codex() -> str | None:
+    """Locate the Windows codex.exe reachable from WSL, if any.
+
+    Codex Desktop threads live in the Windows-side state store; a WSL codex
+    cannot read them (and sqlite over /mnt/c fails), so wakeups for those
+    threads must go through codex.exe via WSL interop.
+    """
+    users = Path("/mnt/c/Users")
+    if not users.is_dir():
+        return None
+    candidates = sorted(
+        users.glob("*/AppData/Local/OpenAI/Codex/bin/*/codex.exe"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    return str(candidates[0]) if candidates else None
 
 
 def thread_status_type(response: dict[str, Any]) -> str | None:

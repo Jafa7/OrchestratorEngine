@@ -34,13 +34,20 @@ def stream_signals(
     """Scan the inbox in a loop and emit one JSON line per new signal."""
     if interval_seconds <= 0:
         raise watcher.WatcherError("interval must be positive")
+    projects = [path.expanduser().resolve() for path in project_roots]
+    stream_state = state_path or watcher.default_stream_state_path(
+        projects[0],
+        host="claude",
+        state_dir=state_dir,
+    )
     scans = 0
     while max_scans is None or scans < max_scans:
         result = watcher.scan_once(
-            project_roots,
+            projects,
             state_dir=state_dir,
-            state_path=state_path,
+            state_path=stream_state,
             action="record",
+            host_filter={"claude"},
         )
         for signal in result["new_signals"]:
             emit(format_signal_line(signal))

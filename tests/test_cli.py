@@ -3,9 +3,11 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from orchestrator_engine import cli, core
 
@@ -106,16 +108,48 @@ class CliTests(unittest.TestCase):
         self.assertEqual(status["target_thread_id"], "thread-1")
         self.assertEqual(json.loads(clear_out.getvalue())["status"], "cleared")
 
-    def test_bind_codex_without_thread_id_fails(self) -> None:
+    def test_bind_codex_without_thread_id_fails_when_detection_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             error_out = io.StringIO()
-            with contextlib.redirect_stderr(error_out):
+            with (
+                patch("orchestrator_engine.cli.codex_app.detect_thread_id",
+                      return_value=None),
+                contextlib.redirect_stderr(error_out),
+            ):
                 code = cli.main(
                     ["--project-root", str(root), "bind", "--host", "codex"]
                 )
         self.assertEqual(code, 1)
         self.assertIn("thread id", error_out.getvalue())
+
+    def test_bind_codex_auto_detects_thread_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            output = io.StringIO()
+            detected = {
+                "thread_id": "thread-auto",
+                "source": "/mnt/c/Users/user/.codex/sessions/rollout.jsonl",
+            }
+            with (
+                patch(
+                    "orchestrator_engine.cli.codex_app.detect_thread_id",
+                    return_value=detected,
+                ),
+                patch(
+                    "orchestrator_engine.cli.codex_app.default_windows_codex",
+                    return_value="/mnt/c/apps/codex.exe",
+                ),
+                contextlib.redirect_stdout(output),
+            ):
+                code = cli.main(
+                    ["--project-root", str(root), "bind", "--host", "codex"]
+                )
+        self.assertEqual(code, 0)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["target_thread_id"], "thread-auto")
+        self.assertEqual(result["thread_id_source"], detected["source"])
+        self.assertEqual(result["codex_command"], "/mnt/c/apps/codex.exe")
 
     def test_worker_list_reports_empty_registry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -162,6 +196,72 @@ class CliTests(unittest.TestCase):
         result = json.loads(output.getvalue())
         self.assertEqual(result["removed_count"], 0)
         self.assertTrue(result["dry_run"])
+
+    def test_callback_service_does_not_inherit_env_thread_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            calls: list[dict] = []
+
+            def fake_start_service(*_args, **kwargs):
+                calls.append(kwargs)
+                return {"status": "running"}
+
+            output = io.StringIO()
+            with (
+                patch.dict(os.environ, {"CODEX_THREAD_ID": "thread-env"}),
+                patch(
+                    "orchestrator_engine.cli.watcher.start_service",
+                    side_effect=fake_start_service,
+                ),
+                contextlib.redirect_stdout(output),
+            ):
+                code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "watcher",
+                        "--action",
+                        "callback",
+                        "service",
+                        "start",
+                    ]
+                )
+
+        self.assertEqual(code, 0)
+        self.assertIsNone(calls[0]["target_thread_id"])
+
+    def test_legacy_current_thread_callback_uses_env_thread_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            calls: list[dict] = []
+
+            def fake_start_service(*_args, **kwargs):
+                calls.append(kwargs)
+                return {"status": "running"}
+
+            output = io.StringIO()
+            with (
+                patch.dict(os.environ, {"CODEX_THREAD_ID": "thread-env"}),
+                patch(
+                    "orchestrator_engine.cli.watcher.start_service",
+                    side_effect=fake_start_service,
+                ),
+                contextlib.redirect_stdout(output),
+            ):
+                code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "watcher",
+                        "--action",
+                        "current-thread-callback",
+                        "service",
+                        "start",
+                    ]
+                )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(calls[0]["target_thread_id"], "thread-env")
 
 
 if __name__ == "__main__":

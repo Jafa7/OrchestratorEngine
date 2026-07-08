@@ -19,9 +19,11 @@ on these behaviors:
 - `worker run` returns after launching a detached supervisor; the supervisor
   writes `result.json`, `evidence.json`, captured stdout/stderr logs and then
   emits the terminal event.
-- `watcher --action callback` uses the project binding to wake push-capable
-  hosts; `watcher stream` emits one JSON line per new signal for stream-based
-  hosts.
+- `worker run` snapshots the current project binding as an optional
+  `wake_target` for that task. `watcher --action callback` uses the signal's
+  `wake_target` first and the current project binding only as a legacy
+  fallback; `watcher stream` emits one JSON line per new signal for
+  stream-based hosts.
 - `cleanup` never removes terminal events or inbox signals.
 
 The following are intentionally not v0.1 core contracts:
@@ -121,6 +123,52 @@ The `claude` host is stream-based: it must not be used with the `callback`
 action; a Claude session watches `watcher stream` output instead. See
 [hosts.md](hosts.md).
 
+## Wake target snapshot
+
+Path:
+
+- Optional `wake_target` object embedded in `task.json`, `evidence.json`,
+  terminal events and inbox signals created through `worker run`.
+
+`wake_target` captures the host chat that dispatched a specific task. This is
+what makes multi-chat orchestration deterministic: if chat A starts task A and
+chat B later rebinds the same project before task A finishes, task A's signal
+still wakes chat A.
+
+```json
+{
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_WAKE_TARGET",
+  "host": "codex",
+  "target_thread_id": "thread-id",
+  "codex_command": "/path/to/codex-or-codex.exe",
+  "captured_at": "2026-07-08T00:00:00.000+00:00"
+}
+```
+
+`target_thread_id` is required for Codex wake targets. `codex_command` is
+optional and is used when the bound thread is only reachable through a
+specific launcher, for example Windows `codex.exe` for Codex Desktop threads
+stored on the Windows side.
+
+## Channel routing
+
+Each wake channel only consumes signals for hosts it can deliver:
+
+- `watcher --action callback` handles `codex` and `vscode` wake targets.
+- `watcher stream` handles `claude` wake targets.
+
+Signals for other hosts are skipped without being marked seen, so a callback
+service and a Claude stream can run against the same project inbox at the same
+time. The channels use separate watcher state files by default:
+
+- callback service: `.orchestrator/inbox/watcher-state.json`
+- Claude stream: `.orchestrator/inbox/watcher-claude-stream-state.json`
+
+For legacy signals without `wake_target`, the current project binding is used
+as the fallback owner. New work should be dispatched through `worker run` so
+the wake target is snapshotted per task.
+
 ## Worker registry
 
 Path:
@@ -210,7 +258,12 @@ keeps the App Server connection open until the turn ends, then updates the
 receipt (`turn_status`, `finalized_at`, optional `turn_error`). A turn the
 user interrupts is recorded as `woken` with `turn_status: "interrupted"` and
 is not retried. The receipt also records the desktop deep-link activation
-outcome (`activation: "requested"` or `"failed"`).
+outcome (`activation: "requested"` or `"failed"`). Codex Desktop UI refresh is
+separate from wakeup delivery: on Windows the adapter first asks the desktop app
+to open the thread, then sends a best-effort refresh pulse for already-loaded
+threads. Receipts record that attempt with `live_refresh` and
+`live_refresh_strategy`; failure to refresh the visible UI does not erase the
+delivered turn from Codex thread storage.
 
 Long-running wakeups do not starve health reporting: the watch loop keeps the
 heartbeat fresh from a background ticker while a scan is busy.

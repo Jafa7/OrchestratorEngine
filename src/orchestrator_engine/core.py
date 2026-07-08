@@ -129,6 +129,7 @@ def write_terminal_event(
     evidence_path: Path,
     state_dir: str = DEFAULT_STATE_DIR,
     event_id: str | None = None,
+    wake_target: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write a terminal event and matching orchestrator inbox signal."""
 
@@ -176,6 +177,9 @@ def write_terminal_event(
         "created_at": event["created_at"],
         "requires": "ORCHESTRATOR_REVIEW",
     }
+    if wake_target is not None:
+        event["wake_target"] = wake_target
+        signal["wake_target"] = wake_target
     atomic_json(event_path, event)
     atomic_json(signal_path, signal)
     return {

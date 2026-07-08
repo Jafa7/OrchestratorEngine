@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import signal as signal_module
@@ -28,12 +29,15 @@ class WatcherError(RuntimeError):
 
 
 def _wake_codex(project, signal, *, binding, state_dir, codex, server_factory):
+    # Desktop threads live in the Windows-side store; the binding records
+    # which codex launcher can actually reach the bound thread.
+    bound_codex = binding.get("codex_command") or codex
     return codex_app.wake_current_thread(
         project,
         signal,
         target_thread_id=str(binding["target_thread_id"]),
         state_dir=state_dir,
-        codex=codex,
+        codex=bound_codex,
         server_factory=server_factory,
     )
 
@@ -85,6 +89,48 @@ def resolve_callback_bindings(
     }
 
 
+def callback_binding_for_signal(
+    project: Path,
+    signal: dict[str, Any],
+    *,
+    state_dir: str,
+    fallback_binding: dict[str, Any] | None,
+    host_adapters: dict | None = None,
+) -> dict[str, Any]:
+    adapters = HOST_ADAPTERS if host_adapters is None else host_adapters
+    wake_target = signal.get("wake_target")
+    if isinstance(wake_target, dict):
+        binding_module.validate_wake_target(wake_target)
+        host = wake_target["host"]
+        if host not in adapters:
+            raise WatcherError(
+                f"signal wake target host {host} does not support callback "
+                "wakeups; use `watcher stream` from the host chat instead"
+            )
+        return wake_target
+    if fallback_binding is not None:
+        return fallback_binding
+    return resolve_project_binding(
+        project,
+        state_dir=state_dir,
+        host_adapters=adapters,
+    )
+
+
+def signal_host(
+    signal: dict[str, Any],
+    *,
+    fallback_binding: dict[str, Any] | None,
+) -> str | None:
+    wake_target = signal.get("wake_target")
+    if isinstance(wake_target, dict):
+        binding_module.validate_wake_target(wake_target)
+        return str(wake_target["host"])
+    if fallback_binding is not None:
+        return str(fallback_binding["host"])
+    return None
+
+
 def unix_now() -> float:
     return time.time()
 
@@ -111,6 +157,18 @@ def default_heartbeat_path(
     state_dir: str = core.DEFAULT_STATE_DIR,
 ) -> Path:
     return core.inbox_root(project_root, state_dir=state_dir) / "watcher-heartbeat.json"
+
+
+def default_stream_state_path(
+    project_root: Path,
+    *,
+    host: str,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+) -> Path:
+    return (
+        core.inbox_root(project_root, state_dir=state_dir)
+        / f"watcher-{host}-stream-state.json"
+    )
 
 
 def default_service_log_path(
@@ -295,6 +353,8 @@ def pending_signal_count(
     *,
     state_dir: str,
     state_file: Path,
+    host_filter: set[str] | None = None,
+    fallback_binding: dict[str, Any] | None = None,
 ) -> int:
     try:
         state = load_state(state_file)
@@ -310,6 +370,14 @@ def pending_signal_count(
         for signal in signals:
             event_id = signal.get("event_id")
             if isinstance(event_id, str) and event_id not in seen:
+                if host_filter is not None:
+                    with contextlib.suppress(RuntimeError, ValueError):
+                        host = signal_host(
+                            signal,
+                            fallback_binding=fallback_binding,
+                        )
+                        if host not in host_filter:
+                            continue
                 count += 1
     return count
 
@@ -324,6 +392,7 @@ def scan_once(
     codex: str = "codex",
     server_factory=codex_app.AppServer,
     host_adapters: dict | None = None,
+    host_filter: set[str] | None = None,
 ) -> dict[str, Any]:
     if action not in WATCHER_ACTIONS:
         raise WatcherError(f"unsupported watcher action: {action}")
@@ -346,21 +415,30 @@ def scan_once(
     action_errors: list[dict[str, str]] = []
 
     for project in projects:
-        # A broken binding or an unreadable signal file must degrade to a
-        # reported error, never take down a long-running watcher.
+        # A broken fallback binding or an unreadable signal file must degrade
+        # to reported errors, never take down a long-running watcher. Signals
+        # may carry their own wake_target captured when the task was
+        # dispatched; those remain routable even if the project binding later
+        # changes.
         bound: dict[str, Any] | None = None
-        if action == "callback":
+        if action == "callback" or host_filter is not None:
             try:
-                bound = resolve_project_binding(
-                    project,
-                    state_dir=state_dir,
-                    host_adapters=adapters,
-                )
+                bound = binding_module.load_binding(project, state_dir=state_dir)
+                if (
+                    action == "callback"
+                    and bound is not None
+                    and bound["host"] not in adapters
+                ):
+                    # Stream-only binding: signals carrying their own
+                    # callback wake_target are still routable; the rest get
+                    # a precise per-signal error instead of a per-scan one
+                    # (a healthy claude-host project must not spam the log
+                    # on every scan).
+                    bound = None
             except (OSError, RuntimeError, ValueError) as error:
                 action_errors.append(
                     {"project_root": str(project), "error": str(error)}
                 )
-                continue
         invalid_signals: list[dict[str, str]] = []
         signals = core.inbox(
             project,
@@ -372,6 +450,21 @@ def scan_once(
         for signal in signals:
             event_id = signal.get("event_id")
             if not isinstance(event_id, str) or event_id in seen:
+                continue
+            try:
+                host = signal_host(signal, fallback_binding=bound)
+            except (OSError, RuntimeError, ValueError) as error:
+                action_errors.append(
+                    {
+                        "event_id": event_id,
+                        "project_root": str(project),
+                        "error": str(error),
+                    }
+                )
+                continue
+            if action == "callback" and host not in adapters:
+                continue
+            if host_filter is not None and host not in host_filter:
                 continue
             deferred = deferred_events.get(event_id)
             retry_after = deferred.get("retry_after_at") if deferred else None
@@ -407,12 +500,18 @@ def scan_once(
                         mark_seen = False
                         defer_reason = str(wakeup.get("reason", "deferred"))
                 elif action == "callback":
-                    assert bound is not None
-                    wake = adapters[bound["host"]]
+                    event_binding = callback_binding_for_signal(
+                        project,
+                        signal,
+                        state_dir=state_dir,
+                        fallback_binding=bound,
+                        host_adapters=adapters,
+                    )
+                    wake = adapters[event_binding["host"]]
                     wakeup = wake(
                         project,
                         signal,
-                        binding=bound,
+                        binding=event_binding,
                         state_dir=state_dir,
                         codex=codex,
                         server_factory=server_factory,
@@ -490,10 +589,21 @@ def service_status(
     state_file = default_state_path(projects[0], state_dir=state_dir)
     if state and isinstance(state.get("state_path"), str):
         state_file = Path(state["state_path"])
+    bound: dict[str, Any] | None = None
+    binding_error: str | None = None
+    try:
+        bound = binding_module.load_binding(projects[0], state_dir=state_dir)
+    except (OSError, RuntimeError, ValueError) as error:
+        binding_error = str(error)
+    host_filter = None
+    if state and state.get("action") == "callback":
+        host_filter = set(HOST_ADAPTERS)
     inbox_count = pending_signal_count(
         projects,
         state_dir=state_dir,
         state_file=state_file,
+        host_filter=host_filter,
+        fallback_binding=bound,
     )
     if not state:
         return {
@@ -501,11 +611,19 @@ def service_status(
             "kind": "LOCAL_AI_ORCHESTRATOR_WATCHER_SERVICE_STATUS",
             "status": "not_started",
             "alive": False,
+            "binding_host": bound.get("host") if bound else None,
             "project_roots": [str(path) for path in projects],
             "service_file": str(service_path),
             "heartbeat_file": str(heartbeat_path),
             "heartbeat_age_seconds": heartbeat_age_seconds(heartbeat),
             "pending_inbox_count": inbox_count,
+            "warnings": service_warnings(
+                status="not_started",
+                state=None,
+                bound=bound,
+                binding_error=binding_error,
+                inbox_count=inbox_count,
+            ),
             "checked_at": core.utc_now(),
         }
     pid = state.get("pid")
@@ -528,6 +646,7 @@ def service_status(
         "process_group": state.get("process_group"),
         "action": state.get("action"),
         "target_thread_id": state.get("target_thread_id"),
+        "binding_host": bound.get("host") if bound else None,
         "project_roots": [str(path) for path in projects],
         "service_file": str(service_path),
         "heartbeat_file": str(heartbeat_path),
@@ -538,8 +657,74 @@ def service_status(
         "log_path": state.get("log_path"),
         "command": state.get("command"),
         "pending_inbox_count": inbox_count,
+        "warnings": service_warnings(
+            status=status,
+            state=state,
+            bound=bound,
+            binding_error=binding_error,
+            inbox_count=inbox_count,
+        ),
         "checked_at": core.utc_now(),
     }
+
+
+CALLBACK_ACTIONS = {"callback", "current-thread-callback"}
+
+
+def service_warnings(
+    *,
+    status: str,
+    state: dict[str, Any] | None,
+    bound: dict[str, Any] | None,
+    binding_error: str | None,
+    inbox_count: int,
+) -> list[str]:
+    """Cross-check binding, service action and pending signals.
+
+    A stale or mismatched wake channel must be loud: a crashed service or a
+    callback service pointed at the wrong host silently drops wakeups, which
+    the user only notices when a finished worker never wakes their chat.
+    """
+    warnings: list[str] = []
+    host = bound.get("host") if bound else None
+    if binding_error:
+        warnings.append(f"binding is unreadable: {binding_error}")
+    action = state.get("action") if state else None
+    if (
+        state
+        and action == "current-thread-callback"
+        and host
+        and host not in HOST_ADAPTERS
+    ):
+        warnings.append(
+            f"binding host '{host}' wakes via `watcher stream`, but a "
+            f"'{action}' service exists; it cannot wake that host — stop the "
+            "service (`watcher service stop`) and arm a stream watch from "
+            "the host chat"
+        )
+    if (
+        state
+        and action == "current-thread-callback"
+        and host == "codex"
+        and bound is not None
+        and state.get("target_thread_id") != bound.get("target_thread_id")
+    ):
+        warnings.append(
+            "service target_thread_id differs from the bound thread; wakeups "
+            "would go to the wrong chat — restart the service or rebind"
+        )
+    if inbox_count:
+        if host and host not in HOST_ADAPTERS:
+            warnings.append(
+                f"{inbox_count} pending signal(s); binding host '{host}' is "
+                "delivered by arming `watcher stream` from the host chat"
+            )
+        elif status in {"crashed", "stopped", "not_started"}:
+            warnings.append(
+                f"{inbox_count} pending signal(s) will not be delivered "
+                "while the watcher is down"
+            )
+    return warnings
 
 
 def start_service(
@@ -560,8 +745,20 @@ def start_service(
     if action == "current-thread-callback" and not target_thread_id:
         raise WatcherError("target thread id is required for current-thread-callback")
     projects = [path.expanduser().resolve() for path in project_roots]
-    if action == "callback":
-        resolve_callback_bindings(projects, state_dir=state_dir)
+    if action == "current-thread-callback":
+        # Legacy callback actions ignore the binding at scan time, but
+        # starting one against a stream-only host would silently deliver
+        # nothing; refuse with the actual fix instead.
+        bound = None
+        with contextlib.suppress(OSError, RuntimeError, ValueError):
+            bound = binding_module.load_binding(projects[0], state_dir=state_dir)
+        if bound and bound.get("host") not in HOST_ADAPTERS:
+            raise WatcherError(
+                f"binding host '{bound['host']}' wakes via `watcher "
+                f"stream`; a '{action}' service cannot wake it — arm a "
+                "stream watch from the host chat, or rebind with "
+                "`bind --host codex --thread-id ...` first"
+            )
     service_path = service_file or default_service_path(
         projects[0],
         state_dir=state_dir,

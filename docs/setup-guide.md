@@ -75,17 +75,19 @@ target project root.
 
 ### Host: codex
 
-You need the thread id of the chat the user orchestrates from. Codex session
-files embed it in their filename (`rollout-<timestamp>-<THREAD_ID>.jsonl`) and
-record the working directory in the first line. If you are the agent running
-*inside* that chat, find your own thread id:
+Run this **from inside the codex chat being bound** — the thread id is
+auto-detected (from `CODEX_THREAD_ID` if set, otherwise from the most
+recently modified session rollout whose recorded cwd matches the project,
+which is the calling chat's own session):
 
 ```bash
-ls -t ~/.codex/sessions/*/*/*/rollout-*.jsonl | head -5
-head -c 300 <newest file>   # confirm "cwd" matches the project
+orchestrator-engine --project-root /path/to/project bind --host codex
 ```
 
-Take the UUID from the matching filename, then:
+The output includes `thread_id_source` so you can confirm what was detected.
+If detection fails (or you are binding a *different* chat), pass the id
+explicitly — session filenames embed it
+(`rollout-<timestamp>-<THREAD_ID>.jsonl`, first line records the cwd):
 
 ```bash
 orchestrator-engine --project-root /path/to/project bind \
@@ -114,6 +116,9 @@ orchestrator-engine --project-root /path/to/project bind --status
 ```
 
 Expect `"host"` to match, and for codex a non-empty `"target_thread_id"`.
+Run this from each chat that will dispatch work: `worker run` snapshots the
+current binding into the task's `wake_target`, so completed work wakes the chat
+that launched it even if another chat rebinds the same project later.
 
 ## Step 3 — Configure workers
 
@@ -202,6 +207,9 @@ orchestrator-engine --project-root /path/to/project watcher stream
 ```
 
 Each new signal is printed as one JSON line, which wakes the chat.
+The stream consumes only `claude` wake targets and uses its own state file
+(`watcher-claude-stream-state.json`), so it can coexist with a callback
+service delivering Codex or VS Code signals from the same inbox.
 
 **Check:** run `watcher stream` with a pre-existing unseen signal (or after the
 smoke test below) and confirm it prints one line per signal.
@@ -233,9 +241,11 @@ Then confirm the wake actually reaches the user:
 
 - **codex** — within one watcher interval the thread receives a
   `LOCAL_AI_ORCHESTRATOR_WAKEUP` turn and the desktop app opens it via the
-  `codex://threads/...` deep link. Receipt:
+  `codex://threads/...` deep link. On Windows, the adapter also sends a
+  best-effort UI refresh pulse after activation so an already-open Codex
+  Desktop thread reloads the stored turn. Receipt:
   `.orchestrator/inbox/thread-wakeups/<event_id>.json` with
-  `"status": "woken"`.
+  `"status": "woken"` plus `activation` and `live_refresh` fields.
 - **vscode** — the chat view of the last active window receives the wakeup
   message; same receipt file.
 - **claude** — the armed stream prints the signal line and the chat wakes.
@@ -253,6 +263,11 @@ Add this to the adopted project's agent instructions file (`AGENTS.md`,
 
 To delegate a task to a CLI worker:
 
+0. Make sure the binding targets THIS chat (`bind --status`); if you are a
+   new chat, rebind yourself first (`bind --host codex` auto-detects your
+   thread; claude/vscode need no id). The binding is snapshotted into each
+   task at dispatch time, so multiple chats may safely share one project as
+   long as each chat binds itself before dispatching work.
 1. Check available worker profiles: `orchestrator-engine --project-root <root> worker list`.
 2. Pick the profile matching the task: cheap/fast profiles for trivial checks
    and mechanical edits, deep/high-effort profiles for reviews, refactors and
@@ -282,6 +297,7 @@ state, and how to stop it (`watcher service stop`).
 | Codex receipt stuck on `deferred` with a usage-limit message | Codex quota exhausted; the watcher retries with backoff automatically once limits reset. |
 | Codex receipt `woken` with `turn_status: "running"` | Normal for long orchestrator turns; a background finalizer updates the receipt when the turn ends. Requires service mode (not `watcher once`). |
 | Codex receipt `woken` but window did not focus | Check `activation` field in the receipt; the deep link needs `powershell.exe` reachable (WSL interop) and the desktop app installed. |
+| Codex receipt `woken`, window focused, but no new visible turn | Check `live_refresh`; the turn was delivered to Codex storage, but Codex Desktop may not have reloaded the already-open thread. On Windows the adapter sends a best-effort `Ctrl+R` refresh pulse after deep-link activation. |
 | `code chat` exits non-zero | VS Code < 1.127 or `code` not on PATH; wakeup stays retryable. |
 | `worker run` → `task already exists` | Task ids are one-shot by design; pick a new id. |
 | Supervisor log shows `ModuleNotFoundError: orchestrator_engine` | Engine was run via ad-hoc `PYTHONPATH` instead of being installed; run `pip install .` (Step 1). |

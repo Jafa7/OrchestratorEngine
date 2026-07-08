@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from typing import ClassVar
 
-from orchestrator_engine import core, workers
+from orchestrator_engine import binding, core, workers
 
 WORKERS_TOML = """
 [workers.echo]
@@ -132,6 +132,32 @@ class WorkerRunTests(unittest.TestCase):
                     popen_factory=FakePopen,
                 )
 
+    def test_run_worker_captures_current_wake_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            binding.write_binding(
+                root,
+                host="codex",
+                target_thread_id="thread-origin",
+                codex_command="/mnt/c/apps/codex.exe",
+            )
+            prompt = write_prompt(root)
+            descriptor = workers.run_worker(
+                root,
+                worker="echo",
+                task_id="T-WAKE",
+                prompt_file=prompt,
+                popen_factory=FakePopen,
+            )
+            stored = core.load_object(Path(descriptor["descriptor_path"]))
+        self.assertEqual(stored["wake_target"]["host"], "codex")
+        self.assertEqual(stored["wake_target"]["target_thread_id"], "thread-origin")
+        self.assertEqual(
+            stored["wake_target"]["codex_command"],
+            "/mnt/c/apps/codex.exe",
+        )
+
 
 class WorkerSuperviseTests(unittest.TestCase):
     def test_supervise_success_emits_completed_terminal_event(self) -> None:
@@ -191,6 +217,43 @@ class WorkerSuperviseTests(unittest.TestCase):
             expected_hash = core.sha256_file(prompt)
         self.assertEqual(evidence["prompt_sha256"], expected_hash)
         self.assertEqual(evidence["worker_config"]["effort"], "high")
+
+    def test_supervise_emits_captured_wake_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            prompt = write_prompt(root)
+            task_dir = workers.task_dir_for(root, "T-WAKE")
+            task_dir.mkdir(parents=True)
+            wake_target = {
+                "schema_version": 1,
+                "kind": binding.WAKE_TARGET_KIND,
+                "host": "codex",
+                "target_thread_id": "thread-origin",
+                "codex_command": "/mnt/c/apps/codex.exe",
+                "captured_at": "2026-07-08T00:00:00.000+00:00",
+            }
+            core.atomic_json(
+                task_dir / "task.json",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-WAKE",
+                    "wake_target": wake_target,
+                },
+            )
+            summary = workers.supervise_worker(
+                root,
+                worker="echo",
+                task_id="T-WAKE",
+                prompt_file=prompt,
+            )
+            event = core.load_object(Path(summary["event_path"]))
+            signal = core.inbox(root)[0]
+            evidence = core.load_object(task_dir / "evidence.json")
+        self.assertEqual(event["wake_target"]["target_thread_id"], "thread-origin")
+        self.assertEqual(signal["wake_target"]["target_thread_id"], "thread-origin")
+        self.assertEqual(evidence["wake_target"]["target_thread_id"], "thread-origin")
 
     def test_supervise_touches_descriptor_while_worker_runs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
