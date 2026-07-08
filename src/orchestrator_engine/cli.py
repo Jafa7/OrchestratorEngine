@@ -131,6 +131,15 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
     watcher_subparsers.add_parser("once", help="Run a single watcher scan and exit.")
+    acknowledge = watcher_subparsers.add_parser(
+        "acknowledge",
+        help="Mark a pending or deferred terminal event as manually handled.",
+    )
+    acknowledge.add_argument("--event-id", required=True)
+    acknowledge.add_argument(
+        "--reason",
+        help="Human-readable acknowledgement note.",
+    )
     watch = watcher_subparsers.add_parser(
         "watch",
         help="Run the watcher scan loop in the foreground.",
@@ -333,6 +342,16 @@ def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object |
             action=args.action,
             target_thread_id=target_thread_id,
             codex=args.codex,
+        )
+    if args.watcher_command == "acknowledge":
+        if len(roots) != 1:
+            raise watcher.WatcherError("acknowledge requires exactly one project root")
+        return watcher.acknowledge_deferred_event(
+            roots[0],
+            event_id=args.event_id,
+            state_dir=args.state_dir,
+            state_path=args.state_file,
+            reason=args.reason,
         )
     if args.watcher_command == "watch":
         watcher.watch(

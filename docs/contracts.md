@@ -335,11 +335,36 @@ The watcher writes:
 - `watcher-heartbeat.json` — periodic health signal.
 - `thread-wakeups/<event_id>.json` — current-thread wakeup receipt.
 
-An event is marked seen only after a successful action or deterministic skip.
-Transient App Server failures, active target threads, failed or rate-limited
-turns and failed VS Code chat invocations remain retryable with exponential
-backoff. A broken binding or an unreadable signal file degrades to an entry in
-`action_errors` — it never takes the watcher down.
+An event is marked seen only after a successful action, deterministic skip or
+manual acknowledgement. Active target threads remain retryable with
+exponential backoff. Callback delivery failures are bounded: ordinary
+transport failures become `deferred_manual_required` after a small number of
+attempts, while recognized quota/usage-limit failures become
+`deferred_manual_required` immediately. A broken binding or an unreadable
+signal file degrades to an entry in `action_errors` — it never takes the
+watcher down.
+
+Deferred callback state is kept in `watcher-state.json` under
+`deferred_events`:
+
+- `deferred_retryable` — watcher will retry after `retry_after_at`.
+- `deferred_manual_required` — watcher will not retry automatically; an
+  operator should read the event/result/evidence and either fix the wake
+  channel or acknowledge the event.
+- `acknowledged` — recorded in `acknowledged_events` after manual resolution;
+  the event id is also added to `seen_event_ids`.
+
+To acknowledge a pending or deferred event without deleting the durable audit
+trail:
+
+```bash
+orchestrator-engine --project-root /path/to/project watcher \
+  acknowledge --event-id EVENT_ID --reason "read manually"
+```
+
+`watcher service status` includes `deferred_event_count` and
+`deferred_events[]` entries with event id, task id, attempts, last reason,
+next retry and suggested operator action.
 
 Codex wakeup turns are guarded before injection. If `thread/read` reports the
 target thread as active, or if the target thread's rollout file was modified
@@ -350,8 +375,9 @@ worker that finishes while the orchestrating turn is still running from
 creating a parallel injected turn in the same chat. The tradeoff is a short
 wakeup delay when a worker finishes immediately after the user's turn writes to
 the rollout. Once a wakeup turn is started, it is watched for a short failure
-window (2 minutes): failures inside the window (rate limits, validation
-errors) defer the event for retry. A turn still running at the end of the
+window (2 minutes): failures inside the window are classified by the watcher
+state machine. Quota/usage-limit failures require manual handling instead of
+creating an unbounded retry loop. A turn still running at the end of the
 window was delivered — orchestrator turns may legitimately run for hours — so
 the receipt is written as `woken` with `turn_status: "running"` and a
 background finalizer keeps the App Server connection open until the turn ends,

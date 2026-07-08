@@ -410,7 +410,8 @@ state, and how to stop it (`watcher service stop`).
 |---|---|
 | `no binding found` on watcher start | Run Step 2; `callback` requires `binding.json`. |
 | `host claude does not support callback wakeups` | Correct — use `watcher stream` (Step 4, claude). |
-| Codex receipt stuck on `deferred` with a usage-limit message | Codex quota exhausted; the watcher retries with backoff automatically once limits reset. |
+| Codex receipt stuck on `deferred` with a usage-limit message | Codex quota exhausted. New watcher versions classify this as `deferred_manual_required` and stop automatic retries; read event/result/evidence manually, then run `orchestrator-engine --project-root <root> watcher acknowledge --event-id <event-id> --reason "read manually"` or retry after quota resets. |
+| `watcher service status` shows `deferred_manual_required` | The watcher stopped retrying a callback that needs operator action. Inspect `deferred_events[]` for event id, task id, attempts, last reason and suggested action. |
 | Codex receipt `deferred` with `thread_active` or `thread_recently_active` | Normal guard: the worker finished while the target chat was still active or had just written to its rollout. End the orchestrating turn; watcher retries with backoff instead of injecting a parallel turn. The recent-activity grace window is short (30 seconds by default), so this trades a small delay for avoiding concurrent injected turns. |
 | Codex receipt `woken` with `turn_status: "running"` | Normal for long orchestrator turns; a background finalizer updates the receipt when the turn ends. Requires service mode (not `watcher once`). |
 | Codex receipt `woken` but window did not focus | Check `activation` field in the receipt; the deep link needs `powershell.exe` reachable (WSL interop) and the desktop app installed. |

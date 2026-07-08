@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from orchestrator_engine import cli, core
+from orchestrator_engine import cli, core, watcher
 
 
 class CliTests(unittest.TestCase):
@@ -183,6 +183,46 @@ class CliTests(unittest.TestCase):
                 )
         self.assertEqual(code, 1)
         self.assertIn("no workers configured", error_out.getvalue())
+
+    def test_watcher_acknowledge_marks_event_seen(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            result = root / "result.json"
+            evidence = root / "evidence.json"
+            result.write_text('{"status":"ok"}', encoding="utf-8")
+            evidence.write_text('{"review_ready":true}', encoding="utf-8")
+            core.write_terminal_event(
+                root,
+                task_id="TASK-ACK",
+                terminal_status="completed",
+                result_path=result,
+                evidence_path=evidence,
+                event_id="event-cli-ack",
+            )
+            state = watcher.default_state_path(root)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "watcher",
+                        "--state-file",
+                        str(state),
+                        "acknowledge",
+                        "--event-id",
+                        "event-cli-ack",
+                        "--reason",
+                        "read manually",
+                    ]
+                )
+            watcher_state = watcher.load_state(state)
+
+        self.assertEqual(code, 0)
+        ack = json.loads(output.getvalue())
+        self.assertEqual(ack["status"], watcher.ACKNOWLEDGED_STATUS)
+        self.assertEqual(ack["previous_status"], "pending")
+        self.assertIn("event-cli-ack", watcher_state["seen_event_ids"])
 
     def test_cleanup_dry_run_reports_zero_removals_on_empty_inbox(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

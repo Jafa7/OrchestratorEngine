@@ -221,6 +221,150 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(FakeThreadServer.awaits, 1)
         self.assertEqual(watcher_state["seen_event_ids"], [])
         self.assertIn("event-rate-limited", watcher_state["deferred_events"])
+        self.assertEqual(
+            watcher_state["deferred_events"]["event-rate-limited"]["status"],
+            watcher.DEFER_STATUS_MANUAL_REQUIRED,
+        )
+
+    def test_callback_usage_limit_becomes_manual_required_and_stops_retrying(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            state = watcher.default_state_path(root)
+            binding.write_binding(root, host="codex", target_thread_id="thread-1")
+            write_event(root, event_id="event-quota")
+            calls: list[str] = []
+
+            def fake_codex(_project, signal, **_kwargs):
+                calls.append(str(signal["event_id"]))
+                return {
+                    "schema_version": 1,
+                    "kind": "CURRENT_THREAD_WAKEUP",
+                    "event_id": signal["event_id"],
+                    "task_id": signal["task_id"],
+                    "status": "deferred",
+                    "reason": (
+                        "turn failed: You've hit your usage limit. "
+                        "Try again at 6:10 PM."
+                    ),
+                }
+
+            first = watcher.scan_once(
+                [root],
+                state_path=state,
+                action="callback",
+                host_adapters={"codex": fake_codex},
+            )
+            second = watcher.scan_once(
+                [root],
+                state_path=state,
+                action="callback",
+                host_adapters={"codex": fake_codex},
+            )
+            watcher_state = watcher.load_state(state)
+            status = watcher.service_status([root])
+
+        self.assertEqual(first["new_count"], 1)
+        self.assertEqual(second["new_count"], 0)
+        self.assertEqual(calls, ["event-quota"])
+        deferred = watcher_state["deferred_events"]["event-quota"]
+        self.assertEqual(deferred["status"], watcher.DEFER_STATUS_MANUAL_REQUIRED)
+        self.assertEqual(deferred["reason_code"], "quota_or_usage_limit")
+        self.assertNotIn("retry_after_at", deferred)
+        self.assertEqual(status["deferred_event_count"], 1)
+        self.assertEqual(
+            status["deferred_events"][0]["status"],
+            watcher.DEFER_STATUS_MANUAL_REQUIRED,
+        )
+        self.assertIn("acknowledge", status["deferred_events"][0]["operator_action"])
+
+    def test_callback_generic_failure_requires_manual_after_bounded_retries(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            state = watcher.default_state_path(root)
+            binding.write_binding(root, host="codex", target_thread_id="thread-1")
+            write_event(root, event_id="event-network")
+            calls: list[str] = []
+
+            def fake_codex(_project, signal, **_kwargs):
+                calls.append(str(signal["event_id"]))
+                return {
+                    "schema_version": 1,
+                    "kind": "CURRENT_THREAD_WAKEUP",
+                    "event_id": signal["event_id"],
+                    "task_id": signal["task_id"],
+                    "status": "deferred",
+                    "reason": "temporary callback transport failure",
+                }
+
+            for _attempt in range(watcher.DEFER_MAX_ATTEMPTS):
+                watcher.scan_once(
+                    [root],
+                    state_path=state,
+                    action="callback",
+                    host_adapters={"codex": fake_codex},
+                )
+                watcher_state = watcher.load_state(state)
+                deferred = watcher_state["deferred_events"]["event-network"]
+                if (
+                    deferred["status"]
+                    != watcher.DEFER_STATUS_MANUAL_REQUIRED
+                ):
+                    deferred["retry_after_at"] = 0
+                    core.atomic_json(state, watcher_state)
+            after_limit = watcher.scan_once(
+                [root],
+                state_path=state,
+                action="callback",
+                host_adapters={"codex": fake_codex},
+            )
+            watcher_state = watcher.load_state(state)
+
+        self.assertEqual(len(calls), watcher.DEFER_MAX_ATTEMPTS)
+        self.assertEqual(after_limit["new_count"], 0)
+        self.assertEqual(
+            watcher_state["deferred_events"]["event-network"]["status"],
+            watcher.DEFER_STATUS_MANUAL_REQUIRED,
+        )
+
+    def test_acknowledge_deferred_event_marks_signal_seen(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            state = watcher.default_state_path(root)
+            write_event(root, event_id="event-ack")
+            core.atomic_json(
+                state,
+                {
+                    "schema_version": 1,
+                    "seen_event_ids": [],
+                    "deferred_events": {
+                        "event-ack": {
+                            "status": watcher.DEFER_STATUS_MANUAL_REQUIRED,
+                            "attempts": 1,
+                            "reason": "turn failed: usage limit",
+                            "reason_code": "quota_or_usage_limit",
+                            "task_id": "TASK-001",
+                        }
+                    },
+                    "acknowledged_events": {},
+                },
+            )
+            ack = watcher.acknowledge_deferred_event(
+                root,
+                event_id="event-ack",
+                state_path=state,
+                reason="result read manually",
+            )
+            watcher_state = watcher.load_state(state)
+
+        self.assertEqual(ack["status"], watcher.ACKNOWLEDGED_STATUS)
+        self.assertEqual(ack["previous_status"], watcher.DEFER_STATUS_MANUAL_REQUIRED)
+        self.assertIn("event-ack", watcher_state["seen_event_ids"])
+        self.assertNotIn("event-ack", watcher_state["deferred_events"])
+        self.assertIn("event-ack", watcher_state["acknowledged_events"])
 
     def test_service_start_writes_state_and_command(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

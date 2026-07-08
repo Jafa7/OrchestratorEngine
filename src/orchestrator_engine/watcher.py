@@ -20,6 +20,18 @@ from . import codex_app, core, vscode_chat
 WATCHER_ACTIONS = {"record", "notify", "callback", "current-thread-callback"}
 DEFER_BASE_SECONDS = 30
 DEFER_MAX_SECONDS = 300
+DEFER_MAX_ATTEMPTS = 5
+DEFER_STATUS_RETRYABLE = "deferred_retryable"
+DEFER_STATUS_MANUAL_REQUIRED = "deferred_manual_required"
+ACKNOWLEDGED_STATUS = "acknowledged"
+RETRYABLE_GUARD_REASON_CODES = {"thread_active", "thread_recently_active"}
+QUOTA_REASON_MARKERS = (
+    "usage limit",
+    "rate limit",
+    "quota",
+    "purchase more credits",
+    "try again at",
+)
 SERVICE_KIND = "LOCAL_AI_ORCHESTRATOR_WATCHER_SERVICE"
 MIN_HEARTBEAT_MAX_AGE_SECONDS = 30.0
 
@@ -189,6 +201,7 @@ def load_state(path: Path) -> dict[str, Any]:
             "schema_version": core.SCHEMA_VERSION,
             "seen_event_ids": [],
             "deferred_events": {},
+            "acknowledged_events": {},
         }
     value = core.load_object(path)
     seen = value.get("seen_event_ids")
@@ -200,6 +213,12 @@ def load_state(path: Path) -> dict[str, Any]:
         for key, item in deferred.items()
     ):
         raise WatcherError("watcher state has invalid deferred_events")
+    acknowledged = value.setdefault("acknowledged_events", {})
+    if not isinstance(acknowledged, dict) or not all(
+        isinstance(key, str) and isinstance(item, dict)
+        for key, item in acknowledged.items()
+    ):
+        raise WatcherError("watcher state has invalid acknowledged_events")
     return value
 
 
@@ -382,6 +401,180 @@ def pending_signal_count(
     return count
 
 
+def deferred_status(item: dict[str, Any]) -> str:
+    status = item.get("status")
+    if status in {DEFER_STATUS_RETRYABLE, DEFER_STATUS_MANUAL_REQUIRED}:
+        return str(status)
+    return DEFER_STATUS_RETRYABLE
+
+
+def defer_reason_code(reason: str) -> str:
+    normalized = reason.strip().lower()
+    if normalized in RETRYABLE_GUARD_REASON_CODES:
+        return normalized
+    if any(marker in normalized for marker in QUOTA_REASON_MARKERS):
+        return "quota_or_usage_limit"
+    return "callback_failed"
+
+
+def deferred_operator_action(status: str, reason_code: str) -> str:
+    if status == DEFER_STATUS_MANUAL_REQUIRED:
+        if reason_code == "quota_or_usage_limit":
+            return (
+                "Read the event/result/evidence manually, then acknowledge "
+                "the event or retry after quota resets."
+            )
+        return (
+            "Inspect the callback failure, read event/result/evidence if "
+            "needed, then acknowledge the event or restart the wake channel."
+        )
+    return "Watcher will retry after next_retry_at unless the event is acknowledged."
+
+
+def build_deferred_record(
+    event_id: str,
+    signal: dict[str, Any],
+    *,
+    reason: str,
+    previous: dict[str, Any],
+    now: float,
+) -> dict[str, Any]:
+    attempts = int(previous.get("attempts", 0)) + 1
+    reason_code = defer_reason_code(reason)
+    manual_required = (
+        reason_code == "quota_or_usage_limit"
+        or (
+            reason_code not in RETRYABLE_GUARD_REASON_CODES
+            and attempts >= DEFER_MAX_ATTEMPTS
+        )
+    )
+    status = (
+        DEFER_STATUS_MANUAL_REQUIRED if manual_required else DEFER_STATUS_RETRYABLE
+    )
+    record: dict[str, Any] = {
+        "status": status,
+        "attempts": attempts,
+        "reason": reason,
+        "reason_code": reason_code,
+        "event_id": event_id,
+        "task_id": signal.get("task_id"),
+        "terminal_status": signal.get("terminal_status"),
+        "event_path": signal.get("event_path"),
+        "signal_path": signal.get("signal_path"),
+        "first_attempt_at": previous.get("first_attempt_at", now),
+        "last_attempt_at": now,
+        "operator_action": deferred_operator_action(status, reason_code),
+    }
+    if status == DEFER_STATUS_RETRYABLE:
+        delay = min(
+            DEFER_BASE_SECONDS * (2 ** (attempts - 1)),
+            DEFER_MAX_SECONDS,
+        )
+        record["retry_after_at"] = now + delay
+    return record
+
+
+def unix_timestamp_to_iso(value: object) -> str | None:
+    if not isinstance(value, (int, float)):
+        return None
+    return datetime.fromtimestamp(float(value), tz=UTC).isoformat(
+        timespec="milliseconds"
+    )
+
+
+def deferred_event_summaries(
+    project_roots: list[Path],
+    *,
+    state_dir: str,
+    state_file: Path,
+) -> list[dict[str, Any]]:
+    try:
+        state = load_state(state_file)
+    except (OSError, RuntimeError, ValueError):
+        return []
+    signal_index: dict[str, dict[str, Any]] = {}
+    for project in project_roots:
+        with contextlib.suppress(OSError, RuntimeError, ValueError):
+            for signal in core.inbox(project, state_dir=state_dir, invalid_sink=[]):
+                event_id = signal.get("event_id")
+                if isinstance(event_id, str):
+                    signal_index[event_id] = signal
+    summaries: list[dict[str, Any]] = []
+    for event_id, item in sorted(state["deferred_events"].items()):
+        signal = signal_index.get(event_id, {})
+        retry_after_at = item.get("retry_after_at")
+        status = deferred_status(item)
+        summaries.append(
+            {
+                "event_id": event_id,
+                "task_id": item.get("task_id") or signal.get("task_id"),
+                "status": status,
+                "attempts": int(item.get("attempts", 0)),
+                "last_reason": item.get("reason"),
+                "reason_code": item.get("reason_code")
+                or defer_reason_code(str(item.get("reason", ""))),
+                "last_attempt_at": item.get("last_attempt_at"),
+                "last_attempt_at_iso": unix_timestamp_to_iso(
+                    item.get("last_attempt_at")
+                ),
+                "retry_after_at": retry_after_at,
+                "next_retry_at": unix_timestamp_to_iso(retry_after_at),
+                "operator_action": item.get("operator_action")
+                or deferred_operator_action(
+                    status,
+                    str(item.get("reason_code") or "callback_failed"),
+                ),
+            }
+        )
+    return summaries
+
+
+def acknowledge_deferred_event(
+    project_root: Path,
+    *,
+    event_id: str,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    state_path: Path | None = None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    if not event_id:
+        raise WatcherError("event id is required")
+    project = project_root.expanduser().resolve()
+    state_file = state_path or default_state_path(project, state_dir=state_dir)
+    state = load_state(state_file)
+    seen = set(state["seen_event_ids"])
+    deferred_events: dict[str, dict[str, Any]] = state["deferred_events"]
+    previous = deferred_events.pop(event_id, None)
+    signal = None
+    for candidate in core.inbox(project, state_dir=state_dir, invalid_sink=[]):
+        if candidate.get("event_id") == event_id:
+            signal = candidate
+            break
+    if previous is None and signal is None and event_id not in seen:
+        raise WatcherError(f"event is not pending or deferred: {event_id}")
+    seen.add(event_id)
+    acknowledged_at = core.utc_now()
+    acknowledgement = {
+        "schema_version": core.SCHEMA_VERSION,
+        "kind": "LOCAL_AI_ORCHESTRATOR_WATCHER_ACKNOWLEDGEMENT",
+        "event_id": event_id,
+        "task_id": (previous or {}).get("task_id")
+        or (signal or {}).get("task_id"),
+        "status": ACKNOWLEDGED_STATUS,
+        "reason": reason or "manual acknowledgement",
+        "acknowledged_at": acknowledged_at,
+        "previous_status": deferred_status(previous) if previous else "pending",
+        "previous_attempts": int((previous or {}).get("attempts", 0)),
+        "state_path": str(state_file),
+    }
+    state["seen_event_ids"] = sorted(seen)
+    state["deferred_events"] = deferred_events
+    state["acknowledged_events"][event_id] = acknowledgement
+    state["updated_at"] = acknowledged_at
+    core.atomic_json(state_file, state)
+    return acknowledgement
+
+
 def scan_once(
     project_roots: list[Path],
     *,
@@ -467,6 +660,11 @@ def scan_once(
             if host_filter is not None and host not in host_filter:
                 continue
             deferred = deferred_events.get(event_id)
+            if (
+                deferred is not None
+                and deferred_status(deferred) == DEFER_STATUS_MANUAL_REQUIRED
+            ):
+                continue
             retry_after = deferred.get("retry_after_at") if deferred else None
             if isinstance(retry_after, (int, float)) and retry_after > current_time:
                 continue
@@ -535,17 +733,13 @@ def scan_once(
                 deferred_events.pop(event_id, None)
             elif defer_reason is not None:
                 previous = deferred_events.get(event_id, {})
-                attempts = int(previous.get("attempts", 0)) + 1
-                delay = min(
-                    DEFER_BASE_SECONDS * (2 ** (attempts - 1)),
-                    DEFER_MAX_SECONDS,
+                deferred_events[event_id] = build_deferred_record(
+                    event_id,
+                    signal,
+                    reason=defer_reason,
+                    previous=previous,
+                    now=current_time,
                 )
-                deferred_events[event_id] = {
-                    "attempts": attempts,
-                    "reason": defer_reason,
-                    "last_attempt_at": current_time,
-                    "retry_after_at": current_time + delay,
-                }
 
     output = {
         "schema_version": core.SCHEMA_VERSION,
@@ -605,6 +799,11 @@ def service_status(
         host_filter=host_filter,
         fallback_binding=bound,
     )
+    deferred_events = deferred_event_summaries(
+        projects,
+        state_dir=state_dir,
+        state_file=state_file,
+    )
     if not state:
         return {
             "schema_version": core.SCHEMA_VERSION,
@@ -617,6 +816,8 @@ def service_status(
             "heartbeat_file": str(heartbeat_path),
             "heartbeat_age_seconds": heartbeat_age_seconds(heartbeat),
             "pending_inbox_count": inbox_count,
+            "deferred_event_count": len(deferred_events),
+            "deferred_events": deferred_events,
             "warnings": service_warnings(
                 status="not_started",
                 state=None,
@@ -657,6 +858,8 @@ def service_status(
         "log_path": state.get("log_path"),
         "command": state.get("command"),
         "pending_inbox_count": inbox_count,
+        "deferred_event_count": len(deferred_events),
+        "deferred_events": deferred_events,
         "warnings": service_warnings(
             status=status,
             state=state,
