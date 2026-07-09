@@ -613,6 +613,12 @@ Pass the same `--host HOST` the service was started with (or an explicit
 on that service's host-scoped state file rather than the legacy
 `watcher-state.json`.
 
+For host-scoped callback services, also pass `--host HOST` to
+`watcher service status`. A bare status command reads the legacy callback
+files. If the project binding points at a callback host and the host-scoped
+pending count differs from the legacy view, the response includes a warning
+that names the exact `watcher --host HOST service status` command to run.
+
 `watcher service status` includes `deferred_event_count` and
 `deferred_status_counts`, plus `deferred_events[]` entries with event id, task
 id, terminal status, attempts, last reason, evidence paths, next retry and

@@ -975,6 +975,20 @@ def service_status(
         host_filter=host_filter,
         fallback_binding=bound,
     )
+    bound_host = bound.get("host") if bound else None
+    host_scoped_pending_count: int | None = None
+    if host is None and isinstance(bound_host, str) and bound_host in HOST_ADAPTERS:
+        host_scoped_pending_count = pending_signal_count(
+            projects,
+            state_dir=state_dir,
+            state_file=default_callback_state_path(
+                projects[0],
+                host=bound_host,
+                state_dir=state_dir,
+            ),
+            host_filter={bound_host},
+            fallback_binding=bound,
+        )
     deferred_events = deferred_event_summaries(
         projects,
         state_dir=state_dir,
@@ -1004,6 +1018,8 @@ def service_status(
                 bound=bound,
                 binding_error=binding_error,
                 inbox_count=inbox_count,
+                query_host=host,
+                host_scoped_pending_count=host_scoped_pending_count,
             ),
             "checked_at": core.utc_now(),
         }
@@ -1049,6 +1065,8 @@ def service_status(
             bound=bound,
             binding_error=binding_error,
             inbox_count=inbox_count,
+            query_host=host,
+            host_scoped_pending_count=host_scoped_pending_count,
         ),
         "checked_at": core.utc_now(),
     }
@@ -1064,6 +1082,8 @@ def service_warnings(
     bound: dict[str, Any] | None,
     binding_error: str | None,
     inbox_count: int,
+    query_host: str | None = None,
+    host_scoped_pending_count: int | None = None,
 ) -> list[str]:
     """Cross-check binding, service action and pending signals.
 
@@ -1075,6 +1095,18 @@ def service_warnings(
     host = bound.get("host") if bound else None
     if binding_error:
         warnings.append(f"binding is unreadable: {binding_error}")
+    if (
+        query_host is None
+        and host in HOST_ADAPTERS
+        and host_scoped_pending_count is not None
+        and host_scoped_pending_count != inbox_count
+    ):
+        warnings.append(
+            "bare service status is reading legacy watcher files, but binding "
+            f"host '{host}' uses host-scoped callback state with "
+            f"{host_scoped_pending_count} pending signal(s); run "
+            f"`watcher --host {host} service status` for the active host channel"
+        )
     action = state.get("action") if state else None
     if (
         state

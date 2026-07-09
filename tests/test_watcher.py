@@ -619,6 +619,27 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(status["deferred_events"][0]["event_id"], "event-host")
         self.assertEqual(status["manual_required_count"], 1)
 
+    def test_bare_service_status_warns_when_host_scoped_pending_differs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            binding.write_binding(root, host="codex", target_thread_id="thread-1")
+            write_event(root, event_id="event-host")
+            core.atomic_json(
+                watcher.default_state_path(root),
+                {
+                    "schema_version": 1,
+                    "seen_event_ids": ["event-host"],
+                    "deferred_events": {},
+                    "acknowledged_events": {},
+                },
+            )
+            status = watcher.service_status([root])
+
+        self.assertEqual(status["pending_inbox_count"], 0)
+        self.assertTrue(
+            any("--host codex" in warning for warning in status["warnings"])
+        )
+
     def test_service_status_degrades_stale_or_mismatched_heartbeat(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

@@ -25,6 +25,8 @@ All notable changes to OrchestratorEngine are documented here.
   artifacts, stale heartbeats and missing results/evidence.
 - Read-only `checks` reports compact verification status, summary paths and
   failed command logs for `.orchestrator/checks` artifacts.
+- `watcher service status` warns when a bare legacy status view differs from
+  the bound host-scoped callback channel.
 - Install smoke coverage that exercises the installed CLI without
   `PYTHONPATH`.
 
