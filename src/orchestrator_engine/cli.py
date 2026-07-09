@@ -10,10 +10,12 @@ from pathlib import Path
 
 from . import (
     __version__,
+    adoption,
     binding,
     claude_stream,
     codex_app,
     core,
+    diagnostics,
     watcher,
     workers,
 )
@@ -55,6 +57,32 @@ def build_parser() -> argparse.ArgumentParser:
     emit.add_argument("--event-id")
 
     subparsers.add_parser("inbox", help="List pending inbox signals.")
+
+    doctor = subparsers.add_parser(
+        "doctor",
+        help="Run read-only project health diagnostics.",
+    )
+    doctor.add_argument(
+        "--host",
+        choices=sorted(binding.SUPPORTED_HOSTS),
+        help="Check the wake channel for one host instead of the bound host.",
+    )
+    doctor.add_argument(
+        "--strict",
+        action="store_true",
+        help="Return a non-zero exit code for warnings as well as errors.",
+    )
+
+    adopt = subparsers.add_parser(
+        "adopt",
+        help="Create the local .orchestrator layout without overwriting files.",
+    )
+    adopt.add_argument(
+        "--host",
+        choices=sorted(binding.SUPPORTED_HOSTS),
+        help="Tailor next-step instructions for this host.",
+    )
+    adopt.add_argument("--dry-run", action="store_true")
 
     bind = subparsers.add_parser(
         "bind",
@@ -270,6 +298,28 @@ def main(argv: list[str] | None = None) -> int:
                 retention_days=args.retention_days,
                 log_max_bytes=args.log_max_bytes,
                 log_keep_bytes=args.log_keep_bytes,
+                dry_run=args.dry_run,
+            )
+            print_json(output)
+        elif args.command == "doctor":
+            if len(roots) != 1:
+                raise core.OrchestratorError(
+                    "doctor requires exactly one project root"
+                )
+            output = diagnostics.run_doctor(
+                roots[0],
+                state_dir=args.state_dir,
+                host=args.host,
+            )
+            print_json(output)
+            return diagnostics.doctor_exit_code(output, strict=args.strict)
+        elif args.command == "adopt":
+            if len(roots) != 1:
+                raise core.OrchestratorError("adopt requires exactly one project root")
+            output = adoption.adopt_project(
+                roots[0],
+                state_dir=args.state_dir,
+                host=args.host,
                 dry_run=args.dry_run,
             )
             print_json(output)

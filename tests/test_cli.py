@@ -184,6 +184,144 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("no workers configured", error_out.getvalue())
 
+    def test_doctor_command_prints_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = cli.main(["--project-root", str(root), "doctor"])
+
+        self.assertEqual(code, 0)
+        report = json.loads(output.getvalue())
+        self.assertEqual(report["kind"], "ORCHESTRATOR_DOCTOR_REPORT")
+        self.assertEqual(report["status"], "warn")
+
+    def test_doctor_command_strict_returns_nonzero_for_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = cli.main(
+                    ["--project-root", str(root), "doctor", "--strict"]
+                )
+
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(output.getvalue())["status"], "warn")
+
+    def test_doctor_command_returns_nonzero_for_error_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            core.atomic_json(
+                core.events_root(root) / "future.json",
+                {
+                    "schema_version": 999,
+                    "kind": "WORKER_TERMINAL",
+                    "event_id": "future",
+                },
+            )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = cli.main(["--project-root", str(root), "doctor"])
+
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(output.getvalue())["status"], "error")
+
+    def test_adopt_command_scaffolds_and_reports_created_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = cli.main(
+                    ["--project-root", str(root), "adopt", "--host", "claude"]
+                )
+            config_exists = (root / ".orchestrator" / "workers.toml").is_file()
+
+        self.assertEqual(code, 0)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["kind"], "ORCHESTRATOR_ADOPTION")
+        self.assertTrue(config_exists)
+        self.assertIn("watcher stream", " ".join(result["next_steps"]))
+
+    def test_adopt_command_dry_run_reports_plan_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = cli.main(["--project-root", str(root), "adopt", "--dry-run"])
+            state_exists = (root / ".orchestrator").exists()
+
+        self.assertEqual(code, 0)
+        result = json.loads(output.getvalue())
+        self.assertTrue(result["dry_run"])
+        self.assertFalse(state_exists)
+
+    def test_adopt_command_reports_error_for_non_directory_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            missing = root / "missing"
+            error_out = io.StringIO()
+            with contextlib.redirect_stderr(error_out):
+                code = cli.main(["--project-root", str(missing), "adopt"])
+
+        self.assertEqual(code, 1)
+        self.assertIn("project root is not a directory", error_out.getvalue())
+
+    def test_doctor_and_adopt_require_single_project_root(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as first,
+            tempfile.TemporaryDirectory() as second,
+        ):
+            errors = []
+            for command in ("doctor", "adopt"):
+                error_out = io.StringIO()
+                with contextlib.redirect_stderr(error_out):
+                    code = cli.main(
+                        [
+                            "--project-root",
+                            first,
+                            "--project-root",
+                            second,
+                            command,
+                        ]
+                    )
+                errors.append((code, error_out.getvalue()))
+
+        self.assertEqual([code for code, _error in errors], [1, 1])
+        self.assertIn("doctor requires exactly one project root", errors[0][1])
+        self.assertIn("adopt requires exactly one project root", errors[1][1])
+
+    def test_adopt_and_doctor_respect_custom_state_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            adopt_out = io.StringIO()
+            with contextlib.redirect_stdout(adopt_out):
+                adopt_code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "--state-dir",
+                        "local-orchestrator",
+                        "adopt",
+                    ]
+                )
+            doctor_out = io.StringIO()
+            with contextlib.redirect_stdout(doctor_out):
+                doctor_code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "--state-dir",
+                        "local-orchestrator",
+                        "doctor",
+                    ]
+                )
+
+        self.assertEqual((adopt_code, doctor_code), (0, 0))
+        adopt = json.loads(adopt_out.getvalue())
+        doctor = json.loads(doctor_out.getvalue())
+        self.assertEqual(adopt["state_dir"], "local-orchestrator")
+        self.assertEqual(doctor["state_dir"], "local-orchestrator")
+
     def test_watcher_acknowledge_marks_event_seen(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

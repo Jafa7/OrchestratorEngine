@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 SCHEMA_VERSION = 1
+SUPPORTED_SCHEMA_VERSIONS = frozenset({SCHEMA_VERSION})
 DEFAULT_STATE_DIR = ".orchestrator"
 TERMINAL_STATUSES = {
     "completed",
@@ -24,6 +25,10 @@ TERMINAL_STATUSES = {
 
 class OrchestratorError(RuntimeError):
     """A deterministic orchestration failure."""
+
+
+def is_supported_schema_version(value: object) -> bool:
+    return type(value) is int and value in SUPPORTED_SCHEMA_VERSIONS
 
 
 def utc_now() -> str:
@@ -191,7 +196,7 @@ def write_terminal_event(
 
 def verify_terminal_event(event_path: Path) -> dict[str, Any]:
     event = load_object(event_path.expanduser().resolve())
-    if event.get("schema_version") != SCHEMA_VERSION:
+    if not is_supported_schema_version(event.get("schema_version")):
         raise OrchestratorError("unsupported terminal event schema")
     if event.get("kind") != "WORKER_TERMINAL":
         raise OrchestratorError("unsupported terminal event kind")
@@ -241,6 +246,58 @@ def inbox(
         signal["signal_path"] = str(path)
         rows.append(signal)
     return rows
+
+
+def survey_schema_versions(
+    project_root: Path,
+    *,
+    state_dir: str = DEFAULT_STATE_DIR,
+) -> dict[str, Any]:
+    """Read durable orchestrator JSON files and bucket schema versions."""
+
+    project = project_root.expanduser().resolve()
+    candidates: list[Path] = []
+    candidates.extend(sorted(events_root(project, state_dir=state_dir).glob("*.json")))
+    candidates.extend(
+        sorted(inbox_root(project, state_dir=state_dir).glob("**/*.json"))
+    )
+    candidates.extend(
+        sorted((state_root(project, state_dir=state_dir) / "tasks").glob("*/*.json"))
+    )
+
+    supported: list[dict[str, Any]] = []
+    unsupported: list[dict[str, Any]] = []
+    unreadable: list[dict[str, Any]] = []
+    for path in candidates:
+        try:
+            value = load_object(path)
+        except (OSError, OrchestratorError) as error:
+            unreadable.append({"path": str(path), "error": str(error)})
+            continue
+        version = value.get("schema_version")
+        row = {
+            "path": str(path),
+            "kind": value.get("kind"),
+            "schema_version": version,
+        }
+        if is_supported_schema_version(version):
+            supported.append(row)
+        else:
+            unsupported.append(row)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "ORCHESTRATOR_SCHEMA_SURVEY",
+        "project_root": str(project),
+        "state_dir": state_dir,
+        "supported_schema_versions": sorted(SUPPORTED_SCHEMA_VERSIONS),
+        "supported_count": len(supported),
+        "unsupported_count": len(unsupported),
+        "unreadable_count": len(unreadable),
+        "supported": supported,
+        "unsupported": unsupported,
+        "unreadable": unreadable,
+        "checked_at": utc_now(),
+    }
 
 
 def compact_line_log(path: Path, *, keep_bytes: int) -> None:

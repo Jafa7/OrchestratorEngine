@@ -19,6 +19,17 @@ schema version is `1`.
 Every durable JSON contract includes `schema_version`. OrchestratorEngine v0.1
 accepts schema version `1`.
 
+Before and after an engine upgrade, run:
+
+```bash
+orchestrator-engine --project-root /path/to/project doctor
+```
+
+The `schema_compatibility` check surveys durable events, inbox operational
+JSON, bindings and worker task descriptors without rewriting or deleting them.
+It reports unsupported schema versions and unreadable JSON as
+operator-visible findings.
+
 If a command reports an unsupported schema:
 
 1. Stop any watcher service for the project.

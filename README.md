@@ -123,6 +123,12 @@ by the product, not by OrchestratorEngine core.
 
 ## Quick start
 
+Create the local orchestration layout in the project:
+
+```bash
+orchestrator-engine --project-root /path/to/project adopt --host codex
+```
+
 Bind the project to the host chat (example: Codex Desktop):
 
 ```bash
@@ -166,6 +172,7 @@ orchestrator-engine --project-root /path/to/project worker run \
 Check health / list pending signals / stop:
 
 ```bash
+orchestrator-engine --project-root /path/to/project doctor
 orchestrator-engine --project-root /path/to/project watcher \
   --host codex service status
 orchestrator-engine --project-root /path/to/project inbox
@@ -246,4 +253,4 @@ Additional documentation:
 - [Setup guide (start here)](docs/setup-guide.md)
 - [Contracts](docs/contracts.md)
 - [Host setup](docs/hosts.md)
-- [Project adoption](docs/project-adoption.md)
+- [Project integration and legacy adoption](docs/project-adoption.md)

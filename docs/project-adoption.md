@@ -4,6 +4,11 @@ For the standard end-to-end setup (install, bind, workers, watcher, smoke
 test) follow [setup-guide.md](setup-guide.md). This document covers the
 adoption contract itself and bridging legacy layouts.
 
+For a new project, start with the create-only scaffolder:
+`orchestrator-engine --project-root /path/to/project adopt`. This document is
+about deeper project integration and legacy bridges after that local layout
+exists.
+
 Projects integrate with OrchestratorEngine by implementing its standard file
 contract. OrchestratorEngine should not grow project-specific layouts.
 

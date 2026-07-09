@@ -61,12 +61,34 @@ The package has zero runtime dependencies.
 
 ```bash
 orchestrator-engine --help
+orchestrator-engine --version
 ```
 
 If `orchestrator-engine` is not on PATH, use `python3 -m orchestrator_engine.cli`
 everywhere below — but prefer a real install: the worker supervisor re-executes
 the module with the same interpreter and must be able to import it without a
 manually exported `PYTHONPATH`.
+
+## Step 1.5 — Adopt the project layout
+
+Run the create-only scaffolder in the project being connected:
+
+```bash
+orchestrator-engine --project-root /path/to/project adopt --host codex
+```
+
+Use `--host claude` or `--host vscode` when that is the user's host chat. The
+command is idempotent: it creates missing `.orchestrator/` directories and a
+disabled `workers.toml` template, but it does not write `binding.json`, enable
+workers, overwrite existing files or touch durable events/signals.
+
+**Check:**
+
+```bash
+orchestrator-engine --project-root /path/to/project doctor
+```
+
+Expect warnings until binding, workers and the wake channel are configured.
 
 ## Step 2 — Bind the host chat
 

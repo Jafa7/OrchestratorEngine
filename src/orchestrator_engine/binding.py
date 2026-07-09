@@ -80,7 +80,7 @@ def require_binding(
 
 
 def validate_binding(binding: dict[str, Any]) -> None:
-    if binding.get("schema_version") != core.SCHEMA_VERSION:
+    if not core.is_supported_schema_version(binding.get("schema_version")):
         raise BindingError("unsupported binding schema")
     if binding.get("kind") != BINDING_KIND:
         raise BindingError("unsupported binding kind")
@@ -113,7 +113,7 @@ def wake_target_from_binding(binding: dict[str, Any]) -> dict[str, Any]:
 
 
 def validate_wake_target(target: dict[str, Any]) -> None:
-    if target.get("schema_version") != core.SCHEMA_VERSION:
+    if not core.is_supported_schema_version(target.get("schema_version")):
         raise BindingError("unsupported wake target schema")
     if target.get("kind") != WAKE_TARGET_KIND:
         raise BindingError("unsupported wake target kind")

@@ -51,6 +51,29 @@ class CoreTests(unittest.TestCase):
             with self.assertRaises(core.OrchestratorError):
                 core.verify_terminal_event(Path(output["event_path"]))
 
+    def test_verify_terminal_event_rejects_non_integer_schema_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            result = root / "result.json"
+            evidence = root / "evidence.json"
+            result.write_text("result", encoding="utf-8")
+            evidence.write_text("evidence", encoding="utf-8")
+            output = core.write_terminal_event(
+                root,
+                task_id="TASK-001",
+                terminal_status="completed",
+                result_path=result,
+                evidence_path=evidence,
+                event_id="event-1",
+            )
+            event_path = Path(output["event_path"])
+            event = core.load_object(event_path)
+            event["schema_version"] = True
+            core.atomic_json(event_path, event)
+
+            with self.assertRaises(core.OrchestratorError):
+                core.verify_terminal_event(event_path)
+
     def test_cleanup_prunes_old_notifications_and_compacts_service_log(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -104,6 +127,107 @@ class CoreTests(unittest.TestCase):
         self.assertIn("line-99\n", content)
         self.assertNotIn("line-0\n", content)
         self.assertLessEqual(len(content.encode("utf-8")), 50 + len("line-99\n"))
+
+    def test_survey_schema_versions_buckets_supported_and_unsupported(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            result = root / "result.json"
+            evidence = root / "evidence.json"
+            result.write_text('{"status":"ok"}', encoding="utf-8")
+            evidence.write_text('{"review_ready":true}', encoding="utf-8")
+            core.write_terminal_event(
+                root,
+                task_id="TASK-001",
+                terminal_status="completed",
+                result_path=result,
+                evidence_path=evidence,
+                event_id="event-supported",
+            )
+            core.atomic_json(
+                core.events_root(root) / "event-future.json",
+                {
+                    "schema_version": 999,
+                    "kind": "WORKER_TERMINAL",
+                    "event_id": "event-future",
+                },
+            )
+            survey = core.survey_schema_versions(root)
+
+        self.assertEqual(survey["supported_count"], 2)
+        self.assertEqual(survey["unsupported_count"], 1)
+        self.assertEqual(survey["unsupported"][0]["schema_version"], 999)
+
+    def test_survey_schema_versions_reports_unreadable_without_deleting(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            broken = core.inbox_root(root) / "signals" / "broken.json"
+            broken.parent.mkdir(parents=True)
+            broken.write_text("{not-json", encoding="utf-8")
+            survey = core.survey_schema_versions(root)
+            still_exists = broken.is_file()
+
+        self.assertEqual(survey["unreadable_count"], 1)
+        self.assertTrue(still_exists)
+
+    def test_survey_schema_versions_rejects_non_integer_schema_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            core.atomic_json(
+                core.events_root(root) / "bool-schema.json",
+                {"schema_version": True, "kind": "WORKER_TERMINAL"},
+            )
+            core.atomic_json(
+                core.events_root(root) / "float-schema.json",
+                {"schema_version": 1.0, "kind": "WORKER_TERMINAL"},
+            )
+            survey = core.survey_schema_versions(root)
+
+        self.assertEqual(survey["supported_count"], 0)
+        self.assertEqual(survey["unsupported_count"], 2)
+
+    def test_survey_schema_versions_includes_watcher_state_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            state = core.inbox_root(root) / "watcher-state.json"
+            core.atomic_json(
+                state,
+                {
+                    "schema_version": core.SCHEMA_VERSION,
+                    "kind": "LOCAL_AI_ORCHESTRATOR_WATCHER_STATE",
+                },
+            )
+            survey = core.survey_schema_versions(root)
+
+        self.assertEqual(survey["supported_count"], 1)
+        self.assertEqual(survey["supported"][0]["path"], str(state))
+
+    def test_survey_schema_versions_includes_worker_task_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            task_dir = core.state_root(root) / "tasks" / "TASK-001"
+            task = task_dir / "task.json"
+            result = task_dir / "result.json"
+            evidence = task_dir / "evidence.json"
+            for path, kind in (
+                (task, "WORKER_TASK"),
+                (result, "WORKER_RESULT"),
+                (evidence, "WORKER_EVIDENCE"),
+            ):
+                core.atomic_json(
+                    path,
+                    {
+                        "schema_version": core.SCHEMA_VERSION,
+                        "kind": kind,
+                        "task_id": "TASK-001",
+                    },
+                )
+            survey = core.survey_schema_versions(root)
+
+        self.assertEqual(survey["supported_count"], 3)
+        self.assertEqual(
+            {item["path"] for item in survey["supported"]},
+            {str(task), str(result), str(evidence)},
+        )
 
 
 if __name__ == "__main__":

@@ -9,6 +9,10 @@ Version 0.1 stabilizes the local file contract, the CLI commands that write
 and read it, and the host-neutral wakeup message. Adopting projects may depend
 on these behaviors:
 
+- `adopt` creates only missing local orchestration layout files and never
+  overwrites existing worker configuration or durable audit artifacts.
+- `doctor` is read-only and reports project health as JSON checks with
+  `ok`, `warn`, `error` or `skipped` status.
 - Terminal events are written under `.orchestrator/events/` and paired with
   inbox signals under `.orchestrator/inbox/signals/`.
 - Event, signal, binding, worker task, watcher state, heartbeat, service and
@@ -43,6 +47,36 @@ The following are intentionally not v0.1 core contracts:
 Forward-compatible additions may add optional fields, new receipt kinds, new
 host adapters or new CLI flags. Breaking changes to required fields, `kind`
 values, path layout or terminal status names require a schema/version bump.
+
+## Operator diagnostics
+
+`adopt` writes missing local layout only:
+
+```bash
+orchestrator-engine --project-root /path/to/project adopt --host codex
+```
+
+It returns `ORCHESTRATOR_ADOPTION` with `created`, `skipped`, `dry_run` and
+`next_steps`. The command does not write `binding.json`, enable workers,
+overwrite `.orchestrator/workers.toml` or touch durable events/signals.
+
+`doctor` performs read-only checks:
+
+```bash
+orchestrator-engine --project-root /path/to/project doctor
+```
+
+It returns `ORCHESTRATOR_DOCTOR_REPORT` with `checks[]` entries:
+
+- `state_layout` — required local directories exist and are writable.
+- `schema_compatibility` — durable JSON documents use supported schemas.
+- `binding` — `binding.json` is present and valid.
+- `workers` — `.orchestrator/workers.toml` is parseable and dispatchable.
+- `watcher_channel` — callback service or stream state matches the host.
+- `engine_import` — the installed Python environment can re-exec the engine.
+
+`doctor` exits `0` for `ok` and `warn`, exits `2` for `error`, and exits `2`
+for warnings only when `--strict` is passed. CLI/runtime errors still exit `1`.
 
 ## Terminal event
 
