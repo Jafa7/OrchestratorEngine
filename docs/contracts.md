@@ -31,6 +31,9 @@ on these behaviors:
 - `watcher --host HOST` scopes delivery to one host and uses host-specific
   callback state/service/heartbeat files by default.
 - `cleanup` never removes terminal events or inbox signals.
+- Task outcome resolutions are separate operator files under
+  `.orchestrator/task-resolutions/`; they do not rewrite worker
+  `task.json`, `result.json`, `evidence.json`, events or signals.
 
 The following are intentionally not v0.1 core contracts:
 
@@ -93,7 +96,8 @@ It returns `ORCHESTRATOR_STATUS_REPORT` with:
 - `components.wake_channel` — callback service or stream status, pending
   signal counts and channel warnings.
 - `components.worker_tasks` — task status counts plus only tasks that have
-  diagnostics at the selected severity.
+  diagnostics at the selected severity, with counts for operator-resolved
+  historical task outcomes.
 - `components.checks` — verification check status counts plus only failed or
   diagnostic-bearing checks.
 - `issues[]` — flattened operator actions collected from the component
@@ -534,6 +538,7 @@ It returns:
   },
   "task_count": 1,
   "status_counts": {"running": 1},
+  "resolution_counts": {"acknowledged": 0, "superseded": 0},
   "diagnostic_count": 1,
   "severity_counts": {"info": 0, "warning": 1, "error": 0},
   "worst_severity": "warning",
@@ -581,6 +586,12 @@ Known task diagnostic codes:
   stale threshold.
 - `task_terminal_unsuccessful` — task ended in a non-`completed` terminal
   status such as `failed` or `timed_out`.
+- `task_terminal_unsuccessful_resolved` — the unsuccessful terminal status is
+  still recorded, but an operator resolution file exists; emitted at `info`
+  severity so normal warning-level status reports do not reopen handled
+  historical failures.
+- `task_resolution_unreadable` — the operator resolution file is invalid or
+  unreadable.
 - `task_missing_result`, `task_missing_evidence`, `task_missing_event`,
   `task_missing_signal` — terminal task references missing artifacts.
 - `task_unreadable_result`, `task_unreadable_evidence` — terminal artifacts
@@ -589,6 +600,64 @@ Known task diagnostic codes:
 Exit codes match `worker diagnose`: `0` for no diagnostics or `info` only, `2`
 for warnings, `3` for errors and `1` for CLI/runtime failures such as an
 unknown `--task-id` filter.
+
+## Worker task resolutions
+
+Path:
+
+- `.orchestrator/task-resolutions/<task_id>.json`
+
+Task resolutions are explicit operator decisions for historical task outcomes.
+They preserve the durable audit trail: the original task descriptor, terminal
+result/evidence, event and signal are not rewritten or removed. Use them when
+a failed task has been manually reviewed, or when a newer task supersedes a
+failed attempt.
+
+Write a resolution:
+
+```bash
+orchestrator-engine --project-root /path/to/project worker resolve \
+  --task-id TASK-OLD \
+  --status superseded \
+  --superseded-by-task-id TASK-NEW \
+  --reason "Successful rerun completed the intended work."
+```
+
+List resolutions:
+
+```bash
+orchestrator-engine --project-root /path/to/project worker resolutions
+```
+
+Required fields:
+
+```json
+{
+  "schema_version": 1,
+  "kind": "WORKER_TASK_RESOLUTION",
+  "task_id": "TASK-OLD",
+  "status": "superseded",
+  "superseded_by_task_id": "TASK-NEW",
+  "previous_task_status": "failed",
+  "reason": "Successful rerun completed the intended work.",
+  "created_at": "2026-07-09T00:00:00.000+00:00"
+}
+```
+
+Allowed `status` values:
+
+- `acknowledged` — the operator inspected the unsuccessful task and no longer
+  wants it treated as an active warning.
+- `superseded` — a newer task handled the intended work; requires
+  `superseded_by_task_id` pointing at an existing `completed` task.
+
+The source task must already have an unsuccessful terminal status
+(`failed`, `timed_out`, `rate_limited`, `invalid_result` or `cancelled`).
+Completed and still-running tasks cannot be resolved.
+
+`worker tasks --severity info` still shows resolved unsuccessful tasks with
+`task_terminal_unsuccessful_resolved`. Missing or unreadable artifacts remain
+`error` diagnostics even when a task has a resolution file.
 
 ## Watcher state
 

@@ -7,7 +7,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from orchestrator_engine import binding, cli, core, status, verification, workers
+from orchestrator_engine import (
+    binding,
+    cli,
+    core,
+    status,
+    task_resolution,
+    verification,
+    workers,
+)
 
 
 def create_layout(root: Path) -> None:
@@ -123,6 +131,33 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(report["kind"], status.STATUS_KIND)
         self.assertEqual(report["components"]["wake_channel"]["status"], "warn")
 
+    def test_status_counts_resolved_failed_task_without_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            create_layout(root)
+            write_worker_config(root)
+            binding.write_binding(root, host="codex", target_thread_id="thread-1")
+            write_failed_task(root)
+            task_resolution.write_resolution(
+                root,
+                task_id="T-FAIL",
+                status="acknowledged",
+                reason="Reviewed manually; superseded outside this fixture.",
+            )
+            report = status.run_status(root)
+
+        tasks = report["components"]["worker_tasks"]
+        self.assertEqual(tasks["resolved_task_count"], 1)
+        self.assertEqual(tasks["problem_task_count"], 0)
+        self.assertEqual(tasks["resolution_counts"]["acknowledged"], 1)
+        self.assertFalse(
+            any(
+                issue.get("source") == "worker_tasks"
+                for issue in report["issues"]
+                if isinstance(issue, dict)
+            )
+        )
+
     def test_report_draft_returns_markdown_issue_body(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -138,6 +173,25 @@ class StatusTests(unittest.TestCase):
         self.assertIn("`project:fixture`", draft)
         self.assertIn("`source:codex`", draft)
         self.assertIn("None by this report draft command", draft)
+
+    def test_report_draft_lists_resolved_historical_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            create_layout(root)
+            write_worker_config(root)
+            binding.write_binding(root, host="codex", target_thread_id="thread-1")
+            write_failed_task(root)
+            task_resolution.write_resolution(
+                root,
+                task_id="T-FAIL",
+                status="acknowledged",
+                reason="Reviewed manually.",
+            )
+            draft = status.report_draft(root, project_name="Fixture")
+
+        self.assertIn("## Resolved Historical Tasks", draft)
+        self.assertIn("task_id=`T-FAIL`", draft)
+        self.assertIn("resolution=`acknowledged`", draft)
 
     def test_recommended_report_labels_are_stable_slugs(self) -> None:
         labels = status.recommended_report_labels(

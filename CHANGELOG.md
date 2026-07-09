@@ -14,6 +14,9 @@ All notable changes to OrchestratorEngine are documented here.
   adopter-project problem reports.
 - Project/source label conventions identify report origin independently of the
   GitHub account that created the issue.
+- Operator task resolutions (`worker resolve`, `worker resolutions`) let
+  historical failed tasks be marked `acknowledged` or `superseded` without
+  deleting or rewriting durable audit artifacts.
 
 ## [0.1.0] - 2026-07-08
 

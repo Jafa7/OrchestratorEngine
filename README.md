@@ -196,6 +196,21 @@ Use `status` first for a compact operator report. It summarizes `doctor`,
 the active wake channel, worker task diagnostics and verification checks, then
 lists only issues and problem tasks/checks that need follow-up.
 
+If a failed historical worker task has been handled manually or superseded by a
+successful rerun, keep the task artifacts and add an operator resolution:
+
+```bash
+orchestrator-engine --project-root /path/to/project worker resolve \
+  --task-id TASK-OLD \
+  --status superseded \
+  --superseded-by-task-id TASK-NEW \
+  --reason "Successful rerun completed the intended work."
+```
+
+The resolution lives in `.orchestrator/task-resolutions/`. It stops normal
+warning-level status reports from reopening the handled failure, while
+`worker tasks --severity info` still shows the historical outcome.
+
 When an adopter project finds an orchestration issue, draft a structured report
 instead of pasting huge logs:
 

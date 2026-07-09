@@ -478,6 +478,7 @@ hosts, or by ending the armed stream command for Claude).
 | Codex receipt `woken`, window focused, but no new visible turn | Check `live_refresh`; the turn was delivered to Codex storage, but Codex Desktop may not have reloaded the already-open thread. On Windows the adapter sends a best-effort `Ctrl+R` refresh pulse after deep-link activation. |
 | `code chat` exits non-zero | VS Code < 1.127 or `code` not on PATH; wakeup stays retryable. |
 | `worker run` → `task already exists` | Task ids are one-shot by design; pick a new id. |
+| Historical failed task keeps `status` or `worker tasks` noisy after a successful rerun | Preserve the task artifacts and write an operator resolution: `orchestrator-engine --project-root <root> worker resolve --task-id <old-task> --status superseded --superseded-by-task-id <new-task> --reason "successful rerun"`. Use `--status acknowledged` for a manually reviewed task that was not superseded by another task. |
 | Verification worker passed but logs are huge | Read `.orchestrator/checks/<check_id>/summary.txt`; full logs are durable artifacts and do not need to be pasted into chat. |
 | Verification worker failed | Read `verification-result.json`, then only the command logs referenced by failed command entries. |
 | Multiple verification runs need triage | Run `checks --severity warning`; inspect `summary_path` and `failed_commands[].log_path` from the JSON output. |

@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import core, worker_diagnostics, workers
+from . import core, task_resolution, worker_diagnostics, workers
 
 TASK_DIAGNOSTICS_KIND = "WORKER_TASK_DIAGNOSTICS"
 RUNNING_STATUSES = {"starting", "running"}
@@ -126,6 +126,7 @@ def diagnose_tasks(
         },
         "task_count": len(summaries),
         "status_counts": status_counts(summaries.values()),
+        "resolution_counts": resolution_counts(summaries.values()),
         "diagnostic_count": len(all_diagnostics),
         "severity_counts": worker_diagnostics.severity_counts(all_diagnostics),
         "worst_severity": worker_diagnostics.worst_severity(all_diagnostics),
@@ -144,6 +145,18 @@ def status_counts(summaries: Iterable[dict[str, Any]]) -> dict[str, int]:
             unknown_count += 1
     if unknown_count:
         counts["unknown"] = unknown_count
+    return counts
+
+
+def resolution_counts(summaries: Iterable[dict[str, Any]]) -> dict[str, int]:
+    counts = {status: 0 for status in sorted(task_resolution.RESOLUTION_STATUSES)}
+    for summary in summaries:
+        resolution = summary.get("resolution")
+        if not isinstance(resolution, dict):
+            continue
+        status = resolution.get("status")
+        if isinstance(status, str) and status in counts:
+            counts[status] += 1
     return counts
 
 
@@ -186,6 +199,12 @@ def summarize_task(
         descriptor = core.load_object(descriptor_path)
     except (OSError, core.OrchestratorError) as error:
         task_id = task_dir.name
+        resolution = load_task_resolution(
+            project_root,
+            task_id,
+            state_dir=state_dir,
+            diagnostics=diagnostics,
+        )
         diagnostics.append(
             diagnostic(
                 code="task_descriptor_unreadable",
@@ -202,10 +221,17 @@ def summarize_task(
             descriptor_path=descriptor_path,
             task_dir=task_dir,
             diagnostics=diagnostics,
+            resolution=resolution,
         )
 
     task_id = str(descriptor.get("task_id") or task_dir.name)
     status = str(descriptor.get("status") or "unknown")
+    resolution = load_task_resolution(
+        project_root,
+        task_id,
+        state_dir=state_dir,
+        diagnostics=diagnostics,
+    )
     artifacts = task_artifacts(task_dir, descriptor)
     supervisor_pid = descriptor.get("supervisor_pid")
     worker_pid = descriptor.get("worker_pid")
@@ -254,6 +280,7 @@ def summarize_task(
             status=status,
             task_dir=task_dir,
             artifacts=artifacts,
+            resolution=resolution,
         )
     )
 
@@ -262,6 +289,7 @@ def summarize_task(
         descriptor_path=descriptor_path,
         task_dir=task_dir,
         diagnostics=diagnostics,
+        resolution=resolution,
     )
     summary.update(
         {
@@ -289,8 +317,9 @@ def base_summary(
     descriptor_path: Path,
     task_dir: Path,
     diagnostics: list[dict[str, str]],
+    resolution: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    summary: dict[str, Any] = {
         "task_id": task_id,
         "directory_task_id": task_dir.name,
         "task_dir": str(task_dir),
@@ -300,6 +329,41 @@ def base_summary(
         "worst_severity": worker_diagnostics.worst_severity(diagnostics),
         "diagnostics": diagnostics,
     }
+    if resolution is not None:
+        summary["resolution"] = resolution
+    return summary
+
+
+def load_task_resolution(
+    project_root: Path,
+    task_id: str,
+    *,
+    state_dir: str,
+    diagnostics: list[dict[str, str]],
+) -> dict[str, Any] | None:
+    try:
+        return task_resolution.load_resolution(
+            project_root,
+            task_id,
+            state_dir=state_dir,
+        )
+    except (
+        OSError,
+        core.OrchestratorError,
+        task_resolution.TaskResolutionError,
+    ) as error:
+        diagnostics.append(
+            diagnostic(
+                code="task_resolution_unreadable",
+                severity="error",
+                message=f"task {task_id} resolution is unreadable: {error}",
+                suggested_action=(
+                    "Inspect the task resolution file; do not delete task "
+                    "result/evidence to hide this diagnostic."
+                ),
+            )
+        )
+    return None
 
 
 def task_artifacts(task_dir: Path, descriptor: dict[str, Any]) -> dict[str, Path]:
@@ -468,21 +532,38 @@ def terminal_task_diagnostics(
     status: str,
     task_dir: Path,
     artifacts: dict[str, Path],
+    resolution: dict[str, Any] | None,
 ) -> list[dict[str, str]]:
     if status not in core.TERMINAL_STATUSES:
         return []
     diagnostics: list[dict[str, str]] = []
     if status in UNSUCCESSFUL_TERMINAL_STATUSES:
-        diagnostics.append(
-            diagnostic(
-                code="task_terminal_unsuccessful",
-                severity="warning",
-                message=f"task {task_id} finished with terminal status {status}",
-                suggested_action=(
-                    "Read result.json, then worker stdout/stderr as needed."
-                ),
+        if resolution is not None:
+            diagnostics.append(
+                diagnostic(
+                    code="task_terminal_unsuccessful_resolved",
+                    severity="info",
+                    message=(
+                        f"task {task_id} finished with terminal status {status} "
+                        f"and is marked {resolution.get('status')}"
+                    ),
+                    suggested_action=(
+                        "Keep the resolution file and durable task artifacts; "
+                        "inspect result/evidence only if the resolution changes."
+                    ),
+                )
             )
-        )
+        else:
+            diagnostics.append(
+                diagnostic(
+                    code="task_terminal_unsuccessful",
+                    severity="warning",
+                    message=f"task {task_id} finished with terminal status {status}",
+                    suggested_action=(
+                        "Read result.json, then worker stdout/stderr as needed."
+                    ),
+                )
+            )
     for artifact_name in ("result", "evidence"):
         path = artifacts[artifact_name]
         if not path.is_file():

@@ -319,6 +319,61 @@ command = ["true"]
         self.assertEqual(report["diagnostic_count"], 0)
         self.assertEqual(report["tasks"]["T-FAIL"]["diagnostics"], [])
 
+    def test_worker_resolve_and_resolutions_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            old_dir = workers.task_dir_for(root, "T-OLD")
+            new_dir = workers.task_dir_for(root, "T-NEW")
+            old_dir.mkdir(parents=True, exist_ok=True)
+            new_dir.mkdir(parents=True, exist_ok=True)
+            for task_id, task_dir, task_status in (
+                ("T-OLD", old_dir, "failed"),
+                ("T-NEW", new_dir, "completed"),
+            ):
+                core.atomic_json(
+                    task_dir / "task.json",
+                    {
+                        "schema_version": 1,
+                        "kind": workers.TASK_KIND,
+                        "task_id": task_id,
+                        "worker": "echo",
+                        "status": task_status,
+                    },
+                )
+            resolve_out = io.StringIO()
+            with contextlib.redirect_stdout(resolve_out):
+                resolve_code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "worker",
+                        "resolve",
+                        "--task-id",
+                        "T-OLD",
+                        "--status",
+                        "superseded",
+                        "--superseded-by-task-id",
+                        "T-NEW",
+                        "--reason",
+                        "Successful rerun replaced this task.",
+                    ]
+                )
+            list_out = io.StringIO()
+            with contextlib.redirect_stdout(list_out):
+                list_code = cli.main(
+                    ["--project-root", str(root), "worker", "resolutions"]
+                )
+
+        resolved = json.loads(resolve_out.getvalue())
+        listed = json.loads(list_out.getvalue())
+        self.assertEqual((resolve_code, list_code), (0, 0))
+        self.assertEqual(resolved["status"], "superseded")
+        self.assertEqual(listed["resolution_count"], 1)
+        self.assertEqual(
+            listed["resolutions"]["T-OLD"]["superseded_by_task_id"],
+            "T-NEW",
+        )
+
     def test_checks_reports_failed_verification_with_exit_code(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

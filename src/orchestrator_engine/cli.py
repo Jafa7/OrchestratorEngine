@@ -18,6 +18,7 @@ from . import (
     diagnostics,
     status,
     task_diagnostics,
+    task_resolution,
     verification,
     watcher,
     worker_diagnostics,
@@ -239,6 +240,35 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=task_diagnostics.DEFAULT_STALE_AFTER_SECONDS,
         help="Running task heartbeat age that should be considered stale.",
+    )
+    worker_resolve = worker_subparsers.add_parser(
+        "resolve",
+        help="Mark a historical worker task outcome as operator-resolved.",
+    )
+    worker_resolve.add_argument("--task-id", required=True)
+    worker_resolve.add_argument(
+        "--status",
+        choices=sorted(task_resolution.RESOLUTION_STATUSES),
+        required=True,
+        help="Resolution status for the historical task outcome.",
+    )
+    worker_resolve.add_argument(
+        "--reason",
+        required=True,
+        help="Human-readable reason for the resolution.",
+    )
+    worker_resolve.add_argument(
+        "--superseded-by-task-id",
+        help="Successful or newer task id that supersedes this task.",
+    )
+    worker_resolve.add_argument(
+        "--replace",
+        action="store_true",
+        help="Replace an existing resolution file for this task.",
+    )
+    worker_subparsers.add_parser(
+        "resolutions",
+        help="List operator resolutions for historical worker task outcomes.",
     )
     worker_run = worker_subparsers.add_parser(
         "run",
@@ -597,6 +627,18 @@ def run_worker_cli_command(args: argparse.Namespace, root: Path) -> object:
             minimum_severity=args.severity,
             stale_after_seconds=args.stale_after_seconds,
         )
+    if args.worker_command == "resolve":
+        return task_resolution.write_resolution(
+            root,
+            task_id=args.task_id,
+            status=args.status,
+            reason=args.reason,
+            superseded_by_task_id=args.superseded_by_task_id,
+            state_dir=args.state_dir,
+            replace=args.replace,
+        )
+    if args.worker_command == "resolutions":
+        return task_resolution.list_resolutions(root, state_dir=args.state_dir)
     if args.worker_command == "run":
         return workers.run_worker(
             root,

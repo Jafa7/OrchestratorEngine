@@ -160,6 +160,7 @@ def summarize_worker_tasks(report: dict[str, Any]) -> dict[str, Any]:
             "task_id": task.get("task_id"),
             "worker": task.get("worker"),
             "status": task.get("status"),
+            "resolution": task.get("resolution"),
             "finished_at": task.get("finished_at"),
             "diagnostic_count": task.get("diagnostic_count", 0),
             "diagnostics": task.get("diagnostics", []),
@@ -168,15 +169,37 @@ def summarize_worker_tasks(report: dict[str, Any]) -> dict[str, Any]:
         for task_id, task in tasks.items()
         if isinstance(task, dict) and task.get("diagnostic_count", 0)
     }
+    resolved_tasks = {
+        task_id: {
+            "task_id": task.get("task_id"),
+            "worker": task.get("worker"),
+            "status": task.get("status"),
+            "finished_at": task.get("finished_at"),
+            "resolution": task.get("resolution"),
+        }
+        for task_id, task in tasks.items()
+        if isinstance(task, dict) and isinstance(task.get("resolution"), dict)
+    }
     return {
         "status": status_from_severity(report.get("worst_severity")),
         "worst_severity": report.get("worst_severity"),
         "task_count": report.get("task_count", 0),
         "status_counts": report.get("status_counts", {}),
+        "resolution_counts": report.get("resolution_counts", {}),
         "diagnostic_count": report.get("diagnostic_count", 0),
+        "resolved_task_count": resolved_task_count(tasks),
+        "resolved_tasks": resolved_tasks,
         "problem_task_count": len(problem_tasks),
         "problem_tasks": problem_tasks,
     }
+
+
+def resolved_task_count(tasks: dict[str, Any]) -> int:
+    return sum(
+        1
+        for task in tasks.values()
+        if isinstance(task, dict) and isinstance(task.get("resolution"), dict)
+    )
 
 
 def summarize_checks(report: dict[str, Any]) -> dict[str, Any]:
@@ -391,6 +414,7 @@ def report_draft(
                 lines.append(f"   - suggested action: {issue['suggested_action']}")
     else:
         lines.append("No issues at the selected severity.")
+    append_resolved_task_details(lines, report)
     lines.extend(
         [
             "",
@@ -440,7 +464,8 @@ def append_component_details(
             "  - tasks: "
             f"count=`{component.get('task_count')}`, "
             f"diagnostics=`{component.get('diagnostic_count')}`, "
-            f"problems=`{component.get('problem_task_count')}`"
+            f"problems=`{component.get('problem_task_count')}`, "
+            f"resolved=`{component.get('resolved_task_count')}`"
         )
     elif component_name == "checks":
         lines.append(
@@ -456,6 +481,35 @@ def append_component_details(
             f"enabled=`{component.get('enabled_count')}`, "
             f"profile_warnings=`{component.get('warning_count')}`"
         )
+
+
+def append_resolved_task_details(lines: list[str], report: dict[str, Any]) -> None:
+    components = report.get("components")
+    if not isinstance(components, dict):
+        return
+    worker_tasks = components.get("worker_tasks")
+    if not isinstance(worker_tasks, dict):
+        return
+    resolved_tasks = worker_tasks.get("resolved_tasks")
+    if not isinstance(resolved_tasks, dict) or not resolved_tasks:
+        return
+    lines.extend(["", "## Resolved Historical Tasks", ""])
+    for index, (task_id, task) in enumerate(sorted(resolved_tasks.items()), start=1):
+        if not isinstance(task, dict):
+            continue
+        resolution = task.get("resolution")
+        resolution_status = None
+        superseded_by = None
+        if isinstance(resolution, dict):
+            resolution_status = resolution.get("status")
+            superseded_by = resolution.get("superseded_by_task_id")
+        lines.append(
+            f"{index}. task_id=`{task_id}`, "
+            f"status=`{task.get('status')}`, "
+            f"resolution=`{resolution_status}`"
+        )
+        if superseded_by:
+            lines.append(f"   - superseded_by_task_id: `{superseded_by}`")
 
 
 def selected_host(report: dict[str, Any], explicit_host: str | None) -> str | None:

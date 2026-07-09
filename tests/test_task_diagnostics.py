@@ -5,7 +5,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from orchestrator_engine import core, task_diagnostics, workers
+from orchestrator_engine import core, task_diagnostics, task_resolution, workers
 
 
 def write_task(root: Path, task_id: str, descriptor: dict) -> Path:
@@ -135,6 +135,71 @@ class TaskDiagnosticTests(unittest.TestCase):
             report["tasks"]["T-FAIL"]["diagnostics"][0]["code"],
             "task_terminal_unsuccessful",
         )
+
+    def test_resolved_unsuccessful_terminal_status_is_info_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            task_dir = workers.task_dir_for(root, "T-FAIL")
+            task_dir.mkdir(parents=True, exist_ok=True)
+            core.atomic_json(task_dir / "result.json", {"terminal_status": "failed"})
+            core.atomic_json(task_dir / "evidence.json", {"ok": True})
+            write_task(
+                root,
+                "T-FAIL",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-FAIL",
+                    "worker": "echo",
+                    "status": "failed",
+                },
+            )
+            task_resolution.write_resolution(
+                root,
+                task_id="T-FAIL",
+                status="acknowledged",
+                reason="Reviewed manually.",
+            )
+            report = task_diagnostics.diagnose_tasks(root)
+
+        task = report["tasks"]["T-FAIL"]
+        self.assertEqual(report["worst_severity"], "info")
+        self.assertEqual(report["resolution_counts"]["acknowledged"], 1)
+        self.assertEqual(task["resolution"]["status"], "acknowledged")
+        self.assertEqual(
+            task["diagnostics"][0]["code"],
+            "task_terminal_unsuccessful_resolved",
+        )
+
+    def test_resolved_failed_task_still_reports_missing_artifact_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            task_dir = workers.task_dir_for(root, "T-FAIL")
+            task_dir.mkdir(parents=True, exist_ok=True)
+            core.atomic_json(task_dir / "evidence.json", {"ok": True})
+            write_task(
+                root,
+                "T-FAIL",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-FAIL",
+                    "worker": "echo",
+                    "status": "failed",
+                },
+            )
+            task_resolution.write_resolution(
+                root,
+                task_id="T-FAIL",
+                status="acknowledged",
+                reason="Reviewed manually.",
+            )
+            report = task_diagnostics.diagnose_tasks(root)
+
+        codes = [item["code"] for item in report["tasks"]["T-FAIL"]["diagnostics"]]
+        self.assertEqual(report["worst_severity"], "error")
+        self.assertIn("task_terminal_unsuccessful_resolved", codes)
+        self.assertIn("task_missing_result", codes)
 
     def test_task_id_filter_rejects_missing_task(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

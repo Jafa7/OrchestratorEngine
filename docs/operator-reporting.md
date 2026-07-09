@@ -13,6 +13,9 @@ triage.
 - Do not paste huge logs. Start with `status`, then include only targeted
   drill-down output and artifact ids.
 - Do not delete durable events, signals, results or evidence to "fix" a report.
+- If an unsuccessful historical task has already been handled, use
+  `worker resolve` to record an operator resolution instead of deleting the
+  task directory or hiding the audit trail.
 - Runtime changes in adopter projects must be listed explicitly.
 - Product-specific policy and bridges stay in adopter projects. Core fixes
   belong here only when the behavior is provider-neutral or adapter-scoped.
