@@ -23,6 +23,8 @@ All notable changes to OrchestratorEngine are documented here.
   deterministic severities and automation-friendly exit codes.
 - Read-only `worker tasks` reports runtime diagnostics for detached task
   artifacts, stale heartbeats and missing results/evidence.
+- Read-only `checks` reports compact verification status, summary paths and
+  failed command logs for `.orchestrator/checks` artifacts.
 - Install smoke coverage that exercises the installed CLI without
   `PYTHONPATH`.
 

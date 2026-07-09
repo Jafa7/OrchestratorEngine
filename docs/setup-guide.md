@@ -314,12 +314,15 @@ orchestrator-engine --project-root /path/to/project worker run \
   --worker check-fast --task-id CHECK-SMOKE-1 --prompt-file /tmp/smoke-prompt.md
 
 cat /path/to/project/.orchestrator/checks/*/verification-result.json
+orchestrator-engine --project-root /path/to/project checks --severity warning
 ```
 
 If the verification result reports `"status": "passed"`, the woken agent
-should read only `verification-result.json` and `summary.txt`. If it reports
-`"failed"` or `"errored"`, the agent should inspect the failed command logs
-referenced by the JSON result.
+should read only `verification-result.json` and `summary.txt`. `checks`
+summarizes all check results, failed command log paths and missing artifacts in
+one compact JSON report. If a check reports `"failed"` or `"errored"`, read
+`summary.txt` first, then inspect only the failed command logs referenced by
+the JSON result.
 
 ## Step 5 — Start the wake channel
 
@@ -466,6 +469,7 @@ hosts, or by ending the armed stream command for Claude).
 | `worker run` → `task already exists` | Task ids are one-shot by design; pick a new id. |
 | Verification worker passed but logs are huge | Read `.orchestrator/checks/<check_id>/summary.txt`; full logs are durable artifacts and do not need to be pasted into chat. |
 | Verification worker failed | Read `verification-result.json`, then only the command logs referenced by failed command entries. |
+| Multiple verification runs need triage | Run `checks --severity warning`; inspect `summary_path` and `failed_commands[].log_path` from the JSON output. |
 | Worker appears stuck or no wakeup arrived | Run `worker tasks --severity warning` to inspect stale heartbeats, dead supervisor/worker pids and missing artifacts before reading full logs. |
 | Copilot worker stalls with `Permission denied and could not request permission from user` | The profile is interactive. Add autonomous Copilot flags such as `--allow-all --no-ask-user`, or configure a project-approved narrower non-interactive policy. |
 | Supervisor log shows `ModuleNotFoundError: orchestrator_engine` | Engine was run via ad-hoc `PYTHONPATH` instead of being installed; run `pip install .` (Step 1). |

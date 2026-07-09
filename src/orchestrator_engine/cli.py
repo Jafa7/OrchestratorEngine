@@ -17,6 +17,7 @@ from . import (
     core,
     diagnostics,
     task_diagnostics,
+    verification,
     watcher,
     worker_diagnostics,
     workers,
@@ -201,6 +202,25 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup.add_argument("--log-keep-bytes", type=int, default=10 * 1024 * 1024)
     cleanup.add_argument("--dry-run", action="store_true")
 
+    checks = subparsers.add_parser(
+        "checks",
+        help="Run read-only status diagnostics for verification check artifacts.",
+    )
+    checks.add_argument(
+        "--check-id",
+        help="Inspect one verification check id instead of every check.",
+    )
+    checks.add_argument(
+        "--status",
+        help="Only include checks with this status.",
+    )
+    checks.add_argument(
+        "--severity",
+        choices=worker_diagnostics.SEVERITIES,
+        default="info",
+        help="Minimum diagnostic severity to include.",
+    )
+
     watcher_parser = subparsers.add_parser(
         "watcher",
         help="Scan the inbox and act on unseen terminal signals.",
@@ -350,6 +370,20 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
             )
             print_json(output)
+        elif args.command == "checks":
+            if len(roots) != 1:
+                raise core.OrchestratorError("checks requires exactly one project root")
+            output = verification.checks_status(
+                roots[0],
+                state_dir=args.state_dir,
+                check_id=args.check_id,
+                status=args.status,
+                minimum_severity=args.severity,
+            )
+            print_json(output)
+            return worker_diagnostics.exit_code_for_worst(
+                output.get("worst_severity") if isinstance(output, dict) else None
+            )
         elif args.command == "doctor":
             if len(roots) != 1:
                 raise core.OrchestratorError(

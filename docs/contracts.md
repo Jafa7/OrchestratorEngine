@@ -390,6 +390,70 @@ When a host chat wakes for a verification worker, it should read
 do not read the full log unless the user asks. If `status` is not `passed`,
 read the relevant command log(s) referenced by failed command entries.
 
+`checks` is the read-only status command for verification artifacts. It does
+not run commands or mutate check directories.
+
+```bash
+orchestrator-engine --project-root /path/to/project checks --severity warning
+```
+
+It returns:
+
+```json
+{
+  "kind": "ORCHESTRATOR_CHECKS_STATUS",
+  "check_count": 1,
+  "status_counts": {"passed": 0, "failed": 1, "errored": 0},
+  "diagnostic_count": 1,
+  "severity_counts": {"info": 0, "warning": 1, "error": 0},
+  "worst_severity": "warning",
+  "checks": {
+    "CHECK-001": {
+      "check_id": "CHECK-001",
+      "status": "failed",
+      "summary_path": ".orchestrator/checks/CHECK-001/summary.txt",
+      "failed_command_count": 1,
+      "failed_commands": [
+        {
+          "label": "unit",
+          "status": "failed",
+          "log_path": ".orchestrator/checks/CHECK-001/unit.log"
+        }
+      ],
+      "diagnostics": [
+        {
+          "code": "verification_unsuccessful",
+          "severity": "warning",
+          "message": "...",
+          "suggested_action": "..."
+        }
+      ]
+    }
+  }
+}
+```
+
+Known check diagnostic codes:
+
+- `verification_result_unreadable` — `verification-result.json` is missing or
+  cannot be read as a JSON object.
+- `verification_check_id_mismatch` — result `check_id` does not match its
+  check directory name.
+- `verification_schema_unsupported` — result schema is not supported.
+- `verification_kind_unexpected` — result kind is not
+  `ORCHESTRATOR_VERIFICATION_RESULT`.
+- `verification_status_unknown` — result status is outside the known check
+  states.
+- `verification_unsuccessful` — result status is `failed`, `errored` or
+  `cancelled`.
+- `verification_commands_invalid` — result `commands` is not a list.
+- `verification_missing_result`, `verification_missing_summary`,
+  `verification_missing_full_log` — referenced artifacts are missing.
+
+Exit codes match other diagnostic commands: `0` for no diagnostics or `info`
+only, `2` for warnings, `3` for errors and `1` for CLI/runtime failures such
+as an unknown `--check-id` filter.
+
 ## Worker tasks
 
 `worker run` creates `.orchestrator/tasks/<task_id>/` containing:

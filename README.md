@@ -212,6 +212,8 @@ orchestrator-engine --project-root /path/to/project emit \
 For long checks, use the verification result contract documented in
 [docs/contracts.md](docs/contracts.md#verification-result). The portable
 reference runner is [examples/check_runner.py](examples/check_runner.py).
+Use `orchestrator-engine --project-root /path/to/project checks` to read a
+compact status report before opening full logs.
 
 Prune stale notifications, thread-wakeup receipts and rotate the watcher
 service log:

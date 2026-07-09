@@ -252,6 +252,7 @@ class InstallSmokeTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
+            checks_status = self.run_cli(cli, project, "checks")
         self.assertEqual(bind["host"], "claude")
         self.assertIn("0.1.0", version)
         self.assertTrue(workers["workers"]["smoke"]["enabled"])
@@ -264,6 +265,8 @@ class InstallSmokeTests(unittest.TestCase):
         self.assertEqual(task_diagnostics["kind"], "WORKER_TASK_DIAGNOSTICS")
         self.assertEqual(task_diagnostics["diagnostic_count"], 0)
         self.assertEqual(verification["status"], "passed")
+        self.assertEqual(checks_status["kind"], "ORCHESTRATOR_CHECKS_STATUS")
+        self.assertEqual(checks_status["checks"]["INSTALL-CHECK"]["status"], "passed")
         inbox_task_ids = {row["task_id"] for row in inbox[str(project)]}
         self.assertIn("SMOKE-1", inbox_task_ids)
         self.assertIn("SMOKE-FAIL", inbox_task_ids)

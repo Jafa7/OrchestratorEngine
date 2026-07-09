@@ -319,6 +319,81 @@ command = ["true"]
         self.assertEqual(report["diagnostic_count"], 0)
         self.assertEqual(report["tasks"]["T-FAIL"]["diagnostics"], [])
 
+    def test_checks_reports_failed_verification_with_exit_code(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            check_dir = root / ".orchestrator" / "checks" / "CHECK-FAIL"
+            check_dir.mkdir(parents=True)
+            core.atomic_json(
+                check_dir / "verification-result.json",
+                {
+                    "schema_version": 1,
+                    "kind": "ORCHESTRATOR_VERIFICATION_RESULT",
+                    "check_id": "CHECK-FAIL",
+                    "status": "failed",
+                    "exit_code": 1,
+                    "commands": [
+                        {
+                            "label": "unit",
+                            "required": True,
+                            "status": "failed",
+                            "exit_code": 1,
+                            "command": "python -m unittest",
+                            "log_path": ".orchestrator/checks/CHECK-FAIL/unit.log",
+                        }
+                    ],
+                    "result_path": (
+                        ".orchestrator/checks/CHECK-FAIL/"
+                        "verification-result.json"
+                    ),
+                    "summary_path": ".orchestrator/checks/CHECK-FAIL/summary.txt",
+                    "log_path": ".orchestrator/checks/CHECK-FAIL/full.log",
+                },
+            )
+            (check_dir / "summary.txt").write_text("failed\n", encoding="utf-8")
+            (check_dir / "full.log").write_text("failed\n", encoding="utf-8")
+            (check_dir / "unit.log").write_text("failed\n", encoding="utf-8")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = cli.main(["--project-root", str(root), "checks"])
+        report = json.loads(output.getvalue())
+        self.assertEqual(code, 2)
+        self.assertEqual(report["kind"], "ORCHESTRATOR_CHECKS_STATUS")
+        self.assertEqual(report["checks"]["CHECK-FAIL"]["failed_command_count"], 1)
+
+    def test_checks_can_filter_warnings_to_zero_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            check_dir = root / ".orchestrator" / "checks" / "CHECK-FAIL"
+            check_dir.mkdir(parents=True)
+            core.atomic_json(
+                check_dir / "verification-result.json",
+                {
+                    "schema_version": 1,
+                    "kind": "ORCHESTRATOR_VERIFICATION_RESULT",
+                    "check_id": "CHECK-FAIL",
+                    "status": "failed",
+                    "exit_code": 1,
+                    "commands": [],
+                    "result_path": (
+                        ".orchestrator/checks/CHECK-FAIL/"
+                        "verification-result.json"
+                    ),
+                    "summary_path": ".orchestrator/checks/CHECK-FAIL/summary.txt",
+                    "log_path": ".orchestrator/checks/CHECK-FAIL/full.log",
+                },
+            )
+            (check_dir / "summary.txt").write_text("failed\n", encoding="utf-8")
+            (check_dir / "full.log").write_text("failed\n", encoding="utf-8")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = cli.main(
+                    ["--project-root", str(root), "checks", "--severity", "error"]
+                )
+        report = json.loads(output.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(report["diagnostic_count"], 0)
+
     def test_worker_run_reports_unknown_worker(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
