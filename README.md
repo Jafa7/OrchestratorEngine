@@ -205,6 +205,9 @@ orchestrator-engine --project-root /path/to/project \
 ```
 
 See [docs/operator-reporting.md](docs/operator-reporting.md).
+Reports are normally authored by the GitHub account/token that creates the
+issue; use `project:*` and `source:*` labels to identify the adopter project
+and host chat.
 
 For a Claude host there is no push service; arm a watch from the Claude chat
 on:

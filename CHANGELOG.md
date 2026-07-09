@@ -12,6 +12,8 @@ All notable changes to OrchestratorEngine are documented here.
   status report.
 - GitHub issue templates and operator reporting docs standardize
   adopter-project problem reports.
+- Project/source label conventions identify report origin independently of the
+  GitHub account that created the issue.
 
 ## [0.1.0] - 2026-07-08
 

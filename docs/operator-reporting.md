@@ -44,11 +44,24 @@ gh issue create \
   --title "[Runtime Report][PROJECT] short summary" \
   --body-file /tmp/orchestrator-report.md \
   --label runtime-report \
-  --label triage
+  --label triage \
+  --label project:PROJECT \
+  --label source:HOST
 ```
 
 For reports that came from an AI worker/chat, include the source chat/thread id
 in the issue body when available.
+
+Issue authorship usually shows the GitHub account or token that created the
+issue. Treat author as transport identity only. The report source is encoded in
+the title, body and labels.
+
+Recommended labels:
+
+- report class: `runtime-report`, `integration-finding` or `bug`;
+- lifecycle: `triage`;
+- adopter project: `project:documentationengine`, `project:paradigmarium`;
+- source host: `source:codex`, `source:claude`, `source:vscode`.
 
 ## Read Reports
 
@@ -56,6 +69,7 @@ The OrchestratorEngine owner can list reports with:
 
 ```bash
 gh issue list --repo Jafa7/OrchestratorEngine --label triage
+gh issue list --repo Jafa7/OrchestratorEngine --label project:documentationengine
 gh issue view ISSUE_NUMBER --repo Jafa7/OrchestratorEngine
 ```
 

@@ -22,6 +22,22 @@ body:
         - other
     validations:
       required: true
+  - type: input
+    id: source_thread
+    attributes:
+      label: Source chat/thread id
+      description: Optional local chat/thread id that produced this report.
+      placeholder: "019f..."
+    validations:
+      required: false
+  - type: input
+    id: recommended_labels
+    attributes:
+      label: Recommended labels
+      description: Add these labels if available.
+      placeholder: "project:documentationengine, source:codex"
+    validations:
+      required: false
   - type: textarea
     id: status_summary
     attributes:

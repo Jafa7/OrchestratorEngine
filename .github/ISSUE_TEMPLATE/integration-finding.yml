@@ -10,6 +10,14 @@ body:
       placeholder: "Paradigmarium"
     validations:
       required: true
+  - type: input
+    id: recommended_labels
+    attributes:
+      label: Recommended labels
+      description: Add these labels if available.
+      placeholder: "project:paradigmarium, source:codex"
+    validations:
+      required: false
   - type: textarea
     id: observation
     attributes:

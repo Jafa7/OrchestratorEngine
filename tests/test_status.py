@@ -135,7 +135,26 @@ class StatusTests(unittest.TestCase):
         self.assertIn("## Component Status", draft)
         self.assertIn("## Issues", draft)
         self.assertIn("## Runtime Changes Made", draft)
+        self.assertIn("`project:fixture`", draft)
+        self.assertIn("`source:codex`", draft)
         self.assertIn("None by this report draft command", draft)
+
+    def test_recommended_report_labels_are_stable_slugs(self) -> None:
+        labels = status.recommended_report_labels(
+            project_name="DocumentationEngine",
+            report_type="runtime-report",
+            host="VS Code",
+        )
+
+        self.assertEqual(
+            labels,
+            [
+                "triage",
+                "runtime-report",
+                "project:documentationengine",
+                "source:vs-code",
+            ],
+        )
 
     def test_report_draft_cli_can_write_output_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

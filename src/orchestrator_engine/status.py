@@ -335,6 +335,13 @@ def report_draft(
         stale_after_seconds=stale_after_seconds,
     )
     name = project_name or Path(str(report["project_root"])).name
+    label_host = selected_host(report, host)
+    recommended_labels = recommended_report_labels(
+        project_name=name,
+        report_type=report_type,
+        host=label_host,
+    )
+    label_text = ", ".join(f"`{label}`" for label in recommended_labels)
     lines = [
         f"# [{report_type}][{name}] Orchestrator status report",
         "",
@@ -346,6 +353,8 @@ def report_draft(
         f"- Overall status: `{report['status']}`",
         f"- Worst severity: `{report['worst_severity']}`",
         f"- Generated at: `{report['generated_at']}`",
+        f"- Source host: `{label_host or 'unknown'}`",
+        f"- Recommended labels: {label_text}",
         "",
         "## Component Status",
         "",
@@ -447,3 +456,42 @@ def append_component_details(
             f"enabled=`{component.get('enabled_count')}`, "
             f"profile_warnings=`{component.get('warning_count')}`"
         )
+
+
+def selected_host(report: dict[str, Any], explicit_host: str | None) -> str | None:
+    if explicit_host:
+        return explicit_host
+    components = report.get("components")
+    if isinstance(components, dict):
+        wake_channel = components.get("wake_channel")
+        if isinstance(wake_channel, dict) and isinstance(wake_channel.get("host"), str):
+            return wake_channel["host"]
+    return None
+
+
+def recommended_report_labels(
+    *,
+    project_name: str,
+    report_type: str,
+    host: str | None,
+) -> list[str]:
+    labels = ["triage", report_type]
+    project = label_slug(project_name)
+    if project:
+        labels.append(f"project:{project}")
+    if host:
+        labels.append(f"source:{label_slug(host)}")
+    return labels
+
+
+def label_slug(value: str) -> str:
+    result = []
+    last_was_separator = False
+    for char in value.strip().lower():
+        if char.isalnum():
+            result.append(char)
+            last_was_separator = False
+        elif not last_was_separator:
+            result.append("-")
+            last_was_separator = True
+    return "".join(result).strip("-")
