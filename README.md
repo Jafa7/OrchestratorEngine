@@ -196,6 +196,16 @@ Use `status` first for a compact operator report. It summarizes `doctor`,
 the active wake channel, worker task diagnostics and verification checks, then
 lists only issues and problem tasks/checks that need follow-up.
 
+When an adopter project finds an orchestration issue, draft a structured report
+instead of pasting huge logs:
+
+```bash
+orchestrator-engine --project-root /path/to/project \
+  report draft --project-name PROJECT > /tmp/orchestrator-report.md
+```
+
+See [docs/operator-reporting.md](docs/operator-reporting.md).
+
 For a Claude host there is no push service; arm a watch from the Claude chat
 on:
 

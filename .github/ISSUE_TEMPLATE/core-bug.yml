@@ -1,0 +1,40 @@
+name: Core Bug
+description: Report a deterministic OrchestratorEngine core bug.
+title: "[Bug] "
+labels: ["bug", "triage"]
+body:
+  - type: textarea
+    id: bug
+    attributes:
+      label: Bug
+      description: What deterministic contract or command is wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Minimal commands or fixture steps.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: artifacts
+    attributes:
+      label: Artifacts
+      description: Relevant task/event/check ids, compact status output and paths. Do not paste huge logs.
+      render: markdown
+    validations:
+      required: false

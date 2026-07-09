@@ -1,0 +1,61 @@
+name: Runtime Report
+description: Report adopter-project runtime state, watcher health or worker setup.
+title: "[Runtime Report][PROJECT] "
+labels: ["runtime-report", "triage"]
+body:
+  - type: input
+    id: adopter_project
+    attributes:
+      label: Adopter project
+      description: Project name and local path if safe to share.
+      placeholder: "DocumentationEngine — /home/user/Project/DocumentationEngine"
+    validations:
+      required: true
+  - type: dropdown
+    id: host
+    attributes:
+      label: Host
+      options:
+        - codex
+        - claude
+        - vscode
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: status_summary
+    attributes:
+      label: Compact status summary
+      description: Paste `orchestrator-engine --project-root <root> status` summary or `report draft` output.
+      render: markdown
+    validations:
+      required: true
+  - type: textarea
+    id: commands
+    attributes:
+      label: Commands run
+      description: Include only compact commands and targeted drill-downs.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: runtime_changes
+    attributes:
+      label: Runtime changes made
+      description: List service starts/restarts, worker profile edits, acknowledgements or retries. Say "none" if read-only.
+    validations:
+      required: true
+  - type: textarea
+    id: durable_artifacts
+    attributes:
+      label: Durable artifact ids
+      description: Event ids, task ids, check ids or receipt ids relevant to this report.
+    validations:
+      required: false
+  - type: textarea
+    id: requested_action
+    attributes:
+      label: Requested OrchestratorEngine action
+      description: What should core/docs/tests do next?
+    validations:
+      required: true

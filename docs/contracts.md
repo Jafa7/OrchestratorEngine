@@ -105,6 +105,17 @@ It exits `0` for a clean report, `2` when the worst component severity is
 `--severity error` to suppress warning-level task/check diagnostics in the
 aggregate report.
 
+`report draft` is a read-only operator reporting helper:
+
+```bash
+orchestrator-engine --project-root /path/to/project \
+  report draft --project-name PROJECT
+```
+
+It runs the compact status aggregation and prints Markdown suitable for a
+GitHub Issue. It does not create network requests, mutate state or read large
+logs. See [operator-reporting.md](operator-reporting.md).
+
 ## Terminal event
 
 Path:

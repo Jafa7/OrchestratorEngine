@@ -1,0 +1,41 @@
+name: Integration Finding
+description: Report a cross-project integration observation or product-neutral improvement.
+title: "[Integration Finding][PROJECT] "
+labels: ["integration-finding", "triage"]
+body:
+  - type: input
+    id: adopter_project
+    attributes:
+      label: Adopter project
+      placeholder: "Paradigmarium"
+    validations:
+      required: true
+  - type: textarea
+    id: observation
+    attributes:
+      label: Observation
+      description: What happened, what was expected, and why it matters for OrchestratorEngine.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Include compact command outputs, event/task/check ids and relevant paths. Avoid large logs.
+      render: markdown
+    validations:
+      required: true
+  - type: textarea
+    id: scope_boundary
+    attributes:
+      label: Scope boundary
+      description: Explain what belongs in OrchestratorEngine core versus the adopter project.
+    validations:
+      required: true
+  - type: textarea
+    id: proposed_action
+    attributes:
+      label: Proposed action
+      description: Suggested docs/tests/code milestone.
+    validations:
+      required: false

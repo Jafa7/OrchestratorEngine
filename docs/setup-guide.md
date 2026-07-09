@@ -435,6 +435,16 @@ To delegate a task to a CLI worker:
    `orchestrator-engine --project-root <root> worker tasks --severity warning`
    and read only the reported artifacts.
 
+If setup or runtime diagnostics still look wrong, create a structured report
+for OrchestratorEngine instead of pasting full logs:
+
+```bash
+orchestrator-engine --project-root <root> \
+  report draft --project-name PROJECT > /tmp/orchestrator-report.md
+```
+
+See [operator-reporting.md](operator-reporting.md).
+
 When woken by a `LOCAL_AI_ORCHESTRATOR_WAKEUP` message:
 
 1. Read the referenced event, result and evidence files.

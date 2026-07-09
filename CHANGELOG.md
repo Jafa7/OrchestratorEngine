@@ -8,6 +8,10 @@ All notable changes to OrchestratorEngine are documented here.
 
 - Read-only `status` aggregates doctor, wake channel, worker task and
   verification check summaries into one compact operator report.
+- `report draft` creates a Markdown GitHub issue draft from the compact
+  status report.
+- GitHub issue templates and operator reporting docs standardize
+  adopter-project problem reports.
 
 ## [0.1.0] - 2026-07-08
 

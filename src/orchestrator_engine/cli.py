@@ -99,6 +99,48 @@ def build_parser() -> argparse.ArgumentParser:
         help="Running task heartbeat age that should be considered stale.",
     )
 
+    report = subparsers.add_parser(
+        "report",
+        help="Draft structured operator reports for OrchestratorEngine triage.",
+    )
+    report_subparsers = report.add_subparsers(dest="report_command", required=True)
+    report_draft = report_subparsers.add_parser(
+        "draft",
+        help="Print a Markdown GitHub issue draft from the compact status report.",
+    )
+    report_draft.add_argument(
+        "--project-name",
+        help="Human-readable adopter project name for the report title.",
+    )
+    report_draft.add_argument(
+        "--type",
+        choices=("runtime-report", "integration-finding", "core-bug"),
+        default="runtime-report",
+        help="Report class to place in the draft title.",
+    )
+    report_draft.add_argument(
+        "--host",
+        choices=sorted(binding.SUPPORTED_HOSTS),
+        help="Check the wake channel for one host instead of the bound host.",
+    )
+    report_draft.add_argument(
+        "--severity",
+        choices=worker_diagnostics.SEVERITIES,
+        default="warning",
+        help="Minimum task/check diagnostic severity to include.",
+    )
+    report_draft.add_argument(
+        "--stale-after-seconds",
+        type=float,
+        default=task_diagnostics.DEFAULT_STALE_AFTER_SECONDS,
+        help="Running task heartbeat age that should be considered stale.",
+    )
+    report_draft.add_argument(
+        "--output",
+        type=Path,
+        help="Write the Markdown draft to this file instead of stdout.",
+    )
+
     adopt = subparsers.add_parser(
         "adopt",
         help="Create the local .orchestrator layout without overwriting files.",
@@ -431,6 +473,12 @@ def main(argv: list[str] | None = None) -> int:
             )
             print_json(output)
             return status.exit_code(output)
+        elif args.command == "report":
+            if len(roots) != 1:
+                raise core.OrchestratorError("report requires exactly one project root")
+            output = run_report_command(args, roots[0])
+            if output is not None:
+                print(output, end="")
         elif args.command == "adopt":
             if len(roots) != 1:
                 raise core.OrchestratorError("adopt requires exactly one project root")
@@ -566,6 +614,25 @@ def run_worker_cli_command(args: argparse.Namespace, root: Path) -> object:
             state_dir=args.state_dir,
         )
     raise workers.WorkerError(f"unsupported worker command: {args.worker_command}")
+
+
+def run_report_command(args: argparse.Namespace, root: Path) -> str | None:
+    if args.report_command == "draft":
+        draft = status.report_draft(
+            root,
+            state_dir=args.state_dir,
+            project_name=args.project_name,
+            report_type=args.type,
+            host=args.host,
+            minimum_severity=args.severity,
+            stale_after_seconds=args.stale_after_seconds,
+        )
+        if args.output:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(draft, encoding="utf-8")
+            return None
+        return draft
+    raise core.OrchestratorError(f"unsupported report command: {args.report_command}")
 
 
 def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object | None:

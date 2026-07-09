@@ -315,3 +315,135 @@ def worst_component_severity(components: object) -> str | None:
 
 def exit_code(report: dict[str, Any]) -> int:
     return worker_diagnostics.exit_code_for_worst(report.get("worst_severity"))
+
+
+def report_draft(
+    project_root: Path,
+    *,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    project_name: str | None = None,
+    report_type: str = "runtime-report",
+    host: str | None = None,
+    minimum_severity: str = "warning",
+    stale_after_seconds: float = task_diagnostics.DEFAULT_STALE_AFTER_SECONDS,
+) -> str:
+    report = run_status(
+        project_root,
+        state_dir=state_dir,
+        host=host,
+        minimum_severity=minimum_severity,
+        stale_after_seconds=stale_after_seconds,
+    )
+    name = project_name or Path(str(report["project_root"])).name
+    lines = [
+        f"# [{report_type}][{name}] Orchestrator status report",
+        "",
+        "## Summary",
+        "",
+        f"- Project: `{name}`",
+        f"- Project root: `{report['project_root']}`",
+        f"- Engine version: `{report['engine_version']}`",
+        f"- Overall status: `{report['status']}`",
+        f"- Worst severity: `{report['worst_severity']}`",
+        f"- Generated at: `{report['generated_at']}`",
+        "",
+        "## Component Status",
+        "",
+    ]
+    components = report.get("components", {})
+    if isinstance(components, dict):
+        for component_name, component in components.items():
+            if not isinstance(component, dict):
+                continue
+            lines.append(
+                "- "
+                f"`{component_name}`: status=`{component.get('status')}`, "
+                f"worst=`{component.get('worst_severity')}`"
+            )
+            append_component_details(lines, component_name, component)
+    lines.extend(["", "## Issues", ""])
+    issues = report.get("issues", [])
+    if isinstance(issues, list) and issues:
+        for index, issue in enumerate(issues, start=1):
+            if not isinstance(issue, dict):
+                continue
+            lines.append(f"{index}. `{issue.get('source')}` "
+                         f"`{issue.get('severity')}`")
+            if issue.get("name"):
+                lines.append(f"   - name: `{issue['name']}`")
+            if issue.get("task_id"):
+                lines.append(f"   - task_id: `{issue['task_id']}`")
+            if issue.get("check_id"):
+                lines.append(f"   - check_id: `{issue['check_id']}`")
+            if issue.get("code"):
+                lines.append(f"   - code: `{issue['code']}`")
+            lines.append(f"   - message: {issue.get('message')}")
+            if issue.get("suggested_action"):
+                lines.append(f"   - suggested action: {issue['suggested_action']}")
+    else:
+        lines.append("No issues at the selected severity.")
+    lines.extend(
+        [
+            "",
+            "## Runtime Changes Made",
+            "",
+            "- None by this report draft command.",
+            "",
+            "## Product Code Changes",
+            "",
+            "- None by this report draft command.",
+            "",
+            "## Requested OrchestratorEngine Action",
+            "",
+            "- Triage whether the reported issue is adopter runtime setup, "
+            "documentation gap or OrchestratorEngine core bug.",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def append_component_details(
+    lines: list[str],
+    component_name: str,
+    component: dict[str, Any],
+) -> None:
+    if component_name == "wake_channel":
+        service = component.get("service_status")
+        if isinstance(service, dict):
+            lines.append(
+                "  - service: "
+                f"status=`{service.get('status')}`, "
+                f"alive=`{service.get('alive')}`, "
+                f"pending=`{service.get('pending_inbox_count')}`, "
+                f"deferred=`{service.get('deferred_event_count')}`, "
+                f"manual_required=`{service.get('manual_required_count')}`"
+            )
+        stream = component.get("stream_status")
+        if isinstance(stream, dict):
+            lines.append(
+                "  - stream: "
+                f"status=`{stream.get('status')}`, "
+                f"healthy=`{stream.get('healthy')}`, "
+                f"pending=`{stream.get('pending_inbox_count')}`"
+            )
+    elif component_name == "worker_tasks":
+        lines.append(
+            "  - tasks: "
+            f"count=`{component.get('task_count')}`, "
+            f"diagnostics=`{component.get('diagnostic_count')}`, "
+            f"problems=`{component.get('problem_task_count')}`"
+        )
+    elif component_name == "checks":
+        lines.append(
+            "  - checks: "
+            f"count=`{component.get('check_count')}`, "
+            f"diagnostics=`{component.get('diagnostic_count')}`, "
+            f"problems=`{component.get('problem_check_count')}`"
+        )
+    elif component_name == "worker_profiles":
+        lines.append(
+            "  - workers: "
+            f"count=`{component.get('worker_count')}`, "
+            f"enabled=`{component.get('enabled_count')}`, "
+            f"profile_warnings=`{component.get('warning_count')}`"
+        )

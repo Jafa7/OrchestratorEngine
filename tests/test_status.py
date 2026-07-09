@@ -123,6 +123,44 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(report["kind"], status.STATUS_KIND)
         self.assertEqual(report["components"]["wake_channel"]["status"], "warn")
 
+    def test_report_draft_returns_markdown_issue_body(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            create_layout(root)
+            write_worker_config(root)
+            binding.write_binding(root, host="codex", target_thread_id="thread-1")
+            draft = status.report_draft(root, project_name="Fixture")
+
+        self.assertIn("# [runtime-report][Fixture]", draft)
+        self.assertIn("## Component Status", draft)
+        self.assertIn("## Issues", draft)
+        self.assertIn("## Runtime Changes Made", draft)
+        self.assertIn("None by this report draft command", draft)
+
+    def test_report_draft_cli_can_write_output_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            output_path = root / "report.md"
+            create_layout(root)
+            write_worker_config(root)
+            binding.write_binding(root, host="codex", target_thread_id="thread-1")
+            code = cli.main(
+                [
+                    "--project-root",
+                    str(root),
+                    "report",
+                    "draft",
+                    "--project-name",
+                    "Fixture",
+                    "--output",
+                    str(output_path),
+                ]
+            )
+            draft = output_path.read_text(encoding="utf-8")
+
+        self.assertEqual(code, 0)
+        self.assertIn("[runtime-report][Fixture]", draft)
+
 
 if __name__ == "__main__":
     unittest.main()

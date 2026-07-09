@@ -262,6 +262,26 @@ class InstallSmokeTests(unittest.TestCase):
                 env=clean_env(),
             )
             aggregate_status = json.loads(aggregate_status_result.stdout)
+            report_draft = project / "orchestrator-report.md"
+            subprocess.run(
+                [
+                    str(cli),
+                    "--project-root",
+                    str(project),
+                    "report",
+                    "draft",
+                    "--project-name",
+                    "InstallSmoke",
+                    "--output",
+                    str(report_draft),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=clean_env(),
+            )
+            report_draft_text = report_draft.read_text(encoding="utf-8")
         self.assertEqual(bind["host"], "claude")
         self.assertIn("0.1.0", version)
         self.assertTrue(workers["workers"]["smoke"]["enabled"])
@@ -279,6 +299,7 @@ class InstallSmokeTests(unittest.TestCase):
         self.assertIn(aggregate_status_result.returncode, {0, 2})
         self.assertEqual(aggregate_status["kind"], "ORCHESTRATOR_STATUS_REPORT")
         self.assertIn("worker_tasks", aggregate_status["components"])
+        self.assertIn("[runtime-report][InstallSmoke]", report_draft_text)
         inbox_task_ids = {row["task_id"] for row in inbox[str(project)]}
         self.assertIn("SMOKE-1", inbox_task_ids)
         self.assertIn("SMOKE-FAIL", inbox_task_ids)
