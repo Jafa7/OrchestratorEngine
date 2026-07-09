@@ -428,6 +428,9 @@ To delegate a task to a CLI worker:
 4. Dispatch: `orchestrator-engine --project-root <root> worker run \
    --worker <profile> --task-id <TASK-ID> --prompt-file <file>`
 5. End the turn. Do not poll; the watcher wakes this chat when workers finish.
+   If you must inspect detached task state before wakeup, run
+   `orchestrator-engine --project-root <root> worker tasks --severity warning`
+   and read only the reported artifacts.
 
 When woken by a `LOCAL_AI_ORCHESTRATOR_WAKEUP` message:
 
@@ -463,6 +466,7 @@ hosts, or by ending the armed stream command for Claude).
 | `worker run` → `task already exists` | Task ids are one-shot by design; pick a new id. |
 | Verification worker passed but logs are huge | Read `.orchestrator/checks/<check_id>/summary.txt`; full logs are durable artifacts and do not need to be pasted into chat. |
 | Verification worker failed | Read `verification-result.json`, then only the command logs referenced by failed command entries. |
+| Worker appears stuck or no wakeup arrived | Run `worker tasks --severity warning` to inspect stale heartbeats, dead supervisor/worker pids and missing artifacts before reading full logs. |
 | Copilot worker stalls with `Permission denied and could not request permission from user` | The profile is interactive. Add autonomous Copilot flags such as `--allow-all --no-ask-user`, or configure a project-approved narrower non-interactive policy. |
 | Supervisor log shows `ModuleNotFoundError: orchestrator_engine` | Engine was run via ad-hoc `PYTHONPATH` instead of being installed; run `pip install .` (Step 1). |
 | Watcher status `degraded` / `crashed` | Read `.orchestrator/inbox/logs/watcher-service.log`, then `watcher service restart`. |

@@ -249,6 +249,76 @@ command = ["true"]
         self.assertEqual(code, 1)
         self.assertIn("unknown worker: missing", error_out.getvalue())
 
+    def test_worker_tasks_reports_runtime_diagnostics_with_exit_code(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            task_dir = workers.task_dir_for(root, "T-BROKEN")
+            task_dir.mkdir(parents=True, exist_ok=True)
+            core.atomic_json(task_dir / "evidence.json", {"ok": True})
+            core.atomic_json(
+                task_dir / "task.json",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-BROKEN",
+                    "worker": "echo",
+                    "status": "completed",
+                },
+            )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "worker",
+                        "tasks",
+                        "--task-id",
+                        "T-BROKEN",
+                    ]
+                )
+        report = json.loads(output.getvalue())
+        self.assertEqual(code, 3)
+        self.assertEqual(report["kind"], "WORKER_TASK_DIAGNOSTICS")
+        self.assertEqual(
+            report["tasks"]["T-BROKEN"]["diagnostics"][0]["code"],
+            "task_missing_result",
+        )
+
+    def test_worker_tasks_can_filter_warning_diagnostics_to_zero_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            task_dir = workers.task_dir_for(root, "T-FAIL")
+            task_dir.mkdir(parents=True, exist_ok=True)
+            core.atomic_json(task_dir / "result.json", {"terminal_status": "failed"})
+            core.atomic_json(task_dir / "evidence.json", {"ok": True})
+            core.atomic_json(
+                task_dir / "task.json",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-FAIL",
+                    "worker": "echo",
+                    "status": "failed",
+                },
+            )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "worker",
+                        "tasks",
+                        "--severity",
+                        "error",
+                    ]
+                )
+        report = json.loads(output.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(report["diagnostic_count"], 0)
+        self.assertEqual(report["tasks"]["T-FAIL"]["diagnostics"], [])
+
     def test_worker_run_reports_unknown_worker(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

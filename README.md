@@ -183,6 +183,7 @@ Check health / list pending signals / stop:
 
 ```bash
 orchestrator-engine --project-root /path/to/project doctor
+orchestrator-engine --project-root /path/to/project worker tasks --severity warning
 orchestrator-engine --project-root /path/to/project watcher \
   --host codex service status
 orchestrator-engine --project-root /path/to/project inbox

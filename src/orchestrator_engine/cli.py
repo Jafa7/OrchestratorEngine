@@ -16,6 +16,7 @@ from . import (
     codex_app,
     core,
     diagnostics,
+    task_diagnostics,
     watcher,
     worker_diagnostics,
     workers,
@@ -144,6 +145,34 @@ def build_parser() -> argparse.ArgumentParser:
         "--enabled-only",
         action="store_true",
         help="Only include enabled worker profiles.",
+    )
+    worker_tasks = worker_subparsers.add_parser(
+        "tasks",
+        help="Run read-only diagnostics for existing worker task artifacts.",
+    )
+    worker_tasks.add_argument(
+        "--task-id",
+        help="Diagnose one task id instead of every task descriptor.",
+    )
+    worker_tasks.add_argument(
+        "--worker",
+        help="Only include task descriptors for this worker profile.",
+    )
+    worker_tasks.add_argument(
+        "--status",
+        help="Only include task descriptors with this status.",
+    )
+    worker_tasks.add_argument(
+        "--severity",
+        choices=worker_diagnostics.SEVERITIES,
+        default="info",
+        help="Minimum diagnostic severity to include.",
+    )
+    worker_tasks.add_argument(
+        "--stale-after-seconds",
+        type=float,
+        default=task_diagnostics.DEFAULT_STALE_AFTER_SECONDS,
+        help="Running task heartbeat age that should be considered stale.",
     )
     worker_run = worker_subparsers.add_parser(
         "run",
@@ -355,7 +384,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
             output = run_worker_cli_command(args, roots[0])
             print_json(output)
-            if args.worker_command == "diagnose":
+            if args.worker_command in {"diagnose", "tasks"}:
                 return worker_diagnostics.exit_code_for_worst(
                     output.get("worst_severity")
                     if isinstance(output, dict)
@@ -440,6 +469,16 @@ def run_worker_cli_command(args: argparse.Namespace, root: Path) -> object:
             worker=args.worker,
             minimum_severity=args.severity,
             enabled_only=args.enabled_only,
+        )
+    if args.worker_command == "tasks":
+        return task_diagnostics.diagnose_tasks(
+            root,
+            state_dir=args.state_dir,
+            task_id=args.task_id,
+            worker=args.worker,
+            status=args.status,
+            minimum_severity=args.severity,
+            stale_after_seconds=args.stale_after_seconds,
         )
     if args.worker_command == "run":
         return workers.run_worker(

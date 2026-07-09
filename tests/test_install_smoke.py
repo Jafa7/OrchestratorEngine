@@ -170,6 +170,14 @@ class InstallSmokeTests(unittest.TestCase):
             result = wait_result("SMOKE-1")
             failed_result = wait_result("SMOKE-FAIL")
             check_result = wait_result("SMOKE-CHECK")
+            task_diagnostics = self.run_cli(
+                cli,
+                project,
+                "worker",
+                "tasks",
+                "--severity",
+                "error",
+            )
             inbox = self.run_cli(cli, project, "inbox")
             stream_process = subprocess.Popen(
                 [
@@ -253,6 +261,8 @@ class InstallSmokeTests(unittest.TestCase):
         self.assertEqual(result["terminal_status"], "completed")
         self.assertEqual(failed_result["terminal_status"], "failed")
         self.assertEqual(check_result["terminal_status"], "completed")
+        self.assertEqual(task_diagnostics["kind"], "WORKER_TASK_DIAGNOSTICS")
+        self.assertEqual(task_diagnostics["diagnostic_count"], 0)
         self.assertEqual(verification["status"], "passed")
         inbox_task_ids = {row["task_id"] for row in inbox[str(project)]}
         self.assertIn("SMOKE-1", inbox_task_ids)

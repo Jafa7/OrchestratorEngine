@@ -409,6 +409,85 @@ expected). While a worker runs, the supervisor refreshes `task.json` every 30
 seconds with `status: "running"`, `worker_pid` and `last_alive_at`, so long
 tasks stay observable instead of looking stuck.
 
+`worker tasks` is the read-only runtime diagnostic command for these artifacts.
+It does not execute workers, retry tasks or mutate state.
+
+```bash
+orchestrator-engine --project-root /path/to/project worker tasks \
+  --worker copilot --severity warning --stale-after-seconds 90
+```
+
+It returns:
+
+```json
+{
+  "kind": "WORKER_TASK_DIAGNOSTICS",
+  "generated_at": "2026-07-09T00:00:00.000+00:00",
+  "filters": {
+    "task_id": null,
+    "worker": "copilot",
+    "status": null,
+    "minimum_severity": "warning",
+    "stale_after_seconds": 90
+  },
+  "task_count": 1,
+  "status_counts": {"running": 1},
+  "diagnostic_count": 1,
+  "severity_counts": {"info": 0, "warning": 1, "error": 0},
+  "worst_severity": "warning",
+  "tasks": {
+    "TASK-001": {
+      "status": "running",
+      "worker": "copilot",
+      "heartbeat_age_seconds": 120.4,
+      "supervisor_pid": 1234,
+      "supervisor_alive": true,
+      "worker_pid": 1235,
+      "worker_alive": true,
+      "artifacts": {
+        "result": ".../result.json",
+        "evidence": ".../evidence.json",
+        "stdout": ".../worker-stdout.log",
+        "stderr": ".../worker-stderr.log"
+      },
+      "diagnostics": [
+        {
+          "code": "task_heartbeat_stale",
+          "severity": "warning",
+          "message": "...",
+          "suggested_action": "..."
+        }
+      ]
+    }
+  }
+}
+```
+
+Known task diagnostic codes:
+
+- `task_descriptor_unreadable` — `task.json` cannot be read as an object.
+- `task_id_mismatch` — descriptor `task_id` does not match its task
+  directory name.
+- `task_schema_unsupported` — descriptor schema is not supported.
+- `task_kind_unexpected` — descriptor kind is not `WORKER_TASK`.
+- `task_status_unknown` — descriptor status is outside the known task states.
+- `task_running_without_supervisor_pid` — running task has no supervisor pid.
+- `task_supervisor_dead` — running task's supervisor pid is not alive.
+- `task_worker_dead` — running task's worker pid is not alive.
+- `task_running_without_heartbeat` — running task lacks usable timestamps.
+- `task_heartbeat_stale` — running task heartbeat age exceeds the configured
+  stale threshold.
+- `task_terminal_unsuccessful` — task ended in a non-`completed` terminal
+  status such as `failed` or `timed_out`.
+- `task_missing_result`, `task_missing_evidence`, `task_missing_event`,
+  `task_missing_signal` — terminal task references missing artifacts.
+- `task_unreadable_result`, `task_unreadable_evidence` — terminal artifacts
+  exist but cannot be read as JSON objects.
+
+Exit codes match `worker diagnose`: `0` for no diagnostics or `info` only, `2`
+for warnings, `3` for errors and `1` for CLI/runtime failures such as an
+unknown `--task-id` filter.
+
 ## Watcher state
 
 The watcher writes:
