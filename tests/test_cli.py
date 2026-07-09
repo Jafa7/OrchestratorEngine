@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from orchestrator_engine import cli, core, watcher
+from orchestrator_engine import cli, core, watcher, workers
 
 
 class CliTests(unittest.TestCase):
@@ -159,6 +159,95 @@ class CliTests(unittest.TestCase):
                 code = cli.main(["--project-root", str(root), "worker", "list"])
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(output.getvalue())["workers"], {})
+
+    def test_worker_diagnose_reports_warnings_with_exit_code(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            config = workers.workers_config_path(root)
+            config.parent.mkdir(parents=True, exist_ok=True)
+            config.write_text(
+                """
+[workers.copilot-risky]
+enabled = true
+command = ["copilot", "--prompt"]
+prompt_via = "arg"
+""",
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = cli.main(
+                    ["--project-root", str(root), "worker", "diagnose"]
+                )
+        report = json.loads(output.getvalue())
+        self.assertEqual(code, 2)
+        self.assertEqual(report["worst_severity"], "warning")
+        self.assertEqual(
+            report["workers"]["copilot-risky"]["diagnostics"][0]["code"],
+            "copilot_may_request_approval",
+        )
+
+    def test_worker_diagnose_can_filter_to_info_only_with_zero_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            config = workers.workers_config_path(root)
+            config.parent.mkdir(parents=True, exist_ok=True)
+            config.write_text(
+                """
+[workers.quick]
+enabled = true
+command = ["python3", "-m", "pytest"]
+prompt_via = "stdin"
+""",
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "worker",
+                        "diagnose",
+                        "--worker",
+                        "quick",
+                    ]
+                )
+        report = json.loads(output.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(report["worst_severity"], "info")
+        self.assertEqual(
+            report["workers"]["quick"]["diagnostics"][0]["code"],
+            "worker_timeout_absent",
+        )
+
+    def test_worker_diagnose_rejects_unknown_worker_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            config = workers.workers_config_path(root)
+            config.parent.mkdir(parents=True, exist_ok=True)
+            config.write_text(
+                """
+[workers.echo]
+enabled = true
+command = ["true"]
+""",
+                encoding="utf-8",
+            )
+            error_out = io.StringIO()
+            with contextlib.redirect_stderr(error_out):
+                code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "worker",
+                        "diagnose",
+                        "--worker",
+                        "missing",
+                    ]
+                )
+        self.assertEqual(code, 1)
+        self.assertIn("unknown worker: missing", error_out.getvalue())
 
     def test_worker_run_reports_unknown_worker(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

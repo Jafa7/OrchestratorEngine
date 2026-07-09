@@ -16,12 +16,18 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from . import binding, core
+from . import binding, core, worker_diagnostics
 
 WORKERS_CONFIG_NAME = "workers.toml"
 PROMPT_MODES = {"arg", "stdin"}
 TASK_KIND = "WORKER_TASK"
-RESERVED_KEYS = {"enabled", "command", "prompt_via", "timeout_seconds"}
+RESERVED_KEYS = {
+    "enabled",
+    "command",
+    "prompt_via",
+    "timeout_seconds",
+    "expect_long_running",
+}
 # Workers may legitimately run for hours with no configured timeout; the
 # supervisor refreshes the task descriptor on this cadence so long tasks stay
 # observable (`last_alive_at`) instead of looking stuck.
@@ -101,22 +107,33 @@ def validate_worker_config(name: str, config: object) -> dict[str, Any]:
         not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0
     ):
         raise WorkerError(f"worker {name} timeout_seconds must be positive")
+    expect_long_running = config.get("expect_long_running", False)
+    if not isinstance(expect_long_running, bool):
+        raise WorkerError(f"worker {name} expect_long_running flag must be a boolean")
     extras = {
         key: value
         for key, value in config.items()
         if key not in RESERVED_KEYS
     }
+    diagnostics = worker_diagnostics.evaluate_profile(
+        name=name,
+        command=list(command),
+        prompt_via=str(prompt_via),
+        timeout_seconds=timeout_seconds,
+        expect_long_running=expect_long_running,
+    )
     return {
         "name": name,
         "enabled": enabled,
         "command": list(command),
         "prompt_via": prompt_via,
         "timeout_seconds": timeout_seconds,
+        "expect_long_running": expect_long_running,
         "extras": extras,
-        "warnings": worker_profile_warnings(
-            name=name,
-            command=list(command),
-            prompt_via=str(prompt_via),
+        "diagnostics": diagnostics,
+        "warnings": worker_diagnostics.filter_diagnostics(
+            diagnostics,
+            minimum_severity="warning",
         ),
     }
 
@@ -133,68 +150,16 @@ def worker_profile_warnings(
     flags are provider-specific, so the engine surfaces known sharp edges
     without rewriting commands or treating them as core policy.
     """
-    if not command:
-        return []
-    executable = Path(command[0]).name.lower()
-    flags = set(command[1:])
-    command_text = " ".join(command[1:])
-    warnings: list[dict[str, str]] = []
-    if executable in {"copilot", "copilot.exe"} and (
-        "--allow-all" not in flags or "--no-ask-user" not in flags
-    ):
-        warnings.append(
-            {
-                "code": "copilot_may_request_approval",
-                "severity": "warning",
-                "message": (
-                    f"worker {name} runs Copilot detached with prompt_via="
-                    f"{prompt_via!r} but does not include both --allow-all "
-                    "and --no-ask-user; it may stall on approval prompts"
-                ),
-            }
-        )
-    if executable in {"codex", "codex.exe"} and "exec" in flags:
-        if "approval_policy" not in command_text or "never" not in command_text:
-            warnings.append(
-                {
-                    "code": "codex_may_request_approval",
-                    "severity": "warning",
-                    "message": (
-                        f"worker {name} runs codex exec detached but does not "
-                        "set approval_policy=\"never\" in the command or "
-                        "otherwise declare a non-interactive approval policy"
-                    ),
-                }
-            )
-        if "sandbox_mode" not in command_text:
-            warnings.append(
-                {
-                    "code": "codex_missing_sandbox_strategy",
-                    "severity": "warning",
-                    "message": (
-                        f"worker {name} runs codex exec detached without an "
-                        "explicit sandbox_mode override; ensure the selected "
-                        "Codex config is intentional for this worker profile"
-                    ),
-                }
-            )
-    if (
-        executable in {"claude", "claude.exe"}
-        and "-p" in flags
-        and "--permission-mode" not in flags
-    ):
-        warnings.append(
-            {
-                "code": "claude_missing_permission_mode",
-                "severity": "warning",
-                "message": (
-                    f"worker {name} runs claude -p detached without an "
-                    "explicit --permission-mode; it may stall or refuse "
-                    "tool use if the default mode is interactive"
-                ),
-            }
-        )
-    return warnings
+    return worker_diagnostics.filter_diagnostics(
+        worker_diagnostics.evaluate_profile(
+            name=name,
+            command=command,
+            prompt_via=prompt_via,
+            timeout_seconds=None,
+            expect_long_running=True,
+        ),
+        minimum_severity="warning",
+    )
 
 
 def require_worker(
@@ -234,11 +199,66 @@ def list_workers(
                 "command": config["command"],
                 "prompt_via": config["prompt_via"],
                 "timeout_seconds": config["timeout_seconds"],
+                "expect_long_running": config["expect_long_running"],
                 "warnings": config["warnings"],
                 **config["extras"],
             }
             for name, config in sorted(registry.items())
         },
+    }
+
+
+def diagnose_workers(
+    project_root: Path,
+    *,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    worker: str | None = None,
+    minimum_severity: str = "info",
+    enabled_only: bool = False,
+) -> dict[str, Any]:
+    registry = load_registry(project_root, state_dir=state_dir)
+    if worker is not None:
+        if worker not in registry:
+            configured = ", ".join(sorted(registry)) or "<none>"
+            raise WorkerError(
+                f"unknown worker: {worker}; configured: {configured}"
+            )
+        registry = {worker: registry[worker]}
+    if enabled_only:
+        registry = {
+            name: config
+            for name, config in registry.items()
+            if config["enabled"]
+        }
+
+    summaries: dict[str, Any] = {}
+    all_diagnostics: list[dict[str, str]] = []
+    for name, config in sorted(registry.items()):
+        diagnostics = worker_diagnostics.filter_diagnostics(
+            config["diagnostics"],
+            minimum_severity=minimum_severity,
+        )
+        all_diagnostics.extend(diagnostics)
+        summaries[name] = worker_diagnostics.profile_summary(
+            name=name,
+            config=config,
+            diagnostics=diagnostics,
+        )
+
+    return {
+        "schema_version": core.SCHEMA_VERSION,
+        "kind": "WORKER_DIAGNOSTICS",
+        "config_path": str(workers_config_path(project_root, state_dir=state_dir)),
+        "filters": {
+            "worker": worker,
+            "minimum_severity": minimum_severity,
+            "enabled_only": enabled_only,
+        },
+        "worker_count": len(summaries),
+        "diagnostic_count": len(all_diagnostics),
+        "severity_counts": worker_diagnostics.severity_counts(all_diagnostics),
+        "worst_severity": worker_diagnostics.worst_severity(all_diagnostics),
+        "workers": summaries,
     }
 
 
@@ -477,6 +497,7 @@ def supervise_worker(
         "worker_config": {
             "prompt_via": config["prompt_via"],
             "timeout_seconds": config["timeout_seconds"],
+            "expect_long_running": config["expect_long_running"],
             "warnings": config["warnings"],
             **config["extras"],
         },

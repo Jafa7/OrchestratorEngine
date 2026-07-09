@@ -124,6 +124,13 @@ class InstallSmokeTests(unittest.TestCase):
 
             bind = self.run_cli(cli, project, "bind", "--host", "claude")
             workers = self.run_cli(cli, project, "worker", "list")
+            worker_diagnostics = self.run_cli(
+                cli,
+                project,
+                "worker",
+                "diagnose",
+                "--enabled-only",
+            )
             dispatched = self.run_cli(
                 cli,
                 project,
@@ -240,6 +247,8 @@ class InstallSmokeTests(unittest.TestCase):
         self.assertEqual(bind["host"], "claude")
         self.assertIn("0.1.0", version)
         self.assertTrue(workers["workers"]["smoke"]["enabled"])
+        self.assertEqual(worker_diagnostics["kind"], "WORKER_DIAGNOSTICS")
+        self.assertEqual(worker_diagnostics["diagnostic_count"], 0)
         self.assertEqual(dispatched["status"], "running")
         self.assertEqual(result["terminal_status"], "completed")
         self.assertEqual(failed_result["terminal_status"], "failed")

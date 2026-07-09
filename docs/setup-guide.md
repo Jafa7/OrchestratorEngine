@@ -161,6 +161,7 @@ enabled = true
 command = ["claude", "-p", "--model", "haiku",
            "--permission-mode", "acceptEdits"]
 prompt_via = "stdin"
+expect_long_running = true
 capability = "code-edit"
 permission_profile = "full"
 cost = "low"
@@ -170,6 +171,7 @@ enabled = true
 command = ["claude", "-p", "--model", "opus", "--effort", "xhigh",
            "--permission-mode", "acceptEdits"]
 prompt_via = "stdin"
+expect_long_running = true
 capability = "code-edit"
 permission_profile = "full"
 cost = "high"
@@ -181,6 +183,7 @@ command = ["codex", "exec", "--json",
            "-c", "approval_policy=\"never\"",
            "-c", "sandbox_mode=\"danger-full-access\""]
 prompt_via = "arg"
+expect_long_running = true
 capability = "code-edit"
 permission_profile = "full"
 cost = "medium"
@@ -189,6 +192,7 @@ cost = "medium"
 enabled = true
 command = ["copilot", "--prompt", "--allow-all", "--no-ask-user"]
 prompt_via = "arg"
+expect_long_running = true
 capability = "code-edit"
 permission_profile = "full"
 cost = "medium"
@@ -217,15 +221,19 @@ Notes:
   that look interactive in detached mode.
 - Omit `timeout_seconds` for AI implementation/review workers that may run for
   hours; the supervisor keeps `task.json` fresh (`last_alive_at`) while they
-  run. Add `timeout_seconds` to bounded smoke/check/script profiles.
+  run. Set `expect_long_running = true` to mark that omission as intentional.
+  Add `timeout_seconds` to bounded smoke/check/script profiles.
 
 **Check:**
 
 ```bash
 orchestrator-engine --project-root /path/to/project worker list
+orchestrator-engine --project-root /path/to/project worker diagnose --enabled-only
 ```
 
-Every intended worker appears with `"enabled": true`.
+Every intended worker appears with `"enabled": true`. `worker diagnose` is
+read-only; it reports machine-readable advisory diagnostics and exits `2` when
+enabled profiles still have warnings.
 
 ## Step 4 — Configure verification workers
 

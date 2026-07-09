@@ -17,6 +17,7 @@ from . import (
     core,
     diagnostics,
     watcher,
+    worker_diagnostics,
     workers,
 )
 
@@ -124,6 +125,25 @@ def build_parser() -> argparse.ArgumentParser:
     worker_subparsers.add_parser(
         "list",
         help="List configured workers and their enabled state.",
+    )
+    worker_diagnose = worker_subparsers.add_parser(
+        "diagnose",
+        help="Run read-only diagnostics for configured worker profiles.",
+    )
+    worker_diagnose.add_argument(
+        "--worker",
+        help="Diagnose one worker profile instead of the full registry.",
+    )
+    worker_diagnose.add_argument(
+        "--severity",
+        choices=worker_diagnostics.SEVERITIES,
+        default="info",
+        help="Minimum diagnostic severity to include.",
+    )
+    worker_diagnose.add_argument(
+        "--enabled-only",
+        action="store_true",
+        help="Only include enabled worker profiles.",
     )
     worker_run = worker_subparsers.add_parser(
         "run",
@@ -335,6 +355,12 @@ def main(argv: list[str] | None = None) -> int:
                 )
             output = run_worker_cli_command(args, roots[0])
             print_json(output)
+            if args.worker_command == "diagnose":
+                return worker_diagnostics.exit_code_for_worst(
+                    output.get("worst_severity")
+                    if isinstance(output, dict)
+                    else None
+                )
         elif args.command == "watcher":
             output = run_watcher_command(args, roots)
             if output is not None:
@@ -407,6 +433,14 @@ def run_bind_command(args: argparse.Namespace, root: Path) -> object:
 def run_worker_cli_command(args: argparse.Namespace, root: Path) -> object:
     if args.worker_command == "list":
         return workers.list_workers(root, state_dir=args.state_dir)
+    if args.worker_command == "diagnose":
+        return workers.diagnose_workers(
+            root,
+            state_dir=args.state_dir,
+            worker=args.worker,
+            minimum_severity=args.severity,
+            enabled_only=args.enabled_only,
+        )
     if args.worker_command == "run":
         return workers.run_worker(
             root,

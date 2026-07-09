@@ -19,6 +19,7 @@ WORKERS_TEMPLATE = """# OrchestratorEngine worker profiles.
 enabled = false
 command = ["python", "-c", "import sys; sys.stdin.read(); print('ok')"]
 prompt_via = "stdin"
+timeout_seconds = 300
 """
 
 
@@ -105,6 +106,7 @@ def next_steps(project: Path, *, host: str | None) -> list[str]:
         f"orchestrator-engine --project-root {root} bind --host {selected}",
         f"edit {core.DEFAULT_STATE_DIR}/workers.toml and enable installed workers",
         f"orchestrator-engine --project-root {root} worker list",
+        f"orchestrator-engine --project-root {root} worker diagnose --enabled-only",
     ]
     if host == "claude":
         steps.append(

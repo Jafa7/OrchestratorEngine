@@ -228,6 +228,7 @@ enabled = true                # disabled workers cannot be dispatched
 command = ["claude", "-p"]    # the CLI invocation, including model/effort flags
 prompt_via = "stdin"          # "arg" appends the prompt text as the last argument
 timeout_seconds = 3600        # optional; exceeded -> terminal_status "timed_out"
+expect_long_running = false   # optional; suppresses missing-timeout info when true
 ```
 
 **Model and effort selection happens inside `command`.** The engine does not
@@ -267,6 +268,9 @@ rewrite commands. For example, a Copilot profile that omits autonomous flags
 such as `--allow-all --no-ask-user` is likely to stall on approval prompts, so
 the engine reports `copilot_may_request_approval`. Known advisory codes:
 
+- `worker_timeout_absent` — profile has no `timeout_seconds`; this is
+  `info`, not a warning. Use `expect_long_running = true` for AI
+  implementation/review profiles where no timeout is intentional.
 - `copilot_may_request_approval` — Copilot profile lacks
   `--allow-all --no-ask-user`.
 - `codex_may_request_approval` — `codex exec` profile lacks an explicit
@@ -275,6 +279,43 @@ the engine reports `copilot_may_request_approval`. Known advisory codes:
   `sandbox_mode` override; verify the selected config is intentional.
 - `claude_missing_permission_mode` — `claude -p` profile lacks an explicit
   `--permission-mode`.
+
+`worker diagnose` is the read-only deep registry diagnostic command. It never
+dispatches workers or rewrites commands.
+
+```bash
+orchestrator-engine --project-root /path/to/project worker diagnose \
+  --enabled-only --severity warning
+```
+
+It returns:
+
+```json
+{
+  "kind": "WORKER_DIAGNOSTICS",
+  "worker_count": 1,
+  "diagnostic_count": 1,
+  "severity_counts": {"info": 0, "warning": 1, "error": 0},
+  "worst_severity": "warning",
+  "workers": {
+    "copilot": {
+      "diagnostics": [
+        {
+          "code": "copilot_may_request_approval",
+          "severity": "warning",
+          "message": "...",
+          "suggested_action": "..."
+        }
+      ]
+    }
+  }
+}
+```
+
+Exit codes are deterministic for automation: `0` for no diagnostics or `info`
+only, `2` when the worst diagnostic is `warning`, `3` when the worst diagnostic
+is `error`, and `1` for CLI/runtime failures such as invalid TOML or an unknown
+`--worker` filter.
 
 ## Verification result
 

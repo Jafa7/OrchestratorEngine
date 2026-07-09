@@ -141,19 +141,29 @@ Configure workers in `/path/to/project/.orchestrator/workers.toml`:
 ```toml
 [workers.claude]
 enabled = true
-command = ["claude", "-p"]
+command = ["claude", "-p", "--permission-mode", "acceptEdits"]
 prompt_via = "stdin"
+expect_long_running = true
 permission_profile = "full"
 
 [workers.codex]
 enabled = true
-command = ["codex", "exec", "--json"]
+command = ["codex", "exec", "--json",
+           "-c", "approval_policy=\"never\"",
+           "-c", "sandbox_mode=\"danger-full-access\""]
 prompt_via = "arg"
+expect_long_running = true
 permission_profile = "full"
 ```
 
 For a fuller fast/default/deep profile catalog with autonomous and restricted
 examples, start from [examples/workers.toml](examples/workers.toml).
+
+Check worker profiles before dispatch:
+
+```bash
+orchestrator-engine --project-root /path/to/project worker diagnose --enabled-only
+```
 
 Start the wakeup watcher:
 

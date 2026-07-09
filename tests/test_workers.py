@@ -38,6 +38,12 @@ command = ["{python}", "-c", "import time; time.sleep(30)"]
 prompt_via = "stdin"
 timeout_seconds = 1
 
+[workers.long]
+enabled = true
+command = ["{python}", "-c", "import sys; sys.stdin.read(); print('done')"]
+prompt_via = "stdin"
+expect_long_running = true
+
 [workers.copilot-risky]
 enabled = true
 command = ["copilot", "--prompt"]
@@ -105,6 +111,8 @@ class WorkerRegistryTests(unittest.TestCase):
         self.assertTrue(listing["workers"]["echo"]["enabled"])
         self.assertFalse(listing["workers"]["disabled"]["enabled"])
         self.assertEqual(listing["workers"]["echo"]["effort"], "high")
+        self.assertFalse(listing["workers"]["echo"]["expect_long_running"])
+        self.assertTrue(listing["workers"]["long"]["expect_long_running"])
         self.assertEqual(listing["workers"]["echo"]["warnings"], [])
 
     def test_list_workers_warns_for_copilot_without_noninteractive_flags(self) -> None:
@@ -146,6 +154,67 @@ class WorkerRegistryTests(unittest.TestCase):
             "claude_missing_permission_mode",
         )
         self.assertEqual(safe["warnings"], [])
+
+    def test_diagnose_workers_reports_info_and_warnings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            report = workers.diagnose_workers(root)
+        self.assertEqual(report["kind"], "WORKER_DIAGNOSTICS")
+        self.assertEqual(report["worst_severity"], "warning")
+        self.assertGreater(report["severity_counts"]["info"], 0)
+        self.assertGreater(report["severity_counts"]["warning"], 0)
+        self.assertEqual(
+            report["workers"]["echo"]["diagnostics"][0]["code"],
+            "worker_timeout_absent",
+        )
+        self.assertEqual(report["workers"]["echo"]["metadata"]["effort"], "high")
+        self.assertEqual(report["workers"]["long"]["diagnostics"], [])
+
+    def test_diagnose_workers_filters_by_worker_and_severity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            report = workers.diagnose_workers(
+                root,
+                worker="codex-risky",
+                minimum_severity="warning",
+            )
+        self.assertEqual(list(report["workers"]), ["codex-risky"])
+        self.assertEqual(report["diagnostic_count"], 2)
+        self.assertEqual(report["severity_counts"]["info"], 0)
+        self.assertEqual(report["worst_severity"], "warning")
+
+    def test_diagnose_workers_can_filter_enabled_profiles(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            report = workers.diagnose_workers(root, enabled_only=True)
+        self.assertNotIn("disabled", report["workers"])
+        self.assertIn("echo", report["workers"])
+
+    def test_diagnose_workers_rejects_unknown_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            with self.assertRaises(workers.WorkerError):
+                workers.diagnose_workers(root, worker="missing")
+
+    def test_invalid_expect_long_running_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            path = workers.workers_config_path(root)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                """
+[workers.bad]
+command = ["true"]
+expect_long_running = "yes"
+""",
+                encoding="utf-8",
+            )
+            with self.assertRaises(workers.WorkerError):
+                workers.load_registry(root)
 
     def test_missing_config_yields_empty_registry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -19,6 +19,8 @@ All notable changes to OrchestratorEngine are documented here.
 - Deferred callback state with bounded retries, manual-required quota
   handling and explicit acknowledgement.
 - Reference verification runner and worker profile examples.
+- Read-only `worker diagnose` reports advisory profile diagnostics with
+  deterministic severities and automation-friendly exit codes.
 - Install smoke coverage that exercises the installed CLI without
   `PYTHONPATH`.
 
