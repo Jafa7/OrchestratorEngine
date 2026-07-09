@@ -183,6 +183,48 @@ def default_stream_state_path(
     )
 
 
+def default_callback_state_path(
+    project_root: Path,
+    *,
+    host: str | None,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+) -> Path:
+    if host is None:
+        return default_state_path(project_root, state_dir=state_dir)
+    return (
+        core.inbox_root(project_root, state_dir=state_dir)
+        / f"watcher-{host}-callback-state.json"
+    )
+
+
+def default_callback_service_path(
+    project_root: Path,
+    *,
+    host: str | None,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+) -> Path:
+    if host is None:
+        return default_service_path(project_root, state_dir=state_dir)
+    return (
+        core.inbox_root(project_root, state_dir=state_dir)
+        / f"watcher-{host}-callback-service.json"
+    )
+
+
+def default_callback_heartbeat_path(
+    project_root: Path,
+    *,
+    host: str | None,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+) -> Path:
+    if host is None:
+        return default_heartbeat_path(project_root, state_dir=state_dir)
+    return (
+        core.inbox_root(project_root, state_dir=state_dir)
+        / f"watcher-{host}-callback-heartbeat.json"
+    )
+
+
 def default_service_log_path(
     project_root: Path,
     *,
@@ -229,6 +271,29 @@ def load_optional_object(path: Path) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         raise WatcherError(f"{path} does not contain an object")
     return value
+
+
+def seed_state_from_legacy(
+    project_root: Path,
+    *,
+    state_file: Path,
+    state_dir: str,
+) -> None:
+    legacy = default_state_path(project_root, state_dir=state_dir)
+    if state_file.exists() or state_file == legacy or not legacy.exists():
+        return
+    legacy_state = load_state(legacy)
+    core.atomic_json(
+        state_file,
+        {
+            "schema_version": core.SCHEMA_VERSION,
+            "seen_event_ids": list(legacy_state["seen_event_ids"]),
+            "deferred_events": {},
+            "acknowledged_events": {},
+            "seeded_from": str(legacy),
+            "seeded_at": core.utc_now(),
+        },
+    )
 
 
 def notify_signal(
@@ -508,17 +573,25 @@ def deferred_event_summaries(
             {
                 "event_id": event_id,
                 "task_id": item.get("task_id") or signal.get("task_id"),
+                "terminal_status": item.get("terminal_status")
+                or signal.get("terminal_status"),
                 "status": status,
                 "attempts": int(item.get("attempts", 0)),
                 "last_reason": item.get("reason"),
                 "reason_code": item.get("reason_code")
                 or defer_reason_code(str(item.get("reason", ""))),
+                "first_attempt_at": item.get("first_attempt_at"),
+                "first_attempt_at_iso": unix_timestamp_to_iso(
+                    item.get("first_attempt_at")
+                ),
                 "last_attempt_at": item.get("last_attempt_at"),
                 "last_attempt_at_iso": unix_timestamp_to_iso(
                     item.get("last_attempt_at")
                 ),
                 "retry_after_at": retry_after_at,
                 "next_retry_at": unix_timestamp_to_iso(retry_after_at),
+                "event_path": item.get("event_path") or signal.get("event_path"),
+                "signal_path": item.get("signal_path") or signal.get("signal_path"),
                 "operator_action": item.get("operator_action")
                 or deferred_operator_action(
                     status,
@@ -527,6 +600,96 @@ def deferred_event_summaries(
             }
         )
     return summaries
+
+
+def deferred_status_counts(
+    summaries: list[dict[str, Any]],
+) -> dict[str, int]:
+    counts = {
+        DEFER_STATUS_RETRYABLE: 0,
+        DEFER_STATUS_MANUAL_REQUIRED: 0,
+    }
+    for summary in summaries:
+        status = summary.get("status")
+        if status in counts:
+            counts[str(status)] += 1
+    return counts
+
+
+def list_deferred_events(
+    project_roots: list[Path],
+    *,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    state_path: Path | None = None,
+) -> dict[str, Any]:
+    projects = [path.expanduser().resolve() for path in project_roots]
+    state_file = state_path or default_state_path(projects[0], state_dir=state_dir)
+    summaries = deferred_event_summaries(
+        projects,
+        state_dir=state_dir,
+        state_file=state_file,
+    )
+    return {
+        "schema_version": core.SCHEMA_VERSION,
+        "kind": "LOCAL_AI_ORCHESTRATOR_WATCHER_DEFERRED_LIST",
+        "project_roots": [str(path) for path in projects],
+        "state_path": str(state_file),
+        "deferred_event_count": len(summaries),
+        "deferred_status_counts": deferred_status_counts(summaries),
+        "deferred_events": summaries,
+        "checked_at": core.utc_now(),
+    }
+
+
+def retry_deferred_event(
+    project_root: Path,
+    *,
+    event_id: str,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    state_path: Path | None = None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    if not event_id:
+        raise WatcherError("event id is required")
+    project = project_root.expanduser().resolve()
+    state_file = state_path or default_state_path(project, state_dir=state_dir)
+    state = load_state(state_file)
+    deferred_events: dict[str, dict[str, Any]] = state["deferred_events"]
+    previous = deferred_events.get(event_id)
+    if previous is None:
+        if event_id in set(state["seen_event_ids"]):
+            raise WatcherError(f"event is already seen: {event_id}")
+        raise WatcherError(f"event is not deferred: {event_id}")
+    previous_status = deferred_status(previous)
+    previous_retry_after = previous.get("retry_after_at")
+    requested_at = core.utc_now()
+    previous["status"] = DEFER_STATUS_RETRYABLE
+    previous.pop("retry_after_at", None)
+    previous["retry_requested_at"] = requested_at
+    previous["retry_previous_status"] = previous_status
+    if reason:
+        previous["retry_reason"] = reason
+    previous["operator_action"] = deferred_operator_action(
+        DEFER_STATUS_RETRYABLE,
+        str(previous.get("reason_code") or "callback_failed"),
+    )
+    state["deferred_events"] = deferred_events
+    state["updated_at"] = requested_at
+    core.atomic_json(state_file, state)
+    return {
+        "schema_version": core.SCHEMA_VERSION,
+        "kind": "LOCAL_AI_ORCHESTRATOR_WATCHER_DEFERRED_RETRY",
+        "event_id": event_id,
+        "task_id": previous.get("task_id"),
+        "status": "retry_scheduled",
+        "previous_status": previous_status,
+        "new_status": DEFER_STATUS_RETRYABLE,
+        "previous_retry_after_at": previous_retry_after,
+        "retry_after_at": None,
+        "retry_requested_at": requested_at,
+        "state_path": str(state_file),
+        "operator_action": previous["operator_action"],
+    }
 
 
 def acknowledge_deferred_event(
@@ -598,6 +761,7 @@ def scan_once(
         projects[0],
         state_dir=state_dir,
     )
+    seed_state_from_legacy(projects[0], state_file=state_file, state_dir=state_dir)
     state = load_state(state_file)
     seen = set(state["seen_event_ids"])
     deferred_events: dict[str, dict[str, Any]] = state["deferred_events"]
@@ -767,20 +931,27 @@ def service_status(
     *,
     state_dir: str = core.DEFAULT_STATE_DIR,
     service_file: Path | None = None,
+    host: str | None = None,
     process_checker=process_alive,
 ) -> dict[str, Any]:
     projects = [path.expanduser().resolve() for path in project_roots]
-    service_path = service_file or default_service_path(
+    service_path = service_file or default_callback_service_path(
         projects[0],
+        host=host,
         state_dir=state_dir,
     )
     state = load_optional_object(service_path)
-    heartbeat_path = default_heartbeat_path(
+    heartbeat_path = default_callback_heartbeat_path(
         projects[0],
+        host=host,
         state_dir=state_dir,
     )
     heartbeat = load_optional_object(heartbeat_path)
-    state_file = default_state_path(projects[0], state_dir=state_dir)
+    state_file = default_callback_state_path(
+        projects[0],
+        host=host,
+        state_dir=state_dir,
+    )
     if state and isinstance(state.get("state_path"), str):
         state_file = Path(state["state_path"])
     bound: dict[str, Any] | None = None
@@ -789,8 +960,13 @@ def service_status(
         bound = binding_module.load_binding(projects[0], state_dir=state_dir)
     except (OSError, RuntimeError, ValueError) as error:
         binding_error = str(error)
-    host_filter = None
-    if state and state.get("action") == "callback":
+    host_filter = {host} if host else None
+    stored_filter = state.get("host_filter") if state else None
+    if isinstance(stored_filter, list) and all(
+        isinstance(item, str) for item in stored_filter
+    ):
+        host_filter = set(stored_filter)
+    elif state and state.get("action") == "callback":
         host_filter = set(HOST_ADAPTERS)
     inbox_count = pending_signal_count(
         projects,
@@ -804,6 +980,7 @@ def service_status(
         state_dir=state_dir,
         state_file=state_file,
     )
+    deferred_counts = deferred_status_counts(deferred_events)
     if not state:
         return {
             "schema_version": core.SCHEMA_VERSION,
@@ -813,10 +990,13 @@ def service_status(
             "binding_host": bound.get("host") if bound else None,
             "project_roots": [str(path) for path in projects],
             "service_file": str(service_path),
+            "state_path": str(state_file),
             "heartbeat_file": str(heartbeat_path),
             "heartbeat_age_seconds": heartbeat_age_seconds(heartbeat),
             "pending_inbox_count": inbox_count,
             "deferred_event_count": len(deferred_events),
+            "deferred_status_counts": deferred_counts,
+            "manual_required_count": deferred_counts[DEFER_STATUS_MANUAL_REQUIRED],
             "deferred_events": deferred_events,
             "warnings": service_warnings(
                 status="not_started",
@@ -847,6 +1027,7 @@ def service_status(
         "process_group": state.get("process_group"),
         "action": state.get("action"),
         "target_thread_id": state.get("target_thread_id"),
+        "host_filter": state.get("host_filter"),
         "binding_host": bound.get("host") if bound else None,
         "project_roots": [str(path) for path in projects],
         "service_file": str(service_path),
@@ -859,6 +1040,8 @@ def service_status(
         "command": state.get("command"),
         "pending_inbox_count": inbox_count,
         "deferred_event_count": len(deferred_events),
+        "deferred_status_counts": deferred_counts,
+        "manual_required_count": deferred_counts[DEFER_STATUS_MANUAL_REQUIRED],
         "deferred_events": deferred_events,
         "warnings": service_warnings(
             status=status,
@@ -940,6 +1123,7 @@ def start_service(
     action: str,
     target_thread_id: str | None,
     codex: str,
+    host: str | None = None,
     replace: bool = False,
     popen_factory=subprocess.Popen,
 ) -> dict[str, Any]:
@@ -947,6 +1131,16 @@ def start_service(
         raise WatcherError("interval must be positive")
     if action == "current-thread-callback" and not target_thread_id:
         raise WatcherError("target thread id is required for current-thread-callback")
+    if host is not None and action != "callback":
+        # Host-scoped state/service/heartbeat paths only exist for the
+        # callback action; mixing --host with other actions would split the
+        # service file and its heartbeat across different path schemes.
+        raise WatcherError("--host is only valid with --action callback")
+    if action == "callback" and host is not None and host not in HOST_ADAPTERS:
+        raise WatcherError(
+            f"host {host} does not support callback wakeups; "
+            "use `watcher stream` from the host chat instead"
+        )
     projects = [path.expanduser().resolve() for path in project_roots]
     if action == "current-thread-callback":
         # Legacy callback actions ignore the binding at scan time, but
@@ -962,8 +1156,9 @@ def start_service(
                 "stream watch from the host chat, or rebind with "
                 "`bind --host codex --thread-id ...` first"
             )
-    service_path = service_file or default_service_path(
+    service_path = service_file or default_callback_service_path(
         projects[0],
+        host=host,
         state_dir=state_dir,
     )
     existing = load_optional_object(service_path)
@@ -984,8 +1179,20 @@ def start_service(
         projects[0],
         state_dir=state_dir,
     )
-    heartbeat_path = default_heartbeat_path(
+    if state_path is None and action == "callback":
+        watcher_state = default_callback_state_path(
+            projects[0],
+            host=host,
+            state_dir=state_dir,
+        )
+    seed_state_from_legacy(
         projects[0],
+        state_file=watcher_state,
+        state_dir=state_dir,
+    )
+    heartbeat_path = default_callback_heartbeat_path(
+        projects[0],
+        host=host,
         state_dir=state_dir,
     )
     log_path = default_service_log_path(
@@ -1007,6 +1214,8 @@ def start_service(
             action,
         ]
     )
+    if host is not None:
+        command.extend(["--host", host])
     if target_thread_id:
         command.extend(["--target-thread-id", target_thread_id])
     command.extend(
@@ -1040,6 +1249,7 @@ def start_service(
         "state_dir": state_dir,
         "action": action,
         "target_thread_id": target_thread_id,
+        "host_filter": [host] if host else None,
         "interval_seconds": interval_seconds,
         "state_path": str(watcher_state),
         "heartbeat_path": str(heartbeat_path),
@@ -1055,13 +1265,15 @@ def stop_service(
     *,
     state_dir: str = core.DEFAULT_STATE_DIR,
     service_file: Path | None = None,
+    host: str | None = None,
     timeout_seconds: float = 5.0,
     process_checker=process_alive,
     kill_group=os.killpg,
 ) -> dict[str, Any]:
     projects = [path.expanduser().resolve() for path in project_roots]
-    service_path = service_file or default_service_path(
+    service_path = service_file or default_callback_service_path(
         projects[0],
+        host=host,
         state_dir=state_dir,
     )
     state = load_optional_object(service_path)
@@ -1116,6 +1328,7 @@ def watch(
     target_thread_id: str | None,
     codex: str,
     heartbeat_file: Path | None = None,
+    host_filter: set[str] | None = None,
     max_scans: int | None = None,
     scan=scan_once,
 ) -> None:
@@ -1176,6 +1389,7 @@ def watch(
                     action=action,
                     target_thread_id=target_thread_id,
                     codex=codex,
+                    host_filter=host_filter,
                 )
             except (OSError, RuntimeError, ValueError) as error:
                 # A single failing scan must not take down a long-running

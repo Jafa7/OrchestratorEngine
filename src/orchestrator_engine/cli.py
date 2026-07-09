@@ -8,7 +8,15 @@ import os
 import sys
 from pathlib import Path
 
-from . import binding, claude_stream, codex_app, core, watcher, workers
+from . import (
+    __version__,
+    binding,
+    claude_stream,
+    codex_app,
+    core,
+    watcher,
+    workers,
+)
 
 
 def print_json(value: object) -> None:
@@ -17,6 +25,11 @@ def print_json(value: object) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="OrchestratorEngine")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
     parser.add_argument(
         "--project-root",
         type=Path,
@@ -118,6 +131,11 @@ def build_parser() -> argparse.ArgumentParser:
     watcher_parser.add_argument("--state-file", type=Path)
     watcher_parser.add_argument("--codex", default="codex")
     watcher_parser.add_argument(
+        "--host",
+        choices=sorted(binding.SUPPORTED_HOSTS),
+        help="Limit watcher delivery to signals for one host.",
+    )
+    watcher_parser.add_argument(
         "--target-thread-id",
         default=None,
     )
@@ -140,6 +158,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--reason",
         help="Human-readable acknowledgement note.",
     )
+    deferred = watcher_subparsers.add_parser(
+        "deferred",
+        help="Inspect and operate on deferred watcher events.",
+    )
+    deferred_subparsers = deferred.add_subparsers(
+        dest="deferred_command",
+        required=True,
+    )
+    deferred_subparsers.add_parser(
+        "list",
+        help="List deferred watcher events without requiring a running service.",
+    )
+    deferred_retry = deferred_subparsers.add_parser(
+        "retry",
+        help="Re-arm a deferred watcher event for retry on the next scan.",
+    )
+    deferred_retry.add_argument("--event-id", required=True)
+    deferred_retry.add_argument(
+        "--reason",
+        help="Human-readable retry note.",
+    )
     watch = watcher_subparsers.add_parser(
         "watch",
         help="Run the watcher scan loop in the foreground.",
@@ -154,6 +193,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     stream.add_argument("--interval-seconds", type=float, default=2)
+    stream_subparsers = stream.add_subparsers(dest="stream_command")
+    stream_subparsers.add_parser(
+        "status",
+        help="Report foreground stream health from its state file.",
+    )
     service = watcher_subparsers.add_parser(
         "service",
         help="Control a detached background watcher process.",
@@ -334,6 +378,17 @@ def run_worker_cli_command(args: argparse.Namespace, root: Path) -> object:
 
 def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object | None:
     target_thread_id = watcher_target_thread_id(args)
+    host_filter = {args.host} if args.host else None
+    # Operator commands must reach the same state file the service uses:
+    # host-scoped callback services keep their deferred events in
+    # watcher-<host>-callback-state.json, not the legacy watcher-state.json.
+    operator_state = args.state_file
+    if operator_state is None and args.host:
+        operator_state = watcher.default_callback_state_path(
+            roots[0],
+            host=args.host,
+            state_dir=args.state_dir,
+        )
     if args.watcher_command == "once":
         return watcher.scan_once(
             roots,
@@ -342,6 +397,7 @@ def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object |
             action=args.action,
             target_thread_id=target_thread_id,
             codex=args.codex,
+            host_filter=host_filter,
         )
     if args.watcher_command == "acknowledge":
         if len(roots) != 1:
@@ -350,8 +406,30 @@ def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object |
             roots[0],
             event_id=args.event_id,
             state_dir=args.state_dir,
-            state_path=args.state_file,
+            state_path=operator_state,
             reason=args.reason,
+        )
+    if args.watcher_command == "deferred":
+        if args.deferred_command == "list":
+            return watcher.list_deferred_events(
+                roots,
+                state_dir=args.state_dir,
+                state_path=operator_state,
+            )
+        if args.deferred_command == "retry":
+            if len(roots) != 1:
+                raise watcher.WatcherError(
+                    "deferred retry requires exactly one project root"
+                )
+            return watcher.retry_deferred_event(
+                roots[0],
+                event_id=args.event_id,
+                state_dir=args.state_dir,
+                state_path=operator_state,
+                reason=args.reason,
+            )
+        raise watcher.WatcherError(
+            f"unsupported deferred command: {args.deferred_command}"
         )
     if args.watcher_command == "watch":
         watcher.watch(
@@ -363,9 +441,17 @@ def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object |
             target_thread_id=target_thread_id,
             codex=args.codex,
             heartbeat_file=args.heartbeat_file,
+            host_filter=host_filter,
         )
         return None
     if args.watcher_command == "stream":
+        if args.stream_command == "status":
+            return claude_stream.stream_status(
+                roots,
+                state_dir=args.state_dir,
+                state_path=args.state_file,
+                interval_seconds=args.interval_seconds,
+            )
         claude_stream.stream_signals(
             roots,
             state_dir=args.state_dir,
@@ -387,6 +473,7 @@ def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object |
             action=args.action,
             target_thread_id=target_thread_id,
             codex=args.codex,
+            host=args.host,
             replace=args.replace,
         )
     if args.service_command == "status":
@@ -394,12 +481,14 @@ def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object |
             roots,
             state_dir=args.state_dir,
             service_file=args.service_file,
+            host=args.host,
         )
     if args.service_command == "stop":
         return watcher.stop_service(
             roots,
             state_dir=args.state_dir,
             service_file=args.service_file,
+            host=args.host,
             timeout_seconds=args.timeout_seconds,
         )
     if args.service_command == "restart":
@@ -407,6 +496,7 @@ def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object |
             roots,
             state_dir=args.state_dir,
             service_file=args.service_file,
+            host=args.host,
             timeout_seconds=args.timeout_seconds,
         )
         return watcher.start_service(
@@ -418,6 +508,7 @@ def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object |
             action=args.action,
             target_thread_id=target_thread_id,
             codex=args.codex,
+            host=args.host,
             replace=True,
         )
     raise watcher.WatcherError(f"unsupported service command: {args.service_command}")

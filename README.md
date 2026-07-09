@@ -63,8 +63,15 @@ I orchestrate from this chat; ask me anything the guide says to ask.
    event on exit.
 3. **Wake**: a watcher service (`--action callback`) pushes a wakeup to the
    bound host — or, for Claude, the session itself watches `watcher stream`.
+   Callback services can be scoped with `watcher --host codex|vscode` so
+   multiple host channels can share one inbox without consuming each other's
+   signals.
 
 Per-host setup details: [docs/hosts.md](docs/hosts.md).
+
+Release and upgrade notes:
+[CHANGELOG.md](CHANGELOG.md), [LICENSE](LICENSE), and
+[docs/upgrade-guide.md](docs/upgrade-guide.md).
 
 ## File layout inside an adopted project
 
@@ -103,6 +110,10 @@ project:
     watcher-state.json
     watcher-service.json
     watcher-heartbeat.json
+    watcher-<host>-callback-state.json
+    watcher-<host>-callback-service.json
+    watcher-<host>-callback-heartbeat.json
+    watcher-claude-stream-state.json
 ```
 
 The core package is project-neutral. A project may wrap it and choose a
@@ -142,7 +153,7 @@ Start the wakeup watcher:
 
 ```bash
 orchestrator-engine --project-root /path/to/project watcher \
-  --action callback service start --interval-seconds 5
+  --host codex --action callback service start --interval-seconds 5
 ```
 
 Dispatch a task from the host chat and end the turn:
@@ -155,9 +166,11 @@ orchestrator-engine --project-root /path/to/project worker run \
 Check health / list pending signals / stop:
 
 ```bash
-orchestrator-engine --project-root /path/to/project watcher service status
+orchestrator-engine --project-root /path/to/project watcher \
+  --host codex service status
 orchestrator-engine --project-root /path/to/project inbox
-orchestrator-engine --project-root /path/to/project watcher service stop
+orchestrator-engine --project-root /path/to/project watcher \
+  --host codex service stop
 ```
 
 For a Claude host there is no push service; arm a watch from the Claude chat

@@ -366,6 +366,89 @@ class WatcherTests(unittest.TestCase):
         self.assertNotIn("event-ack", watcher_state["deferred_events"])
         self.assertIn("event-ack", watcher_state["acknowledged_events"])
 
+    def test_list_deferred_events_reports_counts_and_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            state = watcher.default_state_path(root)
+            write_event(root, event_id="event-list")
+            signal = core.inbox(root)[0]
+            core.atomic_json(
+                state,
+                {
+                    "schema_version": 1,
+                    "seen_event_ids": [],
+                    "deferred_events": {
+                        "event-list": {
+                            "status": watcher.DEFER_STATUS_MANUAL_REQUIRED,
+                            "attempts": 2,
+                            "reason": "turn failed: usage limit",
+                            "reason_code": "quota_or_usage_limit",
+                            "task_id": "TASK-001",
+                            "terminal_status": "completed",
+                            "event_path": signal["event_path"],
+                            "signal_path": signal["signal_path"],
+                            "first_attempt_at": 1000.0,
+                            "last_attempt_at": 1030.0,
+                        }
+                    },
+                    "acknowledged_events": {},
+                },
+            )
+            listing = watcher.list_deferred_events([root], state_path=state)
+
+        self.assertEqual(listing["deferred_event_count"], 1)
+        self.assertEqual(
+            listing["deferred_status_counts"][watcher.DEFER_STATUS_MANUAL_REQUIRED],
+            1,
+        )
+        event = listing["deferred_events"][0]
+        self.assertEqual(event["event_id"], "event-list")
+        self.assertEqual(event["terminal_status"], "completed")
+        self.assertEqual(event["event_path"], signal["event_path"])
+        self.assertEqual(event["signal_path"], signal["signal_path"])
+        self.assertIsNotNone(event["first_attempt_at_iso"])
+
+    def test_retry_deferred_event_rearms_manual_required_event(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            state = watcher.default_state_path(root)
+            core.atomic_json(
+                state,
+                {
+                    "schema_version": 1,
+                    "seen_event_ids": [],
+                    "deferred_events": {
+                        "event-retry": {
+                            "status": watcher.DEFER_STATUS_MANUAL_REQUIRED,
+                            "attempts": 5,
+                            "reason": "turn failed: usage limit",
+                            "reason_code": "quota_or_usage_limit",
+                            "task_id": "TASK-001",
+                            "retry_after_at": 9999.0,
+                        }
+                    },
+                    "acknowledged_events": {},
+                },
+            )
+            retry = watcher.retry_deferred_event(
+                root,
+                event_id="event-retry",
+                state_path=state,
+                reason="quota reset",
+            )
+            watcher_state = watcher.load_state(state)
+
+        self.assertEqual(retry["status"], "retry_scheduled")
+        self.assertEqual(
+            retry["previous_status"],
+            watcher.DEFER_STATUS_MANUAL_REQUIRED,
+        )
+        deferred = watcher_state["deferred_events"]["event-retry"]
+        self.assertEqual(deferred["status"], watcher.DEFER_STATUS_RETRYABLE)
+        self.assertEqual(deferred["attempts"], 5)
+        self.assertNotIn("retry_after_at", deferred)
+        self.assertEqual(deferred["retry_reason"], "quota reset")
+
     def test_service_start_writes_state_and_command(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -385,6 +468,156 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(stored["kind"], watcher.SERVICE_KIND)
         self.assertIn("watch", FakePopen.command)
         self.assertTrue(FakePopen.kwargs["start_new_session"])
+
+    def test_service_start_rejects_host_for_non_callback_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with self.assertRaises(watcher.WatcherError):
+                watcher.start_service(
+                    [root],
+                    interval_seconds=5,
+                    state_path=root / "watcher-state.json",
+                    service_file=root / "service.json",
+                    action="notify",
+                    target_thread_id=None,
+                    codex="codex",
+                    host="codex",
+                    popen_factory=FakePopen,
+                )
+
+    def test_callback_service_host_scope_uses_scoped_files_and_command(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            service = watcher.start_service(
+                [root],
+                interval_seconds=5,
+                state_path=None,
+                service_file=None,
+                action="callback",
+                target_thread_id=None,
+                codex="codex",
+                host="codex",
+                popen_factory=FakePopen,
+            )
+        self.assertTrue(
+            service["service_file"].endswith("watcher-codex-callback-service.json")
+        )
+        self.assertTrue(
+            service["state_path"].endswith("watcher-codex-callback-state.json")
+        )
+        self.assertTrue(
+            service["heartbeat_path"].endswith(
+                "watcher-codex-callback-heartbeat.json"
+            )
+        )
+        self.assertEqual(service["host_filter"], ["codex"])
+        self.assertIn("--host", FakePopen.command)
+        self.assertIn("codex", FakePopen.command)
+
+    def test_watch_forwards_host_filter_to_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            calls: list[set[str] | None] = []
+
+            def fake_scan(_projects, **kwargs):
+                calls.append(kwargs.get("host_filter"))
+                return {
+                    "schema_version": 1,
+                    "checked_at": core.utc_now(),
+                    "project_roots": [str(root)],
+                    "new_count": 0,
+                    "new_signals": [],
+                    "notifications": [],
+                    "thread_wakeups": [],
+                    "action_errors": [],
+                    "state_path": str(root / "state.json"),
+                }
+
+            watcher.watch(
+                [root],
+                state_dir=core.DEFAULT_STATE_DIR,
+                interval_seconds=0.01,
+                state_path=root / "state.json",
+                action="record",
+                target_thread_id=None,
+                codex="codex",
+                heartbeat_file=root / "heartbeat.json",
+                host_filter={"codex"},
+                max_scans=1,
+                scan=fake_scan,
+            )
+        self.assertEqual(calls, [{"codex"}])
+
+    def test_service_status_host_scope_counts_only_matching_signals(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            result = root / "result.json"
+            evidence = root / "evidence.json"
+            result.write_text('{"status":"ok"}', encoding="utf-8")
+            evidence.write_text('{"review_ready":true}', encoding="utf-8")
+            core.write_terminal_event(
+                root,
+                task_id="TASK-CODEX",
+                terminal_status="completed",
+                result_path=result,
+                evidence_path=evidence,
+                event_id="event-codex",
+                wake_target={
+                    "schema_version": 1,
+                    "kind": binding.WAKE_TARGET_KIND,
+                    "host": "codex",
+                    "target_thread_id": "thread-codex",
+                    "captured_at": "2026-07-08T00:00:00.000+00:00",
+                },
+            )
+            core.write_terminal_event(
+                root,
+                task_id="TASK-VSCODE",
+                terminal_status="completed",
+                result_path=result,
+                evidence_path=evidence,
+                event_id="event-vscode",
+                wake_target={
+                    "schema_version": 1,
+                    "kind": binding.WAKE_TARGET_KIND,
+                    "host": "vscode",
+                    "captured_at": "2026-07-08T00:00:00.000+00:00",
+                },
+            )
+            status = watcher.service_status([root], host="codex")
+        self.assertTrue(
+            status["service_file"].endswith("watcher-codex-callback-service.json")
+        )
+        self.assertEqual(status["pending_inbox_count"], 1)
+
+    def test_service_status_host_scope_reads_state_without_service_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            state = watcher.default_callback_state_path(root, host="codex")
+            core.atomic_json(
+                state,
+                {
+                    "schema_version": 1,
+                    "seen_event_ids": [],
+                    "deferred_events": {
+                        "event-host": {
+                            "status": watcher.DEFER_STATUS_MANUAL_REQUIRED,
+                            "attempts": 1,
+                            "reason": "turn failed: usage limit",
+                            "reason_code": "quota_or_usage_limit",
+                            "task_id": "TASK-HOST",
+                        }
+                    },
+                    "acknowledged_events": {},
+                },
+            )
+            status = watcher.service_status([root], host="codex")
+
+        self.assertEqual(status["status"], "not_started")
+        self.assertEqual(status["state_path"], str(state))
+        self.assertEqual(status["deferred_event_count"], 1)
+        self.assertEqual(status["deferred_events"][0]["event_id"], "event-host")
+        self.assertEqual(status["manual_required_count"], 1)
 
     def test_service_status_degrades_stale_or_mismatched_heartbeat(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

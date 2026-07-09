@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from orchestrator_engine import binding, claude_stream, core, watcher
@@ -110,6 +111,75 @@ class StreamTests(unittest.TestCase):
             self.assertEqual(lines, [])
             self.assertEqual(callback["new_count"], 1)
             self.assertTrue(stream_state.is_file())
+
+    def test_stream_status_reports_fresh_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            binding.write_binding(root, host="claude")
+            claude_stream.stream_signals([root], max_scans=1)
+            status = claude_stream.stream_status([root])
+        self.assertEqual(status["status"], "fresh")
+        self.assertTrue(status["healthy"])
+        self.assertEqual(status["pending_inbox_count"], 0)
+
+    def test_stream_status_reports_stale_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            state = watcher.default_stream_state_path(root, host="claude")
+            core.atomic_json(
+                state,
+                {
+                    "schema_version": 1,
+                    "seen_event_ids": [],
+                    "deferred_events": {},
+                    "acknowledged_events": {},
+                    "updated_at": (
+                        datetime.now(UTC) - timedelta(minutes=10)
+                    ).isoformat(timespec="milliseconds"),
+                },
+            )
+            status = claude_stream.stream_status([root], interval_seconds=2)
+        self.assertEqual(status["status"], "stale")
+        self.assertFalse(status["healthy"])
+
+    def test_stream_status_reports_persistent_error_as_unhealthy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+
+            def always_failing_scan(*_args, **_kwargs):
+                raise watcher.WatcherError("stream keeps failing")
+
+            claude_stream.stream_signals(
+                [root],
+                max_scans=1,
+                scan=always_failing_scan,
+            )
+            status = claude_stream.stream_status([root])
+        self.assertEqual(status["status"], "erroring")
+        self.assertFalse(status["healthy"])
+        self.assertIn("stream keeps failing", status["last_error"])
+
+    def test_stream_records_scan_error_and_keeps_loop_alive(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            calls = {"count": 0}
+
+            def flaky_scan(*args, **kwargs):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    raise watcher.WatcherError("temporary stream failure")
+                return watcher.scan_once(*args, **kwargs)
+
+            claude_stream.stream_signals(
+                [root],
+                max_scans=2,
+                sleep=lambda _seconds: None,
+                scan=flaky_scan,
+            )
+            status = claude_stream.stream_status([root])
+        self.assertEqual(calls["count"], 2)
+        self.assertEqual(status["status"], "fresh")
+        self.assertIsNone(status["last_error"])
 
 
 if __name__ == "__main__":

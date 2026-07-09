@@ -297,17 +297,20 @@ referenced by the JSON result.
 
 ```bash
 orchestrator-engine --project-root /path/to/project watcher \
-  --action callback service start --interval-seconds 5
+  --host codex --action callback service start --interval-seconds 5
 ```
 
 **Check:**
 
 ```bash
-orchestrator-engine --project-root /path/to/project watcher service status
+orchestrator-engine --project-root /path/to/project watcher \
+  --host codex service status
 ```
 
 Expect `"status": "running"` and `"heartbeat_healthy": true` (heartbeat may
-take one interval to appear).
+take one interval to appear). Use `--host vscode` for a VS Code callback
+service. Host-scoped callback services use separate state/service/heartbeat
+files and can coexist with Claude stream watches.
 
 ### Host claude — stream watch, no service
 
@@ -323,8 +326,15 @@ The stream consumes only `claude` wake targets and uses its own state file
 (`watcher-claude-stream-state.json`), so it can coexist with a callback
 service delivering Codex or VS Code signals from the same inbox.
 
-**Check:** run `watcher stream` with a pre-existing unseen signal (or after the
-smoke test below) and confirm it prints one line per signal.
+**Check:**
+
+```bash
+orchestrator-engine --project-root /path/to/project watcher stream status
+```
+
+Expect `"status": "fresh"` while the stream is armed and scanning. Run
+`watcher stream` with a pre-existing unseen signal (or after the smoke test
+below) and confirm it prints one line per signal.
 
 ## Step 6 — End-to-end smoke test
 
@@ -402,7 +412,8 @@ When woken by a `LOCAL_AI_ORCHESTRATOR_WAKEUP` message:
 ```
 
 Finally, tell the user what was configured: host binding, workers, watcher
-state, and how to stop it (`watcher service stop`).
+state, and how to stop it (`watcher --host HOST service stop` for callback
+hosts, or by ending the armed stream command for Claude).
 
 ## Troubleshooting
 
@@ -410,8 +421,10 @@ state, and how to stop it (`watcher service stop`).
 |---|---|
 | `no binding found` on watcher start | Run Step 2; `callback` requires `binding.json`. |
 | `host claude does not support callback wakeups` | Correct — use `watcher stream` (Step 4, claude). |
-| Codex receipt stuck on `deferred` with a usage-limit message | Codex quota exhausted. New watcher versions classify this as `deferred_manual_required` and stop automatic retries; read event/result/evidence manually, then run `orchestrator-engine --project-root <root> watcher acknowledge --event-id <event-id> --reason "read manually"` or retry after quota resets. |
-| `watcher service status` shows `deferred_manual_required` | The watcher stopped retrying a callback that needs operator action. Inspect `deferred_events[]` for event id, task id, attempts, last reason and suggested action. |
+| Codex receipt stuck on `deferred` with a usage-limit message | Codex quota exhausted. New watcher versions classify this as `deferred_manual_required` and stop automatic retries; read event/result/evidence manually, then run `orchestrator-engine --project-root <root> watcher acknowledge --event-id <event-id> --reason "read manually"` or `watcher deferred retry --event-id <event-id> --reason "quota reset"` after quota resets. |
+| `watcher service status` shows `deferred_manual_required` | The watcher stopped retrying a callback that needs operator action. Run `watcher deferred list`, inspect event/result/evidence, then `watcher deferred retry --event-id ...` or `watcher acknowledge --event-id ...`. |
+| `watcher stream status` is `stale` or `not_started` | Re-arm `watcher stream` from the Claude chat. Re-arming is safe: the stream state keeps seen event ids, so already delivered signals are not repeated. |
+| `watcher stream status` is `erroring` | The stream loop is alive but the latest scan failed. Inspect `last_error`, fix the inbox/state issue, and keep the stream running; the status returns to `fresh` after a successful scan. |
 | Codex receipt `deferred` with `thread_active` or `thread_recently_active` | Normal guard: the worker finished while the target chat was still active or had just written to its rollout. End the orchestrating turn; watcher retries with backoff instead of injecting a parallel turn. The recent-activity grace window is short (30 seconds by default), so this trades a small delay for avoiding concurrent injected turns. |
 | Codex receipt `woken` with `turn_status: "running"` | Normal for long orchestrator turns; a background finalizer updates the receipt when the turn ends. Requires service mode (not `watcher once`). |
 | Codex receipt `woken` but window did not focus | Check `activation` field in the receipt; the deep link needs `powershell.exe` reachable (WSL interop) and the desktop app installed. |

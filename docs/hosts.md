@@ -35,7 +35,7 @@ orchestrator-engine --project-root /path/to/project bind \
   --host codex --thread-id THREAD_ID
 
 orchestrator-engine --project-root /path/to/project watcher \
-  --action callback service start --interval-seconds 5
+  --host codex --action callback service start --interval-seconds 5
 ```
 
 Notes:
@@ -79,11 +79,22 @@ orchestrator-engine --project-root /path/to/project watcher stream
 ```
 
 Every new inbox signal is printed as one JSON line and wakes the chat. The
-stream shares the standard watcher state, so each signal is delivered once.
+stream uses `watcher-claude-stream-state.json`, so each Claude signal is
+delivered once and callback services for other hosts do not consume it.
 Delivery is at-most-once: a signal is marked seen when its line is printed, so
 if the armed watch dies at that exact moment the line is lost — check
 `orchestrator-engine inbox` output against recent task results after re-arming
 a watch that was down.
+
+Check stream health:
+
+```bash
+orchestrator-engine --project-root /path/to/project watcher stream status
+```
+
+If the status is `stale` or `not_started`, re-arm `watcher stream` from the
+Claude chat. Re-arming is safe because seen event ids remain in the stream
+state file.
 
 Optionally record the intent for other tooling:
 
@@ -103,13 +114,30 @@ the VS Code `code chat` command and the user's active window state.
 orchestrator-engine --project-root /path/to/project bind --host vscode
 
 orchestrator-engine --project-root /path/to/project watcher \
-  --action callback service start --interval-seconds 5
+  --host vscode --action callback service start --interval-seconds 5
 ```
 
 Notes:
 
 - The CLI targets the last active window, not a specific conversation.
 - Requires VS Code with the `chat` CLI subcommand (1.127+).
+
+## Multi-Host Coexistence
+
+For callback hosts, prefer host-scoped services:
+
+```bash
+orchestrator-engine --project-root /path/to/project watcher \
+  --host codex --action callback service start
+
+orchestrator-engine --project-root /path/to/project watcher \
+  --host vscode --action callback service start
+```
+
+Host-scoped callback services use separate
+`watcher-<host>-callback-state.json`, service and heartbeat files. The legacy
+unscoped callback service still works, but it is best treated as a single
+combined callback channel for compatibility.
 
 ## Dispatching workers
 

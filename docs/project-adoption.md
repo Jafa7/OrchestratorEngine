@@ -44,10 +44,12 @@ orchestrator-engine --project-root /path/to/project bind \
   --host codex --thread-id THREAD_ID
 
 orchestrator-engine --project-root /path/to/project watcher \
-  --action callback service start --interval-seconds 5
+  --host codex --action callback service start --interval-seconds 5
 ```
 
 See [hosts.md](hosts.md) for Claude and VS Code hosts. The legacy invocation
 `--action current-thread-callback --target-thread-id THREAD_ID` remains
 supported and is equivalent to a codex binding.
 
+For engine-version upgrades and watcher-state migration, see
+[upgrade-guide.md](upgrade-guide.md).

@@ -24,6 +24,8 @@ on these behaviors:
   `wake_target` first and the current project binding only as a legacy
   fallback; `watcher stream` emits one JSON line per new signal for
   stream-based hosts.
+- `watcher --host HOST` scopes delivery to one host and uses host-specific
+  callback state/service/heartbeat files by default.
 - `cleanup` never removes terminal events or inbox signals.
 
 The following are intentionally not v0.1 core contracts:
@@ -166,7 +168,13 @@ service and a Claude stream can run against the same project inbox at the same
 time. The channels use separate watcher state files by default:
 
 - callback service: `.orchestrator/inbox/watcher-state.json`
+- host-scoped callback service:
+  `.orchestrator/inbox/watcher-<host>-callback-state.json`
 - Claude stream: `.orchestrator/inbox/watcher-claude-stream-state.json`
+
+Host-scoped callback services are recommended when multiple callback hosts
+share one inbox. The legacy unscoped callback service remains compatible and
+acts as one combined callback channel for `codex` and `vscode`.
 
 For legacy signals without `wake_target`, the current project binding is used
 as the fallback owner. New work should be dispatched through `worker run` so
@@ -333,6 +341,13 @@ The watcher writes:
 - `watcher-state.json` — seen event IDs and retry metadata.
 - `watcher-service.json` — PID, command, target thread and log path.
 - `watcher-heartbeat.json` — periodic health signal.
+- `watcher-<host>-callback-state.json` — host-scoped callback seen/deferred
+  state.
+- `watcher-<host>-callback-service.json` — host-scoped callback service
+  process state.
+- `watcher-<host>-callback-heartbeat.json` — host-scoped callback heartbeat.
+- `watcher-claude-stream-state.json` — Claude stream seen-event state and
+  scan heartbeat.
 - `thread-wakeups/<event_id>.json` — current-thread wakeup receipt.
 
 An event is marked seen only after a successful action, deterministic skip or
@@ -362,9 +377,28 @@ orchestrator-engine --project-root /path/to/project watcher \
   acknowledge --event-id EVENT_ID --reason "read manually"
 ```
 
+To list deferred events:
+
+```bash
+orchestrator-engine --project-root /path/to/project watcher deferred list
+```
+
+To re-arm a deferred event for the next scan without marking it handled:
+
+```bash
+orchestrator-engine --project-root /path/to/project watcher deferred retry \
+  --event-id EVENT_ID --reason "quota reset"
+```
+
+Pass the same `--host HOST` the service was started with (or an explicit
+`--state-file`) so `acknowledge`, `deferred list` and `deferred retry` operate
+on that service's host-scoped state file rather than the legacy
+`watcher-state.json`.
+
 `watcher service status` includes `deferred_event_count` and
-`deferred_events[]` entries with event id, task id, attempts, last reason,
-next retry and suggested operator action.
+`deferred_status_counts`, plus `deferred_events[]` entries with event id, task
+id, terminal status, attempts, last reason, evidence paths, next retry and
+suggested operator action.
 
 Codex wakeup turns are guarded before injection. If `thread/read` reports the
 target thread as active, or if the target thread's rollout file was modified
@@ -417,6 +451,14 @@ for.
 - `degraded` when the process is alive but heartbeat is unhealthy.
 - `stopped` after an intentional stop.
 - `crashed` when the service file was left behind by a dead process.
+
+`watcher stream status` reports:
+
+- `not_started` when the stream state file does not exist.
+- `fresh` when the stream state was updated within its staleness window.
+- `stale` when the stream state exists but has not been updated recently.
+- `degraded` when the stream state timestamp is invalid.
+- `erroring` when scans are still running but the latest scan failed.
 
 ## Retention
 

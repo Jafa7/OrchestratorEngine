@@ -224,6 +224,102 @@ class CliTests(unittest.TestCase):
         self.assertEqual(ack["previous_status"], "pending")
         self.assertIn("event-cli-ack", watcher_state["seen_event_ids"])
 
+    def test_watcher_deferred_list_and_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            state = watcher.default_state_path(root)
+            core.atomic_json(
+                state,
+                {
+                    "schema_version": 1,
+                    "seen_event_ids": [],
+                    "deferred_events": {
+                        "event-cli-retry": {
+                            "status": watcher.DEFER_STATUS_MANUAL_REQUIRED,
+                            "attempts": 1,
+                            "reason": "turn failed: usage limit",
+                            "reason_code": "quota_or_usage_limit",
+                            "task_id": "TASK-RETRY",
+                        }
+                    },
+                    "acknowledged_events": {},
+                },
+            )
+            list_out = io.StringIO()
+            with contextlib.redirect_stdout(list_out):
+                list_code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "watcher",
+                        "--state-file",
+                        str(state),
+                        "deferred",
+                        "list",
+                    ]
+                )
+            retry_out = io.StringIO()
+            with contextlib.redirect_stdout(retry_out):
+                retry_code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "watcher",
+                        "--state-file",
+                        str(state),
+                        "deferred",
+                        "retry",
+                        "--event-id",
+                        "event-cli-retry",
+                        "--reason",
+                        "quota reset",
+                    ]
+                )
+            watcher_state = watcher.load_state(state)
+
+        self.assertEqual((list_code, retry_code), (0, 0))
+        listing = json.loads(list_out.getvalue())
+        self.assertEqual(listing["deferred_event_count"], 1)
+        retry = json.loads(retry_out.getvalue())
+        self.assertEqual(retry["status"], "retry_scheduled")
+        self.assertEqual(
+            watcher_state["deferred_events"]["event-cli-retry"]["status"],
+            watcher.DEFER_STATUS_RETRYABLE,
+        )
+
+    def test_watcher_stream_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            state = watcher.default_stream_state_path(root, host="claude")
+            core.atomic_json(
+                state,
+                {
+                    "schema_version": 1,
+                    "seen_event_ids": [],
+                    "deferred_events": {},
+                    "acknowledged_events": {},
+                    "updated_at": core.utc_now(),
+                },
+            )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "watcher",
+                        "--state-file",
+                        str(state),
+                        "stream",
+                        "status",
+                    ]
+                )
+
+        self.assertEqual(code, 0)
+        status = json.loads(output.getvalue())
+        self.assertEqual(status["kind"], "LOCAL_AI_ORCHESTRATOR_STREAM_STATUS")
+        self.assertEqual(status["status"], "fresh")
+
     def test_cleanup_dry_run_reports_zero_removals_on_empty_inbox(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -269,6 +365,105 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertIsNone(calls[0]["target_thread_id"])
+
+    def test_callback_service_passes_host_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            calls: list[dict] = []
+
+            def fake_start_service(*_args, **kwargs):
+                calls.append(kwargs)
+                return {"status": "running"}
+
+            output = io.StringIO()
+            with (
+                patch(
+                    "orchestrator_engine.cli.watcher.start_service",
+                    side_effect=fake_start_service,
+                ),
+                contextlib.redirect_stdout(output),
+            ):
+                code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "watcher",
+                        "--host",
+                        "codex",
+                        "--action",
+                        "callback",
+                        "service",
+                        "start",
+                    ]
+                )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(calls[0]["host"], "codex")
+
+    def test_deferred_commands_resolve_host_scoped_state(self) -> None:
+        from orchestrator_engine import watcher
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            host_state = watcher.default_callback_state_path(root, host="codex")
+            core.atomic_json(
+                host_state,
+                {
+                    "schema_version": 1,
+                    "seen_event_ids": [],
+                    "deferred_events": {
+                        "event-host": {
+                            "attempts": 2,
+                            "reason": "usage limit",
+                            "status": "deferred_manual_required",
+                            "last_attempt_at": 0,
+                        }
+                    },
+                    "acknowledged_events": {},
+                },
+            )
+            scoped_out = io.StringIO()
+            with contextlib.redirect_stdout(scoped_out):
+                scoped_code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "watcher",
+                        "--host",
+                        "codex",
+                        "deferred",
+                        "list",
+                    ]
+                )
+            legacy_out = io.StringIO()
+            with contextlib.redirect_stdout(legacy_out):
+                legacy_code = cli.main(
+                    ["--project-root", str(root), "watcher", "deferred", "list"]
+                )
+            retry_out = io.StringIO()
+            with contextlib.redirect_stdout(retry_out):
+                retry_code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "watcher",
+                        "--host",
+                        "codex",
+                        "deferred",
+                        "retry",
+                        "--event-id",
+                        "event-host",
+                    ]
+                )
+        self.assertEqual((scoped_code, legacy_code, retry_code), (0, 0, 0))
+        scoped = json.loads(scoped_out.getvalue())
+        self.assertEqual(scoped["deferred_event_count"], 1)
+        self.assertEqual(scoped["deferred_events"][0]["event_id"], "event-host")
+        legacy = json.loads(legacy_out.getvalue())
+        self.assertEqual(legacy["deferred_event_count"], 0)
+        retried = json.loads(retry_out.getvalue())
+        self.assertEqual(retried["status"], "retry_scheduled")
+        self.assertEqual(retried["state_path"], str(host_state))
 
     def test_legacy_current_thread_callback_uses_env_thread_id(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
