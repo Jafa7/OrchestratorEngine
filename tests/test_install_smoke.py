@@ -253,6 +253,15 @@ class InstallSmokeTests(unittest.TestCase):
                 )
             )
             checks_status = self.run_cli(cli, project, "checks")
+            aggregate_status_result = subprocess.run(
+                [str(cli), "--project-root", str(project), "status"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=clean_env(),
+            )
+            aggregate_status = json.loads(aggregate_status_result.stdout)
         self.assertEqual(bind["host"], "claude")
         self.assertIn("0.1.0", version)
         self.assertTrue(workers["workers"]["smoke"]["enabled"])
@@ -267,6 +276,9 @@ class InstallSmokeTests(unittest.TestCase):
         self.assertEqual(verification["status"], "passed")
         self.assertEqual(checks_status["kind"], "ORCHESTRATOR_CHECKS_STATUS")
         self.assertEqual(checks_status["checks"]["INSTALL-CHECK"]["status"], "passed")
+        self.assertIn(aggregate_status_result.returncode, {0, 2})
+        self.assertEqual(aggregate_status["kind"], "ORCHESTRATOR_STATUS_REPORT")
+        self.assertIn("worker_tasks", aggregate_status["components"])
         inbox_task_ids = {row["task_id"] for row in inbox[str(project)]}
         self.assertIn("SMOKE-1", inbox_task_ids)
         self.assertIn("SMOKE-FAIL", inbox_task_ids)

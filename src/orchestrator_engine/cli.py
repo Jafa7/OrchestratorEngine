@@ -16,6 +16,7 @@ from . import (
     codex_app,
     core,
     diagnostics,
+    status,
     task_diagnostics,
     verification,
     watcher,
@@ -74,6 +75,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--strict",
         action="store_true",
         help="Return a non-zero exit code for warnings as well as errors.",
+    )
+
+    status = subparsers.add_parser(
+        "status",
+        help="Run a compact read-only operator status report.",
+    )
+    status.add_argument(
+        "--host",
+        choices=sorted(binding.SUPPORTED_HOSTS),
+        help="Check the wake channel for one host instead of the bound host.",
+    )
+    status.add_argument(
+        "--severity",
+        choices=worker_diagnostics.SEVERITIES,
+        default="warning",
+        help="Minimum task/check diagnostic severity to include.",
+    )
+    status.add_argument(
+        "--stale-after-seconds",
+        type=float,
+        default=task_diagnostics.DEFAULT_STALE_AFTER_SECONDS,
+        help="Running task heartbeat age that should be considered stale.",
     )
 
     adopt = subparsers.add_parser(
@@ -396,6 +419,18 @@ def main(argv: list[str] | None = None) -> int:
             )
             print_json(output)
             return diagnostics.doctor_exit_code(output, strict=args.strict)
+        elif args.command == "status":
+            if len(roots) != 1:
+                raise core.OrchestratorError("status requires exactly one project root")
+            output = status.run_status(
+                roots[0],
+                state_dir=args.state_dir,
+                host=args.host,
+                minimum_severity=args.severity,
+                stale_after_seconds=args.stale_after_seconds,
+            )
+            print_json(output)
+            return status.exit_code(output)
         elif args.command == "adopt":
             if len(roots) != 1:
                 raise core.OrchestratorError("adopt requires exactly one project root")

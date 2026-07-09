@@ -182,6 +182,7 @@ orchestrator-engine --project-root /path/to/project worker run \
 Check health / list pending signals / stop:
 
 ```bash
+orchestrator-engine --project-root /path/to/project status
 orchestrator-engine --project-root /path/to/project doctor
 orchestrator-engine --project-root /path/to/project worker tasks --severity warning
 orchestrator-engine --project-root /path/to/project watcher \
@@ -190,6 +191,10 @@ orchestrator-engine --project-root /path/to/project inbox
 orchestrator-engine --project-root /path/to/project watcher \
   --host codex service stop
 ```
+
+Use `status` first for a compact operator report. It summarizes `doctor`,
+the active wake channel, worker task diagnostics and verification checks, then
+lists only issues and problem tasks/checks that need follow-up.
 
 For a Claude host there is no push service; arm a watch from the Claude chat
 on:

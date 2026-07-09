@@ -56,6 +56,12 @@ events already handled by the legacy watcher.
 
 ## v0.1 Operator Commands
 
+Show the compact aggregate operator report:
+
+```bash
+orchestrator-engine --project-root /path/to/project status
+```
+
 List deferred events:
 
 ```bash

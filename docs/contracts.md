@@ -78,6 +78,33 @@ It returns `ORCHESTRATOR_DOCTOR_REPORT` with `checks[]` entries:
 `doctor` exits `0` for `ok` and `warn`, exits `2` for `error`, and exits `2`
 for warnings only when `--strict` is passed. CLI/runtime errors still exit `1`.
 
+`status` is the compact read-only operator report:
+
+```bash
+orchestrator-engine --project-root /path/to/project status
+```
+
+It returns `ORCHESTRATOR_STATUS_REPORT` with:
+
+- `components.doctor` — compact `doctor` check statuses without large schema
+  survey payloads.
+- `components.worker_profiles` — configured/enabled worker counts and profile
+  warnings.
+- `components.wake_channel` — callback service or stream status, pending
+  signal counts and channel warnings.
+- `components.worker_tasks` — task status counts plus only tasks that have
+  diagnostics at the selected severity.
+- `components.checks` — verification check status counts plus only failed or
+  diagnostic-bearing checks.
+- `issues[]` — flattened operator actions collected from the component
+  diagnostics.
+
+`status` does not run workers, start watchers, retry callbacks or mutate state.
+It exits `0` for a clean report, `2` when the worst component severity is
+`warning`, `3` for `error` and `1` for CLI/runtime failures. Use
+`--severity error` to suppress warning-level task/check diagnostics in the
+aggregate report.
+
 ## Terminal event
 
 Path:

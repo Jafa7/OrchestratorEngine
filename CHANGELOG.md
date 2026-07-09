@@ -2,6 +2,13 @@
 
 All notable changes to OrchestratorEngine are documented here.
 
+## [Unreleased]
+
+### Added
+
+- Read-only `status` aggregates doctor, wake channel, worker task and
+  verification check summaries into one compact operator report.
+
 ## [0.1.0] - 2026-07-08
 
 ### Added
