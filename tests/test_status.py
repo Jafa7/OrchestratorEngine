@@ -158,6 +158,82 @@ class StatusTests(unittest.TestCase):
             )
         )
 
+    def test_status_surfaces_large_logs_without_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            create_layout(root)
+            write_worker_config(root)
+            binding.write_binding(root, host="codex", target_thread_id="thread-1")
+            task_dir = workers.task_dir_for(root, "T-LOUD")
+            task_dir.mkdir(parents=True, exist_ok=True)
+            core.atomic_json(task_dir / "result.json", {"terminal_status": "completed"})
+            core.atomic_json(task_dir / "evidence.json", {"ok": True})
+            (task_dir / "worker-stdout.log").write_text("x" * 64, encoding="utf-8")
+            core.atomic_json(
+                task_dir / "task.json",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-LOUD",
+                    "worker": "echo",
+                    "status": "completed",
+                },
+            )
+            report = status.run_status(root, large_log_bytes=16)
+            draft = status.report_draft(
+                root,
+                project_name="Fixture",
+                large_log_bytes=16,
+            )
+
+        tasks = report["components"]["worker_tasks"]
+        self.assertEqual(tasks["problem_task_count"], 0)
+        self.assertEqual(tasks["large_log_task_count"], 1)
+        self.assertEqual(
+            tasks["large_log_tasks"]["T-LOUD"]["large_logs"]["stdout"],
+            64,
+        )
+        self.assertIn("## Large Worker Logs", draft)
+
+    def test_status_surfaces_large_verification_logs_without_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            create_layout(root)
+            write_worker_config(root)
+            binding.write_binding(root, host="codex", target_thread_id="thread-1")
+            check_dir = verification.checks_root(root) / "CHECK-LOUD"
+            check_dir.mkdir(parents=True, exist_ok=True)
+            core.atomic_json(
+                check_dir / "verification-result.json",
+                {
+                    "schema_version": 1,
+                    "kind": verification.VERIFICATION_RESULT_KIND,
+                    "check_id": "CHECK-LOUD",
+                    "status": "passed",
+                    "exit_code": 0,
+                    "commands": [],
+                    "summary_path": ".orchestrator/checks/CHECK-LOUD/summary.txt",
+                    "log_path": ".orchestrator/checks/CHECK-LOUD/full.log",
+                },
+            )
+            (check_dir / "summary.txt").write_text("passed\n", encoding="utf-8")
+            (check_dir / "full.log").write_text("x" * 64, encoding="utf-8")
+            report = status.run_status(root, large_log_bytes=16)
+            draft = status.report_draft(
+                root,
+                project_name="Fixture",
+                large_log_bytes=16,
+            )
+
+        checks = report["components"]["checks"]
+        self.assertEqual(checks["problem_check_count"], 0)
+        self.assertEqual(checks["large_log_check_count"], 1)
+        self.assertEqual(
+            checks["large_log_checks"]["CHECK-LOUD"]["large_logs"]["full_log"],
+            64,
+        )
+        self.assertIn("## Large Verification Logs", draft)
+
     def test_report_draft_returns_markdown_issue_body(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

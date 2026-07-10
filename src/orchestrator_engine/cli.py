@@ -99,6 +99,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=task_diagnostics.DEFAULT_STALE_AFTER_SECONDS,
         help="Running task heartbeat age that should be considered stale.",
     )
+    status.add_argument(
+        "--large-log-bytes",
+        type=int,
+        default=task_diagnostics.DEFAULT_LARGE_LOG_BYTES,
+        help="Worker log size that should be considered too large for chat.",
+    )
 
     report = subparsers.add_parser(
         "report",
@@ -135,6 +141,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=task_diagnostics.DEFAULT_STALE_AFTER_SECONDS,
         help="Running task heartbeat age that should be considered stale.",
+    )
+    report_draft.add_argument(
+        "--large-log-bytes",
+        type=int,
+        default=task_diagnostics.DEFAULT_LARGE_LOG_BYTES,
+        help="Worker log size that should be considered too large for chat.",
     )
     report_draft.add_argument(
         "--output",
@@ -241,6 +253,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=task_diagnostics.DEFAULT_STALE_AFTER_SECONDS,
         help="Running task heartbeat age that should be considered stale.",
     )
+    worker_tasks.add_argument(
+        "--large-log-bytes",
+        type=int,
+        default=task_diagnostics.DEFAULT_LARGE_LOG_BYTES,
+        help="Worker log size that should be considered too large for chat.",
+    )
     worker_resolve = worker_subparsers.add_parser(
         "resolve",
         help="Mark a historical worker task outcome as operator-resolved.",
@@ -314,6 +332,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=worker_diagnostics.SEVERITIES,
         default="info",
         help="Minimum diagnostic severity to include.",
+    )
+    checks.add_argument(
+        "--large-log-bytes",
+        type=int,
+        default=verification.DEFAULT_LARGE_LOG_BYTES,
+        help="Verification log size that should be considered too large for chat.",
     )
 
     watcher_parser = subparsers.add_parser(
@@ -474,6 +498,7 @@ def main(argv: list[str] | None = None) -> int:
                 check_id=args.check_id,
                 status=args.status,
                 minimum_severity=args.severity,
+                large_log_bytes=args.large_log_bytes,
             )
             print_json(output)
             return worker_diagnostics.exit_code_for_worst(
@@ -500,6 +525,7 @@ def main(argv: list[str] | None = None) -> int:
                 host=args.host,
                 minimum_severity=args.severity,
                 stale_after_seconds=args.stale_after_seconds,
+                large_log_bytes=args.large_log_bytes,
             )
             print_json(output)
             return status.exit_code(output)
@@ -626,6 +652,7 @@ def run_worker_cli_command(args: argparse.Namespace, root: Path) -> object:
             status=args.status,
             minimum_severity=args.severity,
             stale_after_seconds=args.stale_after_seconds,
+            large_log_bytes=args.large_log_bytes,
         )
     if args.worker_command == "resolve":
         return task_resolution.write_resolution(
@@ -668,6 +695,7 @@ def run_report_command(args: argparse.Namespace, root: Path) -> str | None:
             host=args.host,
             minimum_severity=args.severity,
             stale_after_seconds=args.stale_after_seconds,
+            large_log_bytes=args.large_log_bytes,
         )
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)

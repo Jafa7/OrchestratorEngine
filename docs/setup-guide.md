@@ -324,6 +324,11 @@ one compact JSON report. If a check reports `"failed"` or `"errored"`, read
 `summary.txt` first, then inspect only the failed command logs referenced by
 the JSON result.
 
+Use the prompt templates in [`examples/prompts`](../examples/prompts) for
+review, implementation, verification and adopter-report workers. They encode
+the same output-economy rule: compact summaries first, durable artifact paths
+instead of full logs, and tiny excerpts only when needed to identify a failure.
+
 ## Step 5 — Start the wake channel
 
 ### Hosts codex and vscode — push watcher service
@@ -481,6 +486,7 @@ hosts, or by ending the armed stream command for Claude).
 | Historical failed task keeps `status` or `worker tasks` noisy after a successful rerun | Preserve the task artifacts and write an operator resolution: `orchestrator-engine --project-root <root> worker resolve --task-id <old-task> --status superseded --superseded-by-task-id <new-task> --reason "successful rerun"`. Use `--status acknowledged` for a manually reviewed task that was not superseded by another task. |
 | Verification worker passed but logs are huge | Read `.orchestrator/checks/<check_id>/summary.txt`; full logs are durable artifacts and do not need to be pasted into chat. |
 | Verification worker failed | Read `verification-result.json`, then only the command logs referenced by failed command entries. |
+| `worker tasks` reports `task_large_worker_log` | The task may still be successful, but its stdout/stderr/supervisor logs are too large for chat. Read `result.json` and `evidence.json` first, then targeted log tails only. Tune the threshold with `--large-log-bytes`. |
 | Multiple verification runs need triage | Run `checks --severity warning`; inspect `summary_path` and `failed_commands[].log_path` from the JSON output. |
 | Worker appears stuck or no wakeup arrived | Run `worker tasks --severity warning` to inspect stale heartbeats, dead supervisor/worker pids and missing artifacts before reading full logs. |
 | Copilot worker stalls with `Permission denied and could not request permission from user` | The profile is interactive. Add autonomous Copilot flags such as `--allow-all --no-ask-user`, or configure a project-approved narrower non-interactive policy. |

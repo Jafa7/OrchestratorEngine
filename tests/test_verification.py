@@ -57,6 +57,22 @@ class VerificationStatusTests(unittest.TestCase):
         self.assertEqual(report["status_counts"]["passed"], 1)
         self.assertEqual(report["checks"]["CHECK-OK"]["failed_command_count"], 0)
 
+    def test_large_verification_logs_are_info_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            check_dir = write_check(root, "CHECK-LOUD", base_result("CHECK-LOUD"))
+            (check_dir / "summary.txt").write_text("passed\n", encoding="utf-8")
+            (check_dir / "full.log").write_text("x" * 64, encoding="utf-8")
+            (check_dir / "unit.log").write_text("y" * 32, encoding="utf-8")
+            report = verification.checks_status(root, large_log_bytes=16)
+
+        check = report["checks"]["CHECK-LOUD"]
+        self.assertEqual(report["worst_severity"], "info")
+        self.assertEqual(check["log_sizes"]["full_log"], 64)
+        self.assertEqual(check["commands"][0]["log_size"], 32)
+        self.assertEqual(check["diagnostics"][0]["code"], "verification_large_log")
+        self.assertEqual(check["diagnostics"][0]["severity"], "info")
+
     def test_failed_check_reports_warning_and_failed_command(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

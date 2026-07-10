@@ -86,6 +86,38 @@ class CheckRunnerTests(unittest.TestCase):
         self.assertIn("Failure excerpts:", summary)
         self.assertIn("before failure", full_log)
 
+    def test_failure_excerpt_lines_bounds_summary_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary)
+            completed = self.run_runner(
+                project,
+                "--check-id",
+                "bounded-fail",
+                "--label",
+                "unit",
+                "--tail-lines",
+                "5",
+                "--failure-excerpt-lines",
+                "2",
+                "--",
+                sys.executable,
+                "-c",
+                (
+                    "[print(f'line-{i}') for i in range(5)]; "
+                    "raise SystemExit(1)"
+                ),
+            )
+            run_dir = project / ".orchestrator" / "checks" / "bounded-fail"
+            summary = (run_dir / "summary.txt").read_text(encoding="utf-8")
+            full_log = (run_dir / "full.log").read_text(encoding="utf-8")
+
+        self.assertEqual(completed.returncode, 1)
+        self.assertNotIn("line-0", summary)
+        self.assertNotIn("line-1", summary)
+        self.assertIn("line-3", summary)
+        self.assertIn("line-4", summary)
+        self.assertIn("line-0", full_log)
+
     def test_suite_config_runs_multiple_commands(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             project = Path(temporary)

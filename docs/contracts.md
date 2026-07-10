@@ -359,6 +359,40 @@ only, `2` when the worst diagnostic is `warning`, `3` when the worst diagnostic
 is `error`, and `1` for CLI/runtime failures such as invalid TOML or an unknown
 `--worker` filter.
 
+## Worker output economy
+
+Detached workers should return compact, evidence-oriented summaries. Full
+stdout, stderr, command logs, private documents and generated context payloads
+belong in durable artifacts, not in host-chat messages or GitHub Issues.
+
+Worker prompts should require:
+
+- findings or results first;
+- exact commands and pass/fail status;
+- artifact paths for stdout, stderr, summaries and failed-command logs;
+- small excerpts only when needed to identify a failure;
+- no full log dumps for passing checks;
+- no private document bodies or private planning content.
+
+Host chats should read artifacts in this order:
+
+1. `result.json`, `evidence.json` or `verification-result.json`;
+2. `summary.txt` for verification workers;
+3. specific failed-command logs or log tails only when the compact artifacts
+   show a failure or the user asks for drill-down.
+
+`worker tasks` records log sizes for `worker-stdout.log`,
+`worker-stderr.log` and `supervisor.log`. When any of these exceeds the
+configured `--large-log-bytes` threshold, the task receives
+`task_large_worker_log` at `info` severity, and aggregate `status` exposes
+large-log counts separately. This diagnostic is a token-budget advisory: it
+does not mean the task failed, only that operators should avoid pasting full
+logs into chat or reports.
+
+`checks` applies the same policy to verification `full.log` and per-command
+logs. Oversized verification logs receive `verification_large_log` at `info`
+severity and are surfaced through aggregate status/report visibility fields.
+
 ## Verification result
 
 Long-running checks should run as detached workers instead of keeping a host
@@ -488,6 +522,9 @@ Known check diagnostic codes:
   states.
 - `verification_unsuccessful` — result status is `failed`, `errored` or
   `cancelled`.
+- `verification_large_log` — one or more verification log artifacts exceed
+  the configured `--large-log-bytes` threshold; emitted at `info` severity so
+  large logs stay visible without making successful checks fail status checks.
 - `verification_commands_invalid` — result `commands` is not a list.
 - `verification_missing_result`, `verification_missing_summary`,
   `verification_missing_full_log` — referenced artifacts are missing.
@@ -534,7 +571,8 @@ It returns:
     "worker": "copilot",
     "status": null,
     "minimum_severity": "warning",
-    "stale_after_seconds": 90
+    "stale_after_seconds": 90,
+    "large_log_bytes": 1048576
   },
   "task_count": 1,
   "status_counts": {"running": 1},
@@ -555,7 +593,13 @@ It returns:
         "result": ".../result.json",
         "evidence": ".../evidence.json",
         "stdout": ".../worker-stdout.log",
-        "stderr": ".../worker-stderr.log"
+        "stderr": ".../worker-stderr.log",
+        "supervisor_log": ".../supervisor.log"
+      },
+      "log_sizes": {
+        "stdout": 2048,
+        "stderr": 0,
+        "supervisor_log": 512
       },
       "diagnostics": [
         {
@@ -592,6 +636,9 @@ Known task diagnostic codes:
   historical failures.
 - `task_resolution_unreadable` — the operator resolution file is invalid or
   unreadable.
+- `task_large_worker_log` — one or more worker log artifacts exceed the
+  configured `--large-log-bytes` threshold; emitted at `info` severity so large
+  logs stay visible without making successful tasks fail status checks.
 - `task_missing_result`, `task_missing_evidence`, `task_missing_event`,
   `task_missing_signal` — terminal task references missing artifacts.
 - `task_unreadable_result`, `task_unreadable_evidence` — terminal artifacts

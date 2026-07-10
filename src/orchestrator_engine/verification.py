@@ -12,6 +12,7 @@ VERIFICATION_RESULT_KIND = "ORCHESTRATOR_VERIFICATION_RESULT"
 CHECKS_STATUS_KIND = "ORCHESTRATOR_CHECKS_STATUS"
 CHECK_STATUSES = {"passed", "failed", "errored", "cancelled", "missing", "unknown"}
 UNSUCCESSFUL_STATUSES = {"failed", "errored", "cancelled"}
+DEFAULT_LARGE_LOG_BYTES = 1024 * 1024
 
 
 class VerificationError(RuntimeError):
@@ -33,14 +34,21 @@ def checks_status(
     check_id: str | None = None,
     status: str | None = None,
     minimum_severity: str = "info",
+    large_log_bytes: int = DEFAULT_LARGE_LOG_BYTES,
 ) -> dict[str, Any]:
+    if large_log_bytes <= 0:
+        raise VerificationError("large_log_bytes must be positive")
     project = project_root.expanduser().resolve()
     check_paths = selected_check_paths(project, state_dir=state_dir, check_id=check_id)
 
     summaries: dict[str, Any] = {}
     all_diagnostics: list[dict[str, str]] = []
     for result_path in check_paths:
-        summary = summarize_check(project, result_path)
+        summary = summarize_check(
+            project,
+            result_path,
+            large_log_bytes=large_log_bytes,
+        )
         if status is not None and summary.get("status") != status:
             continue
         filtered = worker_diagnostics.filter_diagnostics(
@@ -63,6 +71,7 @@ def checks_status(
             "check_id": check_id,
             "status": status,
             "minimum_severity": minimum_severity,
+            "large_log_bytes": large_log_bytes,
         },
         "check_count": len(summaries),
         "status_counts": status_counts(summaries.values()),
@@ -101,7 +110,12 @@ def selected_check_paths(
     ]
 
 
-def summarize_check(project_root: Path, result_path: Path) -> dict[str, Any]:
+def summarize_check(
+    project_root: Path,
+    result_path: Path,
+    *,
+    large_log_bytes: int,
+) -> dict[str, Any]:
     check_dir = result_path.parent
     directory_check_id = check_dir.name
     diagnostics: list[dict[str, str]] = []
@@ -134,6 +148,19 @@ def summarize_check(project_root: Path, result_path: Path) -> dict[str, Any]:
     check_id = str(result.get("check_id") or directory_check_id)
     status = str(result.get("status") or "unknown")
     artifacts = verification_artifacts(project_root, check_dir, result)
+    artifact_sizes = verification_artifact_sizes(artifacts)
+    commands = result.get("commands")
+    if not isinstance(commands, list):
+        commands = []
+    command_summaries = [
+        command_summary(project_root, command)
+        for command in commands
+        if isinstance(command, dict)
+    ]
+    for command in command_summaries:
+        label = command.get("label") or "command"
+        size = command.get("log_size")
+        artifact_sizes[f"command:{label}"] = size if isinstance(size, int) else None
     diagnostics.extend(
         result_diagnostics(
             directory_check_id=directory_check_id,
@@ -149,6 +176,13 @@ def summarize_check(project_root: Path, result_path: Path) -> dict[str, Any]:
             artifacts=artifacts,
         )
     )
+    diagnostics.extend(
+        log_size_diagnostics(
+            check_id=check_id,
+            log_sizes=artifact_sizes,
+            large_log_bytes=large_log_bytes,
+        )
+    )
 
     summary = base_summary(
         directory_check_id=directory_check_id,
@@ -158,14 +192,6 @@ def summarize_check(project_root: Path, result_path: Path) -> dict[str, Any]:
         check_dir=check_dir,
         diagnostics=diagnostics,
     )
-    commands = result.get("commands")
-    if not isinstance(commands, list):
-        commands = []
-    command_summaries = [
-        command_summary(project_root, command)
-        for command in commands
-        if isinstance(command, dict)
-    ]
     failed_commands = [
         command
         for command in command_summaries
@@ -182,6 +208,7 @@ def summarize_check(project_root: Path, result_path: Path) -> dict[str, Any]:
             "failed_command_count": len(failed_commands),
             "summary_path": str(artifacts["summary"]),
             "log_path": str(artifacts["full_log"]),
+            "log_sizes": artifact_sizes,
             "commands": command_summaries,
             "failed_commands": failed_commands,
             "artifacts": {name: str(path) for name, path in artifacts.items()},
@@ -225,6 +252,21 @@ def verification_artifacts(
         "full_log": path_from_result(project_root, result.get("log_path"))
         or check_dir / "full.log",
     }
+
+
+def verification_artifact_sizes(artifacts: dict[str, Path]) -> dict[str, int | None]:
+    sizes: dict[str, int | None] = {}
+    for name, path in artifacts.items():
+        if not name.endswith("log") and name != "full_log":
+            continue
+        if not path.is_file():
+            sizes[name] = None
+            continue
+        try:
+            sizes[name] = path.stat().st_size
+        except OSError:
+            sizes[name] = None
+    return sizes
 
 
 def path_from_result(project_root: Path, value: object) -> Path | None:
@@ -343,6 +385,12 @@ def artifact_diagnostics(
 
 def command_summary(project_root: Path, command: dict[str, Any]) -> dict[str, Any]:
     log_path = path_from_result(project_root, command.get("log_path"))
+    log_size = None
+    if log_path is not None and log_path.is_file():
+        try:
+            log_size = log_path.stat().st_size
+        except OSError:
+            log_size = None
     return {
         "label": command.get("label"),
         "required": command.get("required", True),
@@ -351,9 +399,43 @@ def command_summary(project_root: Path, command: dict[str, Any]) -> dict[str, An
         "duration_seconds": command.get("duration_seconds"),
         "command": command.get("command"),
         "log_path": str(log_path) if log_path is not None else None,
+        "log_size": log_size,
         "output_line_count": command.get("output_line_count"),
         "error": command.get("error"),
     }
+
+
+def log_size_diagnostics(
+    *,
+    check_id: str,
+    log_sizes: dict[str, int | None],
+    large_log_bytes: int,
+) -> list[dict[str, str]]:
+    large = {
+        name: size
+        for name, size in log_sizes.items()
+        if isinstance(size, int) and size > large_log_bytes
+    }
+    if not large:
+        return []
+    details = ", ".join(
+        f"{name}={size} bytes" for name, size in sorted(large.items())
+    )
+    return [
+        diagnostic(
+            code="verification_large_log",
+            severity="info",
+            message=(
+                f"verification check {check_id} has large log artifacts "
+                f"above {large_log_bytes} bytes: {details}"
+            ),
+            suggested_action=(
+                "Read verification-result.json and summary.txt first. Inspect "
+                "failed command logs or targeted tails instead of pasting full "
+                "logs into host chats or reports."
+            ),
+        )
+    ]
 
 
 def status_counts(summaries: Iterable[dict[str, Any]]) -> dict[str, int]:

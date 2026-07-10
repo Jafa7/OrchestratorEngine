@@ -28,6 +28,7 @@ def run_status(
     host: str | None = None,
     minimum_severity: str = "warning",
     stale_after_seconds: float = task_diagnostics.DEFAULT_STALE_AFTER_SECONDS,
+    large_log_bytes: int = task_diagnostics.DEFAULT_LARGE_LOG_BYTES,
 ) -> dict[str, Any]:
     project = project_root.expanduser().resolve()
     doctor = diagnostics.run_doctor(project, state_dir=state_dir, host=host)
@@ -36,11 +37,13 @@ def run_status(
         state_dir=state_dir,
         minimum_severity=minimum_severity,
         stale_after_seconds=stale_after_seconds,
+        large_log_bytes=large_log_bytes,
     )
     checks = verification.checks_status(
         project,
         state_dir=state_dir,
         minimum_severity=minimum_severity,
+        large_log_bytes=large_log_bytes,
     )
     wake_channel = summarize_wake_channel(doctor)
     worker_profiles = summarize_worker_profiles(doctor)
@@ -69,6 +72,7 @@ def run_status(
             "host": host,
             "minimum_severity": minimum_severity,
             "stale_after_seconds": stale_after_seconds,
+            "large_log_bytes": large_log_bytes,
         },
         "status": status_from_severity(worst),
         "worst_severity": worst,
@@ -165,6 +169,7 @@ def summarize_worker_tasks(report: dict[str, Any]) -> dict[str, Any]:
             "diagnostic_count": task.get("diagnostic_count", 0),
             "diagnostics": task.get("diagnostics", []),
             "artifacts": task.get("artifacts", {}),
+            "log_sizes": task.get("log_sizes", {}),
         }
         for task_id, task in tasks.items()
         if isinstance(task, dict) and task.get("diagnostic_count", 0)
@@ -180,6 +185,8 @@ def summarize_worker_tasks(report: dict[str, Any]) -> dict[str, Any]:
         for task_id, task in tasks.items()
         if isinstance(task, dict) and isinstance(task.get("resolution"), dict)
     }
+    large_log_bytes = int(report.get("filters", {}).get("large_log_bytes") or 0)
+    large_log_tasks = task_large_log_summaries(tasks, large_log_bytes)
     return {
         "status": status_from_severity(report.get("worst_severity")),
         "worst_severity": report.get("worst_severity"),
@@ -189,6 +196,8 @@ def summarize_worker_tasks(report: dict[str, Any]) -> dict[str, Any]:
         "diagnostic_count": report.get("diagnostic_count", 0),
         "resolved_task_count": resolved_task_count(tasks),
         "resolved_tasks": resolved_tasks,
+        "large_log_task_count": len(large_log_tasks),
+        "large_log_tasks": large_log_tasks,
         "problem_task_count": len(problem_tasks),
         "problem_tasks": problem_tasks,
     }
@@ -200,6 +209,34 @@ def resolved_task_count(tasks: dict[str, Any]) -> int:
         for task in tasks.values()
         if isinstance(task, dict) and isinstance(task.get("resolution"), dict)
     )
+
+
+def task_large_log_summaries(
+    tasks: dict[str, Any],
+    large_log_bytes: int,
+) -> dict[str, Any]:
+    if large_log_bytes <= 0:
+        return {}
+    summaries: dict[str, Any] = {}
+    for task_id, task in tasks.items():
+        if not isinstance(task, dict):
+            continue
+        log_sizes = task.get("log_sizes")
+        if not isinstance(log_sizes, dict):
+            continue
+        large_logs = {
+            name: size
+            for name, size in log_sizes.items()
+            if isinstance(size, int) and size > large_log_bytes
+        }
+        if large_logs:
+            summaries[str(task_id)] = {
+                "task_id": task.get("task_id") or task_id,
+                "worker": task.get("worker"),
+                "status": task.get("status"),
+                "large_logs": large_logs,
+            }
+    return summaries
 
 
 def summarize_checks(report: dict[str, Any]) -> dict[str, Any]:
@@ -220,15 +257,46 @@ def summarize_checks(report: dict[str, Any]) -> dict[str, Any]:
         if isinstance(check, dict)
         and (check.get("diagnostic_count", 0) or check.get("status") != "passed")
     }
+    large_log_bytes = int(report.get("filters", {}).get("large_log_bytes") or 0)
+    large_log_checks = check_large_log_summaries(checks, large_log_bytes)
     return {
         "status": status_from_severity(report.get("worst_severity")),
         "worst_severity": report.get("worst_severity"),
         "check_count": report.get("check_count", 0),
         "status_counts": report.get("status_counts", {}),
         "diagnostic_count": report.get("diagnostic_count", 0),
+        "large_log_check_count": len(large_log_checks),
+        "large_log_checks": large_log_checks,
         "problem_check_count": len(problem_checks),
         "problem_checks": problem_checks,
     }
+
+
+def check_large_log_summaries(
+    checks: dict[str, Any],
+    large_log_bytes: int,
+) -> dict[str, Any]:
+    if large_log_bytes <= 0:
+        return {}
+    summaries: dict[str, Any] = {}
+    for check_id, check in checks.items():
+        if not isinstance(check, dict):
+            continue
+        log_sizes = check.get("log_sizes")
+        if not isinstance(log_sizes, dict):
+            continue
+        large_logs = {
+            name: size
+            for name, size in log_sizes.items()
+            if isinstance(size, int) and size > large_log_bytes
+        }
+        if large_logs:
+            summaries[str(check_id)] = {
+                "check_id": check.get("check_id") or check_id,
+                "status": check.get("status"),
+                "large_logs": large_logs,
+            }
+    return summaries
 
 
 def collect_issues(
@@ -349,6 +417,7 @@ def report_draft(
     host: str | None = None,
     minimum_severity: str = "warning",
     stale_after_seconds: float = task_diagnostics.DEFAULT_STALE_AFTER_SECONDS,
+    large_log_bytes: int = task_diagnostics.DEFAULT_LARGE_LOG_BYTES,
 ) -> str:
     report = run_status(
         project_root,
@@ -356,6 +425,7 @@ def report_draft(
         host=host,
         minimum_severity=minimum_severity,
         stale_after_seconds=stale_after_seconds,
+        large_log_bytes=large_log_bytes,
     )
     name = project_name or Path(str(report["project_root"])).name
     label_host = selected_host(report, host)
@@ -414,6 +484,8 @@ def report_draft(
                 lines.append(f"   - suggested action: {issue['suggested_action']}")
     else:
         lines.append("No issues at the selected severity.")
+    append_large_log_task_details(lines, report)
+    append_large_log_check_details(lines, report)
     append_resolved_task_details(lines, report)
     lines.extend(
         [
@@ -465,14 +537,16 @@ def append_component_details(
             f"count=`{component.get('task_count')}`, "
             f"diagnostics=`{component.get('diagnostic_count')}`, "
             f"problems=`{component.get('problem_task_count')}`, "
-            f"resolved=`{component.get('resolved_task_count')}`"
+            f"resolved=`{component.get('resolved_task_count')}`, "
+            f"large_logs=`{component.get('large_log_task_count')}`"
         )
     elif component_name == "checks":
         lines.append(
             "  - checks: "
             f"count=`{component.get('check_count')}`, "
             f"diagnostics=`{component.get('diagnostic_count')}`, "
-            f"problems=`{component.get('problem_check_count')}`"
+            f"problems=`{component.get('problem_check_count')}`, "
+            f"large_logs=`{component.get('large_log_check_count')}`"
         )
     elif component_name == "worker_profiles":
         lines.append(
@@ -510,6 +584,63 @@ def append_resolved_task_details(lines: list[str], report: dict[str, Any]) -> No
         )
         if superseded_by:
             lines.append(f"   - superseded_by_task_id: `{superseded_by}`")
+
+
+def append_large_log_task_details(lines: list[str], report: dict[str, Any]) -> None:
+    components = report.get("components")
+    if not isinstance(components, dict):
+        return
+    worker_tasks = components.get("worker_tasks")
+    if not isinstance(worker_tasks, dict):
+        return
+    large_log_tasks = worker_tasks.get("large_log_tasks")
+    if not isinstance(large_log_tasks, dict) or not large_log_tasks:
+        return
+    lines.extend(["", "## Large Worker Logs", ""])
+    for index, (task_id, task) in enumerate(sorted(large_log_tasks.items()), start=1):
+        if not isinstance(task, dict):
+            continue
+        logs = task.get("large_logs")
+        log_text = ""
+        if isinstance(logs, dict):
+            log_text = ", ".join(
+                f"{name}={size} bytes"
+                for name, size in sorted(logs.items())
+            )
+        lines.append(
+            f"{index}. task_id=`{task_id}`, "
+            f"status=`{task.get('status')}`, logs={log_text}"
+        )
+
+
+def append_large_log_check_details(lines: list[str], report: dict[str, Any]) -> None:
+    components = report.get("components")
+    if not isinstance(components, dict):
+        return
+    checks = components.get("checks")
+    if not isinstance(checks, dict):
+        return
+    large_log_checks = checks.get("large_log_checks")
+    if not isinstance(large_log_checks, dict) or not large_log_checks:
+        return
+    lines.extend(["", "## Large Verification Logs", ""])
+    for index, (check_id, check) in enumerate(
+        sorted(large_log_checks.items()),
+        start=1,
+    ):
+        if not isinstance(check, dict):
+            continue
+        logs = check.get("large_logs")
+        log_text = ""
+        if isinstance(logs, dict):
+            log_text = ", ".join(
+                f"{name}={size} bytes"
+                for name, size in sorted(logs.items())
+            )
+        lines.append(
+            f"{index}. check_id=`{check_id}`, "
+            f"status=`{check.get('status')}`, logs={log_text}"
+        )
 
 
 def selected_host(report: dict[str, Any], explicit_host: str | None) -> str | None:

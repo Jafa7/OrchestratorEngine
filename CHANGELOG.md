@@ -17,6 +17,8 @@ All notable changes to OrchestratorEngine are documented here.
 - Operator task resolutions (`worker resolve`, `worker resolutions`) let
   historical failed tasks be marked `acknowledged` or `superseded` without
   deleting or rewriting durable audit artifacts.
+- Worker output economy guidance, prompt templates and large-log diagnostics
+  help agents read compact artifacts before spending tokens on full logs.
 
 ## [0.1.0] - 2026-07-08
 

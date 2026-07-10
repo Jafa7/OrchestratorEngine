@@ -14,6 +14,7 @@ TASK_DIAGNOSTICS_KIND = "WORKER_TASK_DIAGNOSTICS"
 RUNNING_STATUSES = {"starting", "running"}
 UNSUCCESSFUL_TERMINAL_STATUSES = core.TERMINAL_STATUSES - {"completed"}
 DEFAULT_STALE_AFTER_SECONDS = workers.TASK_HEARTBEAT_INTERVAL_SECONDS * 3
+DEFAULT_LARGE_LOG_BYTES = 1024 * 1024
 TASK_STATUSES = RUNNING_STATUSES | core.TERMINAL_STATUSES
 ProcessChecker = Callable[[int], bool]
 
@@ -77,11 +78,14 @@ def diagnose_tasks(
     status: str | None = None,
     minimum_severity: str = "info",
     stale_after_seconds: float = DEFAULT_STALE_AFTER_SECONDS,
+    large_log_bytes: int = DEFAULT_LARGE_LOG_BYTES,
     process_checker: ProcessChecker = process_alive,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     if stale_after_seconds <= 0:
         raise TaskDiagnosticError("stale_after_seconds must be positive")
+    if large_log_bytes <= 0:
+        raise TaskDiagnosticError("large_log_bytes must be positive")
     project = project_root.expanduser().resolve()
     current = now or datetime.now(UTC)
     task_paths = selected_task_paths(project, state_dir=state_dir, task_id=task_id)
@@ -94,6 +98,7 @@ def diagnose_tasks(
             descriptor_path,
             state_dir=state_dir,
             stale_after_seconds=stale_after_seconds,
+            large_log_bytes=large_log_bytes,
             process_checker=process_checker,
             now=current,
         )
@@ -123,6 +128,7 @@ def diagnose_tasks(
             "status": status,
             "minimum_severity": minimum_severity,
             "stale_after_seconds": stale_after_seconds,
+            "large_log_bytes": large_log_bytes,
         },
         "task_count": len(summaries),
         "status_counts": status_counts(summaries.values()),
@@ -189,6 +195,7 @@ def summarize_task(
     *,
     state_dir: str,
     stale_after_seconds: float,
+    large_log_bytes: int,
     process_checker: ProcessChecker,
     now: datetime,
 ) -> dict[str, Any]:
@@ -233,6 +240,7 @@ def summarize_task(
         diagnostics=diagnostics,
     )
     artifacts = task_artifacts(task_dir, descriptor)
+    log_sizes = log_artifact_sizes(artifacts)
     supervisor_pid = descriptor.get("supervisor_pid")
     worker_pid = descriptor.get("worker_pid")
     if status in RUNNING_STATUSES:
@@ -283,6 +291,13 @@ def summarize_task(
             resolution=resolution,
         )
     )
+    diagnostics.extend(
+        log_size_diagnostics(
+            task_id=task_id,
+            log_sizes=log_sizes,
+            large_log_bytes=large_log_bytes,
+        )
+    )
 
     summary = base_summary(
         task_id=task_id,
@@ -306,6 +321,7 @@ def summarize_task(
             "worker_pid": worker_pid,
             "worker_alive": worker_alive,
             "artifacts": {name: str(path) for name, path in artifacts.items()},
+            "log_sizes": log_sizes,
         }
     )
     return summary
@@ -374,12 +390,28 @@ def task_artifacts(task_dir: Path, descriptor: dict[str, Any]) -> dict[str, Path
         or task_dir / "evidence.json",
         "stdout": task_dir / "worker-stdout.log",
         "stderr": task_dir / "worker-stderr.log",
+        "supervisor_log": path_from_descriptor(descriptor, "supervisor_log")
+        or task_dir / "supervisor.log",
     }
     for key in ("event_path", "signal_path"):
         path = path_from_descriptor(descriptor, key)
         if path is not None:
             artifacts[key.removesuffix("_path")] = path
     return artifacts
+
+
+def log_artifact_sizes(artifacts: dict[str, Path]) -> dict[str, int | None]:
+    sizes: dict[str, int | None] = {}
+    for artifact_name in ("stdout", "stderr", "supervisor_log"):
+        path = artifacts.get(artifact_name)
+        if path is None or not path.is_file():
+            sizes[artifact_name] = None
+            continue
+        try:
+            sizes[artifact_name] = path.stat().st_size
+        except OSError:
+            sizes[artifact_name] = None
+    return sizes
 
 
 def path_from_descriptor(descriptor: dict[str, Any], key: str) -> Path | None:
@@ -523,6 +555,41 @@ def running_task_diagnostics(
                 ),
             )
         )
+    return diagnostics
+
+
+def log_size_diagnostics(
+    *,
+    task_id: str,
+    log_sizes: dict[str, int | None],
+    large_log_bytes: int,
+) -> list[dict[str, str]]:
+    diagnostics: list[dict[str, str]] = []
+    large = {
+        name: size
+        for name, size in log_sizes.items()
+        if isinstance(size, int) and size > large_log_bytes
+    }
+    if not large:
+        return diagnostics
+    details = ", ".join(
+        f"{name}={size} bytes" for name, size in sorted(large.items())
+    )
+    diagnostics.append(
+        diagnostic(
+            code="task_large_worker_log",
+            severity="info",
+            message=(
+                f"task {task_id} has large worker log artifacts "
+                f"above {large_log_bytes} bytes: {details}"
+            ),
+            suggested_action=(
+                "Read result.json/evidence.json first. Inspect targeted log "
+                "tails or failed-command logs instead of pasting full logs "
+                "into host chats or reports."
+            ),
+        )
+    )
     return diagnostics
 
 

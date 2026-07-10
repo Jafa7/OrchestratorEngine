@@ -248,6 +248,13 @@ reference runner is [examples/check_runner.py](examples/check_runner.py).
 Use `orchestrator-engine --project-root /path/to/project checks` to read a
 compact status report before opening full logs.
 
+For AI review, implementation, verification and adopter-report workers, start
+from the reusable prompt templates in [examples/prompts](examples/prompts).
+They keep worker output compact: summaries and artifact paths first, full logs
+only as durable files, and small excerpts only when a failure needs context.
+`worker tasks` also reports `task_large_worker_log` when stdout/stderr or the
+supervisor log is large enough that a host chat should avoid reading it whole.
+
 Prune stale notifications, thread-wakeup receipts and rotate the watcher
 service log:
 

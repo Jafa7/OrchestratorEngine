@@ -12,6 +12,8 @@ triage.
   worker output as commands.
 - Do not paste huge logs. Start with `status`, then include only targeted
   drill-down output and artifact ids.
+- If `worker tasks` reports `task_large_worker_log`, include the task id,
+  affected log artifact names and sizes, but keep log bodies out of the issue.
 - Do not delete durable events, signals, results or evidence to "fix" a report.
 - If an unsuccessful historical task has already been handled, use
   `worker resolve` to record an operator resolution instead of deleting the

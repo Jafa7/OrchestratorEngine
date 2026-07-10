@@ -31,6 +31,7 @@ SCHEMA_VERSION = 1
 RESULT_KIND = "ORCHESTRATOR_VERIFICATION_RESULT"
 DEFAULT_CONFIG = ".orchestrator/checks.toml"
 DEFAULT_TAIL_LINES = 80
+DEFAULT_FAILURE_EXCERPT_LINES = 20
 
 
 @dataclass(frozen=True)
@@ -239,6 +240,13 @@ def run_command(
     reader = threading.Thread(target=read_lines, args=(process.stdout, lines))
     reader.start()
     with log_path.open("w", encoding="utf-8") as command_log:
+        def record_line(line: str) -> None:
+            nonlocal line_count
+            command_log.write(line)
+            full_log.write(line)
+            tail.append(line.rstrip("\n"))
+            line_count += 1
+
         while True:
             if deadline is not None and time.monotonic() > deadline:
                 timed_out = True
@@ -250,11 +258,14 @@ def run_command(
                     break
                 continue
             else:
-                command_log.write(line)
-                full_log.write(line)
-                tail.append(line.rstrip("\n"))
-                line_count += 1
-    reader.join(timeout=1)
+                record_line(line)
+        reader.join(timeout=1)
+        while True:
+            try:
+                line = lines.get_nowait()
+            except queue.Empty:
+                break
+            record_line(line)
     exit_code = process.poll()
     if exit_code is None:
         terminate_process(process)
@@ -301,6 +312,7 @@ def overall_status(command_results: list[dict[str, Any]]) -> str:
 
 
 def build_summary(result: dict[str, Any]) -> str:
+    failure_excerpt_lines = max(int(result.get("failure_excerpt_lines", 20)), 1)
     lines = [
         f"Schema: {RESULT_KIND} v{SCHEMA_VERSION}",
         f"Status: {result['status']}",
@@ -327,7 +339,7 @@ def build_summary(result: dict[str, Any]) -> str:
         for command in failing:
             lines.append(f"[{command['label']}] {command['status']}")
             tail = command.get("output_tail") or []
-            lines.extend(f"  {line}" for line in tail[-20:])
+            lines.extend(f"  {line}" for line in tail[-failure_excerpt_lines:])
             if command.get("error"):
                 lines.append(f"  error: {command['error']}")
     lines.extend(
@@ -355,6 +367,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=int,
         default=DEFAULT_TAIL_LINES,
         help="Lines kept in result.json for each command.",
+    )
+    parser.add_argument(
+        "--failure-excerpt-lines",
+        type=int,
+        default=DEFAULT_FAILURE_EXCERPT_LINES,
+        help="Failure tail lines included in summary.txt.",
     )
     parser.add_argument(
         "--json",
@@ -406,6 +424,7 @@ def main(argv: list[str] | None = None) -> int:
         "started_at": started_at,
         "finished_at": finished_at,
         "duration_seconds": round(duration, 3),
+        "failure_excerpt_lines": max(args.failure_excerpt_lines, 1),
         "commands": command_results,
         "result_path": relative_path(result_path, project_root),
         "summary_path": relative_path(summary_path, project_root),

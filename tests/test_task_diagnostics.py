@@ -201,6 +201,41 @@ class TaskDiagnosticTests(unittest.TestCase):
         self.assertIn("task_terminal_unsuccessful_resolved", codes)
         self.assertIn("task_missing_result", codes)
 
+    def test_large_worker_logs_are_reported_without_reading_contents(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            task_dir = workers.task_dir_for(root, "T-LOUD")
+            task_dir.mkdir(parents=True, exist_ok=True)
+            core.atomic_json(task_dir / "result.json", {"terminal_status": "completed"})
+            core.atomic_json(task_dir / "evidence.json", {"ok": True})
+            (task_dir / "worker-stdout.log").write_text("x" * 32, encoding="utf-8")
+            (task_dir / "worker-stderr.log").write_text("small", encoding="utf-8")
+            write_task(
+                root,
+                "T-LOUD",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-LOUD",
+                    "worker": "echo",
+                    "status": "completed",
+                },
+            )
+            report = task_diagnostics.diagnose_tasks(root, large_log_bytes=16)
+
+        task = report["tasks"]["T-LOUD"]
+        self.assertEqual(report["worst_severity"], "info")
+        self.assertEqual(task["log_sizes"]["stdout"], 32)
+        self.assertEqual(
+            task["diagnostics"][0]["code"],
+            "task_large_worker_log",
+        )
+        self.assertEqual(task["diagnostics"][0]["severity"], "info")
+        self.assertIn(
+            "result.json/evidence.json first",
+            task["diagnostics"][0]["suggested_action"],
+        )
+
     def test_task_id_filter_rejects_missing_task(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

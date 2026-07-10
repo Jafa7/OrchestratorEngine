@@ -319,6 +319,44 @@ command = ["true"]
         self.assertEqual(report["diagnostic_count"], 0)
         self.assertEqual(report["tasks"]["T-FAIL"]["diagnostics"], [])
 
+    def test_worker_tasks_reports_large_log_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            task_dir = workers.task_dir_for(root, "T-LOUD")
+            task_dir.mkdir(parents=True, exist_ok=True)
+            core.atomic_json(task_dir / "result.json", {"terminal_status": "completed"})
+            core.atomic_json(task_dir / "evidence.json", {"ok": True})
+            (task_dir / "worker-stdout.log").write_text("x" * 64, encoding="utf-8")
+            core.atomic_json(
+                task_dir / "task.json",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-LOUD",
+                    "worker": "echo",
+                    "status": "completed",
+                },
+            )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "worker",
+                        "tasks",
+                        "--large-log-bytes",
+                        "16",
+                    ]
+                )
+
+        report = json.loads(output.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            report["tasks"]["T-LOUD"]["diagnostics"][0]["code"],
+            "task_large_worker_log",
+        )
+
     def test_worker_resolve_and_resolutions_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
