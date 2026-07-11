@@ -1,0 +1,1 @@
+{"schema_version":1,"kind":"WORKER_EVIDENCE","task_id":"t1","worker":"w","command":["w"],"prompt_file":"/tmp/p","prompt_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","worker_config":{},"started_at":"2026-07-10T00:00:00Z","finished_at":"2026-07-10T00:00:00Z"}

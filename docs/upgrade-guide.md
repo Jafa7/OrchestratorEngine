@@ -11,8 +11,16 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-For v0.1, the public package version is `0.1.0` and the durable JSON contract
-schema version is `1`.
+For v0.1.1, the public package version is `0.1.1` and the durable JSON
+contract schema version is `1`.
+
+To upgrade to this exact patch release from its Git tag (release wheels are not
+currently published to PyPI):
+
+```bash
+python -m pip install --upgrade \
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.1.1"
+```
 
 ## Schema Compatibility
 
@@ -78,8 +86,8 @@ orchestrator-engine --project-root /path/to/project watcher deferred retry \
 Acknowledge an event already handled manually:
 
 ```bash
-orchestrator-engine --project-root /path/to/project watcher acknowledge \
-  --event-id EVENT_ID --reason "read manually"
+orchestrator-engine --project-root /path/to/project watcher --host HOST \
+  acknowledge --event-id EVENT_ID --reason "read manually"
 ```
 
 For host-scoped callback services, pass the same `--host HOST` used by the

@@ -1,0 +1,1 @@
+{"schema_version":1,"kind":"WORKER_RESULT","task_id":"t1","worker":"w","terminal_status":"completed","exit_code":0,"failure_reason":null,"duration_seconds":0,"stdout_path":"/tmp/o","stderr_path":"/tmp/e","started_at":"2026-07-10T00:00:00Z","finished_at":"2026-07-10T00:00:00Z"}

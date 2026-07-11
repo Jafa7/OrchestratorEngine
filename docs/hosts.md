@@ -14,10 +14,22 @@ Everything engine-side runs where the CLI workers run (typically WSL).
 Windows-side actions (the Codex deep link, `code` CLI) are reached through the
 normal WSL interop.
 
+Machine-readable capabilities are available with
+`orchestrator-engine host-capabilities`:
+
+| Host | `delivery_mode` | `live_refresh_support` |
+| --- | --- | --- |
+| Claude | `session_stream` | `supported` |
+| VS Code | `ui_injection` | `best_effort` |
+| Codex Desktop | `headless_app_server_turn` | `unsupported` |
+
+This is a versioned report with `schema_version`, `kind`, `host_count` and a
+bounded, stable `hosts` collection. These describe delivery quality, not
+deep-link or window activation success.
+
 ## Codex Desktop (Windows app, WSL mode)
 
-Wake mechanism: inject a turn through a Codex App Server process, then open the
-thread in the desktop app via its `codex://threads/<thread-id>` deep link.
+Wake mechanism: inject a turn through a headless Codex App Server process.
 
 Live status: durable delivery only on Windows Desktop. The injected turn is
 handled by an App Server/headless engine and written to Codex thread storage.
@@ -27,37 +39,26 @@ delayed UI refresh. Treat the deep link and `live_refresh` fields as
 best-effort focus/refresh diagnostics, not proof that the visible Desktop
 agent woke.
 
-1. In the Codex chat you orchestrate from, find the thread id.
-2. Bind the project and start the watcher service:
+1. In the Codex chat you orchestrate from, find the thread id and bind it:
 
 ```bash
 orchestrator-engine --project-root /path/to/project bind \
   --host codex --thread-id THREAD_ID
-
-orchestrator-engine --project-root /path/to/project watcher \
-  --host codex --action callback service start --interval-seconds 5
 ```
 
 Notes:
 
-- Rate-limited or immediately failing turns are detected within a 2-minute
-  failure window and retried with backoff. Turns still running after the
-  window (orchestrator reviews may take hours) are reported `woken` with
-  `turn_status: "running"` and finalized in the background — use the service
-  mode above, not `watcher once`, so the finalizer has a long-lived process.
-- Stopping the watcher service also stops in-flight wakeup turns it started
-  (they run inside App Server processes in the service's process group).
+- A `status: "woken"` receipt means the headless App Server turn completed.
+  It does **not** mean that the already-open Codex Desktop chat refreshed or
+  that its visible agent received a live wakeup. A running turn is recorded as
+  `status: "submitted"` with `turn_status: "running"`.
 - Approval prompts raised by a wakeup turn are auto-declined (never
   auto-approved) and recorded in the receipt as `auto_declined_requests` — no
   human is attached to the injected client. If receipts show declines, relax
   the thread's approval policy enough for read-only verification commands.
-- The deep link (`Start-Process 'codex://threads/...'` through
-  `powershell.exe`) brings the thread to the foreground. If it fails, the
-  receipt records `activation: "failed"` but the wakeup itself stays valid.
-- Codex Desktop may keep an already-open thread in memory after an external
-  App Server turn lands in session storage. On Windows, the adapter sends a
-  best-effort `Ctrl+R` refresh pulse after deep-link activation; receipts record
-  this as `live_refresh` / `live_refresh_strategy`.
+- Review the durable inbox/event/result/evidence history manually. Record that
+  review without deleting any artifact with `watcher --host codex acknowledge
+  --event-id EVENT_ID --reason "reviewed manually"`.
 - For live orchestration, prefer Claude stream or VS Code chat as the host and
   use `codex exec` as a worker profile. Codex Desktop remains useful for
   dispatching work when delayed/history visibility is acceptable.
@@ -127,9 +128,6 @@ Notes:
 For callback hosts, prefer host-scoped services:
 
 ```bash
-orchestrator-engine --project-root /path/to/project watcher \
-  --host codex --action callback service start
-
 orchestrator-engine --project-root /path/to/project watcher \
   --host vscode --action callback service start
 ```

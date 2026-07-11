@@ -6,6 +6,10 @@ All notable changes to OrchestratorEngine are documented here.
 
 ### Added
 
+- Machine-readable host delivery capabilities in status, wake receipts, and
+  the read-only `host-capabilities` report.
+- Draft 2020-12 schemas, conformance fixtures and a read-only `schemas` CLI
+  for the stable v0.1 durable artifacts.
 - Read-only `status` aggregates doctor, wake channel, worker task and
   verification check summaries into one compact operator report.
 - `report draft` creates a Markdown GitHub issue draft from the compact
@@ -19,6 +23,19 @@ All notable changes to OrchestratorEngine are documented here.
   deleting or rewriting durable audit artifacts.
 - Worker output economy guidance, prompt templates and large-log diagnostics
   help agents read compact artifacts before spending tokens on full logs.
+- Opt-in Codex GPT-5.6 worker profiles map Luna, Terra and Sol to fast,
+  default and deep orchestration tiers while retaining GPT-5.5 fallbacks.
+- Audit-preserving, host-scoped manual inbox acknowledgement receipts, with
+  explicit single-event and confirmed bulk modes.
+- Explicit bounded worker availability probes and narrow rate-limit result
+  classification.
+
+### Changed
+
+- Codex Desktop wake receipts now clearly distinguish a completed headless App
+  Server turn from a refresh of the open Desktop chat.
+- CI now installs the test extra, validates package schemas, bounds jobs and
+  checks clean checkout whitespace/diff state.
 
 ## [0.1.0] - 2026-07-08
 

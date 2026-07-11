@@ -9,6 +9,7 @@ exit — which is what wakes the host chat again.
 from __future__ import annotations
 
 import contextlib
+import math
 import subprocess
 import sys
 import time
@@ -27,11 +28,14 @@ RESERVED_KEYS = {
     "prompt_via",
     "timeout_seconds",
     "expect_long_running",
+    "availability_probe",
+    "availability_timeout_seconds",
 }
 # Workers may legitimately run for hours with no configured timeout; the
 # supervisor refreshes the task descriptor on this cadence so long tasks stay
 # observable (`last_alive_at`) instead of looking stuck.
 TASK_HEARTBEAT_INTERVAL_SECONDS = 30.0
+MAX_AVAILABILITY_TIMEOUT_SECONDS = 300.0
 
 
 class WorkerError(RuntimeError):
@@ -104,12 +108,35 @@ def validate_worker_config(name: str, config: object) -> dict[str, Any]:
         raise WorkerError(f"worker {name} enabled flag must be a boolean")
     timeout_seconds = config.get("timeout_seconds")
     if timeout_seconds is not None and (
-        not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0
+        not isinstance(timeout_seconds, (int, float))
+        or isinstance(timeout_seconds, bool)
+        or not math.isfinite(timeout_seconds)
+        or timeout_seconds <= 0
     ):
         raise WorkerError(f"worker {name} timeout_seconds must be positive")
     expect_long_running = config.get("expect_long_running", False)
     if not isinstance(expect_long_running, bool):
         raise WorkerError(f"worker {name} expect_long_running flag must be a boolean")
+    availability_probe = config.get("availability_probe")
+    if availability_probe is not None and (
+        not isinstance(availability_probe, list) or not availability_probe
+        or not all(isinstance(item, str) and item for item in availability_probe)
+    ):
+        raise WorkerError(
+            f"worker {name} availability_probe requires a non-empty command list"
+        )
+    availability_timeout = config.get("availability_timeout_seconds")
+    if availability_probe is not None and (
+        not isinstance(availability_timeout, (int, float))
+        or isinstance(availability_timeout, bool)
+        or not math.isfinite(availability_timeout)
+        or availability_timeout <= 0
+        or availability_timeout > MAX_AVAILABILITY_TIMEOUT_SECONDS
+    ):
+        raise WorkerError(
+            f"worker {name} availability_timeout_seconds must be finite and between "
+            f"0 and {MAX_AVAILABILITY_TIMEOUT_SECONDS:g} seconds"
+        )
     extras = {
         key: value
         for key, value in config.items()
@@ -121,6 +148,8 @@ def validate_worker_config(name: str, config: object) -> dict[str, Any]:
         prompt_via=str(prompt_via),
         timeout_seconds=timeout_seconds,
         expect_long_running=expect_long_running,
+        availability_probe=availability_probe,
+        availability_timeout_seconds=availability_timeout,
     )
     return {
         "name": name,
@@ -129,6 +158,8 @@ def validate_worker_config(name: str, config: object) -> dict[str, Any]:
         "prompt_via": prompt_via,
         "timeout_seconds": timeout_seconds,
         "expect_long_running": expect_long_running,
+        "availability_probe": list(availability_probe) if availability_probe else None,
+        "availability_timeout_seconds": availability_timeout,
         "extras": extras,
         "diagnostics": diagnostics,
         "warnings": worker_diagnostics.filter_diagnostics(
@@ -200,6 +231,10 @@ def list_workers(
                 "prompt_via": config["prompt_via"],
                 "timeout_seconds": config["timeout_seconds"],
                 "expect_long_running": config["expect_long_running"],
+                "availability_probe_configured": (
+                    config["availability_probe"] is not None
+                ),
+                "availability_timeout_seconds": config["availability_timeout_seconds"],
                 "warnings": config["warnings"],
                 **config["extras"],
             }
@@ -262,6 +297,31 @@ def diagnose_workers(
     }
 
 
+def availability_workers(
+    project_root: Path,
+    *,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    worker: str | None = None,
+    enabled_only: bool = True,
+) -> dict[str, Any]:
+    registry = load_registry(project_root, state_dir=state_dir)
+    if worker is not None:
+        if worker not in registry:
+            raise WorkerError(f"unknown worker: {worker}")
+        registry = {worker: registry[worker]}
+    results = {}
+    for name, config in sorted(registry.items()):
+        if enabled_only and not config["enabled"]:
+            continue
+        results[name] = worker_diagnostics.run_availability_probe(config)
+    return {
+        "schema_version": core.SCHEMA_VERSION,
+        "kind": "WORKER_AVAILABILITY",
+        "worker_count": len(results),
+        "workers": results,
+    }
+
+
 def run_worker(
     project_root: Path,
     *,
@@ -270,10 +330,17 @@ def run_worker(
     prompt_file: Path,
     state_dir: str = core.DEFAULT_STATE_DIR,
     popen_factory=subprocess.Popen,
+    preflight_availability: bool = False,
 ) -> dict[str, Any]:
     """Spawn a detached supervisor for the worker and return immediately."""
     project = project_root.expanduser().resolve()
     config = require_worker(project, worker, state_dir=state_dir)
+    if preflight_availability:
+        availability = worker_diagnostics.run_availability_probe(config)
+        if availability["status"] == "unavailable":
+            raise WorkerError(
+                f"worker {worker} availability probe reports unavailable"
+            )
     prompt = core.ensure_file(prompt_file, field="prompt")
     task_dir = task_dir_for(project, task_id, state_dir=state_dir)
     descriptor_path = task_dir / "task.json"
@@ -466,6 +533,9 @@ def supervise_worker(
     if terminal_status == "completed" and exit_code != 0:
         terminal_status = "failed"
         failure_reason = f"worker exited with code {exit_code}"
+        if worker_diagnostics.classify_rate_limit(stdout_path, stderr_path):
+            terminal_status = "rate_limited"
+            failure_reason = "worker output matched a rate-limit diagnostic"
 
     result = {
         "schema_version": core.SCHEMA_VERSION,
@@ -498,6 +568,7 @@ def supervise_worker(
             "prompt_via": config["prompt_via"],
             "timeout_seconds": config["timeout_seconds"],
             "expect_long_running": config["expect_long_running"],
+            "availability_probe_configured": config["availability_probe"] is not None,
             "warnings": config["warnings"],
             **config["extras"],
         },

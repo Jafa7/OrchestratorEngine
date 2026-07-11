@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import core, wakeup
+from . import core, host_capabilities, wakeup
 
 
 class CodexAppError(RuntimeError):
@@ -362,6 +362,10 @@ def finalize_turn(
     except (OSError, RuntimeError, ValueError):
         receipt = {}
     receipt.update(turn_status=turn_status, finalized_at=core.utc_now())
+    if turn_status == "completed":
+        receipt["status"] = "woken"
+    elif turn_status in {"failed", "interrupted"}:
+        receipt["status"] = turn_status
     if error:
         receipt["turn_error"] = error
     declined = list(getattr(server, "auto_declined", []))
@@ -602,7 +606,12 @@ def wake_current_thread(
     )
     if receipt_path.exists():
         existing = core.load_object(receipt_path)
-        if existing.get("status") == "woken":
+        if existing.get("status") in {
+            "woken",
+            "submitted",
+            "failed",
+            "interrupted",
+        }:
             return {
                 "schema_version": core.SCHEMA_VERSION,
                 "event_id": event_id,
@@ -646,6 +655,7 @@ def wake_current_thread(
                 "task_id": event["task_id"],
                 "target_thread_id": target_thread_id,
                 "status": "deferred",
+                **host_capabilities.receipt_fields("codex"),
                 "reason": "thread_active",
                 "created_at": core.utc_now(),
             }
@@ -659,6 +669,7 @@ def wake_current_thread(
                 "task_id": event["task_id"],
                 "target_thread_id": target_thread_id,
                 "status": "deferred",
+                **host_capabilities.receipt_fields("codex"),
                 "reason": f"thread_status_{status or 'unknown'}",
                 "created_at": core.utc_now(),
             }
@@ -677,6 +688,7 @@ def wake_current_thread(
                 "task_id": event["task_id"],
                 "target_thread_id": target_thread_id,
                 "status": "deferred",
+                **host_capabilities.receipt_fields("codex"),
                 "reason": "thread_recently_active",
                 "created_at": core.utc_now(),
                 **recent,
@@ -719,7 +731,7 @@ def wake_current_thread(
                 else None
             )
             raise CodexAppError(f"turn failed: {message or 'no error detail'}")
-        # A turn still running after the failure window was delivered; it may
+        # A turn still running after the failure window was submitted; it may
         # legitimately run for hours, so it is finalized in the background.
         turn_status = (
             "running" if outcome is None else str(outcome.get("status", "unknown"))
@@ -733,6 +745,7 @@ def wake_current_thread(
             "event_id": event_id,
             "target_thread_id": target_thread_id,
             "status": "deferred",
+            **host_capabilities.receipt_fields("codex"),
             "reason": str(error),
             "created_at": core.utc_now(),
         }
@@ -750,7 +763,8 @@ def wake_current_thread(
             "event_id": event_id,
             "task_id": event["task_id"],
             "target_thread_id": target_thread_id,
-            "status": "woken",
+            "status": "woken" if turn_status == "completed" else "submitted",
+            **host_capabilities.receipt_fields("codex"),
             "turn_id": turn_id,
             "turn_status": turn_status,
             "created_at": core.utc_now(),

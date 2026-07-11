@@ -61,9 +61,10 @@ I orchestrate from this chat; ask me anything the guide says to ask.
 2. **Dispatch** tasks from the host chat (`worker run`), which returns
    immediately; a detached supervisor runs the worker CLI and emits a terminal
    event on exit.
-3. **Wake**: a watcher service (`--action callback`) pushes a wakeup to the
-   bound host — or, for Claude, the session itself watches `watcher stream`.
-   Callback services can be scoped with `watcher --host codex|vscode` so
+3. **Wake**: a watcher service (`--action callback`) pushes a wakeup to VS
+   Code, while Claude watches `watcher stream`. Codex App Server turns are
+   history-only and do not refresh the already-open Desktop chat. Callback
+   services can be scoped with `watcher --host vscode` so
    multiple host channels can share one inbox without consuming each other's
    signals.
 
@@ -165,11 +166,12 @@ Check worker profiles before dispatch:
 orchestrator-engine --project-root /path/to/project worker diagnose --enabled-only
 ```
 
-Start the wakeup watcher:
+Start the VS Code wakeup watcher (use `watcher stream` from Claude; for Codex,
+review durable history manually):
 
 ```bash
 orchestrator-engine --project-root /path/to/project watcher \
-  --host codex --action callback service start --interval-seconds 5
+  --host vscode --action callback service start --interval-seconds 5
 ```
 
 Dispatch a task from the host chat and end the turn:
@@ -186,10 +188,10 @@ orchestrator-engine --project-root /path/to/project status
 orchestrator-engine --project-root /path/to/project doctor
 orchestrator-engine --project-root /path/to/project worker tasks --severity warning
 orchestrator-engine --project-root /path/to/project watcher \
-  --host codex service status
+  --host vscode service status
 orchestrator-engine --project-root /path/to/project inbox
 orchestrator-engine --project-root /path/to/project watcher \
-  --host codex service stop
+  --host vscode service stop
 ```
 
 Use `status` first for a compact operator report. It summarizes `doctor`,
@@ -293,6 +295,7 @@ Do not commit or push unless the user explicitly requested it.
 ## Development
 
 ```bash
+python -m pip install '.[test]'
 python -m unittest discover -s tests -p 'test_*.py'
 ruff check .
 ```

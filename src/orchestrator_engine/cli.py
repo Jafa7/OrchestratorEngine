@@ -16,6 +16,8 @@ from . import (
     codex_app,
     core,
     diagnostics,
+    host_capabilities,
+    schemas,
     status,
     task_diagnostics,
     task_resolution,
@@ -62,6 +64,14 @@ def build_parser() -> argparse.ArgumentParser:
     emit.add_argument("--event-id")
 
     subparsers.add_parser("inbox", help="List pending inbox signals.")
+    subparsers.add_parser(
+        "host-capabilities",
+        help="Print the read-only host delivery capability report.",
+    )
+    schema_parser = subparsers.add_parser(
+        "schemas", help="List or print packaged durable-artifact schemas."
+    )
+    schema_parser.add_argument("name", nargs="?", choices=schemas.SCHEMA_NAMES)
 
     doctor = subparsers.add_parser(
         "doctor",
@@ -206,6 +216,13 @@ def build_parser() -> argparse.ArgumentParser:
         "list",
         help="List configured workers and their enabled state.",
     )
+    availability = worker_subparsers.add_parser(
+        "availability", help="Run explicit bounded availability probes."
+    )
+    availability.add_argument("--worker")
+    availability.add_argument(
+        "--all", action="store_true", help="Include disabled profiles."
+    )
     worker_diagnose = worker_subparsers.add_parser(
         "diagnose",
         help="Run read-only diagnostics for configured worker profiles.",
@@ -295,6 +312,11 @@ def build_parser() -> argparse.ArgumentParser:
     worker_run.add_argument("--worker", required=True)
     worker_run.add_argument("--task-id", required=True)
     worker_run.add_argument("--prompt-file", type=Path, required=True)
+    worker_run.add_argument(
+        "--preflight-availability",
+        action="store_true",
+        help="Run the configured local probe before dispatch (advisory).",
+    )
     worker_supervise = worker_subparsers.add_parser(
         "supervise",
         help="Internal: run a worker to completion and emit its terminal event.",
@@ -367,12 +389,24 @@ def build_parser() -> argparse.ArgumentParser:
     watcher_subparsers.add_parser("once", help="Run a single watcher scan and exit.")
     acknowledge = watcher_subparsers.add_parser(
         "acknowledge",
-        help="Mark a pending or deferred terminal event as manually handled.",
+        help="Record an audit-preserving manual acknowledgement for one host.",
     )
-    acknowledge.add_argument("--event-id", required=True)
+    acknowledge_group = acknowledge.add_mutually_exclusive_group(required=True)
+    acknowledge_group.add_argument("--event-id")
+    acknowledge_group.add_argument(
+        "--all-pending",
+        action="store_true",
+        help="Acknowledge every currently pending signal for the selected host.",
+    )
+    acknowledge.add_argument(
+        "--confirm-all-pending",
+        action="store_true",
+        help="Required with --all-pending to make the bulk acknowledgement explicit.",
+    )
     acknowledge.add_argument(
         "--reason",
-        help="Human-readable acknowledgement note.",
+        required=True,
+        help="Human-readable manual-review reason retained in the receipt.",
     )
     deferred = watcher_subparsers.add_parser(
         "deferred",
@@ -475,6 +509,12 @@ def main(argv: list[str] | None = None) -> int:
                 for root in roots
             }
             print_json(output)
+        elif args.command == "host-capabilities":
+            print_json(host_capabilities.all_hosts())
+        elif args.command == "schemas":
+            print_json(
+                schemas.catalog() if args.name is None else schemas.load(args.name)
+            )
         elif args.command == "cleanup":
             if len(roots) != 1:
                 raise core.OrchestratorError(
@@ -635,6 +675,13 @@ def run_bind_command(args: argparse.Namespace, root: Path) -> object:
 def run_worker_cli_command(args: argparse.Namespace, root: Path) -> object:
     if args.worker_command == "list":
         return workers.list_workers(root, state_dir=args.state_dir)
+    if args.worker_command == "availability":
+        return workers.availability_workers(
+            root,
+            state_dir=args.state_dir,
+            worker=args.worker,
+            enabled_only=not args.all,
+        )
     if args.worker_command == "diagnose":
         return workers.diagnose_workers(
             root,
@@ -673,6 +720,7 @@ def run_worker_cli_command(args: argparse.Namespace, root: Path) -> object:
             task_id=args.task_id,
             prompt_file=args.prompt_file,
             state_dir=args.state_dir,
+            preflight_availability=args.preflight_availability,
         )
     if args.worker_command == "supervise":
         return workers.supervise_worker(
@@ -713,7 +761,7 @@ def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object |
     # watcher-<host>-callback-state.json, not the legacy watcher-state.json.
     operator_state = args.state_file
     if operator_state is None and args.host:
-        operator_state = watcher.default_callback_state_path(
+        operator_state = watcher.default_host_state_path(
             roots[0],
             host=args.host,
             state_dir=args.state_dir,
@@ -731,9 +779,24 @@ def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object |
     if args.watcher_command == "acknowledge":
         if len(roots) != 1:
             raise watcher.WatcherError("acknowledge requires exactly one project root")
-        return watcher.acknowledge_deferred_event(
+        if not args.host:
+            raise watcher.WatcherError("acknowledge requires an explicit --host")
+        if args.all_pending:
+            if not args.confirm_all_pending:
+                raise watcher.WatcherError(
+                    "--all-pending requires --confirm-all-pending"
+                )
+            return watcher.acknowledge_pending_signals(
+                roots[0],
+                host=args.host,
+                state_dir=args.state_dir,
+                state_path=operator_state,
+                reason=args.reason,
+            )
+        return watcher.acknowledge_signal(
             roots[0],
             event_id=args.event_id,
+            host=args.host,
             state_dir=args.state_dir,
             state_path=operator_state,
             reason=args.reason,

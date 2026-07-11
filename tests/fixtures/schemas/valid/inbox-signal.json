@@ -1,0 +1,1 @@
+{"schema_version":1,"kind":"LOCAL_AI_WORKER_FINISHED","event_id":"e1","project_id":"p","task_id":"t1","event_path":"/tmp/event","terminal_status":"completed","result_path":"/tmp/result","evidence_path":"/tmp/evidence","created_at":"2026-07-10T00:00:00Z","requires":"ORCHESTRATOR_REVIEW"}

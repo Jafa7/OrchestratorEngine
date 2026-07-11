@@ -33,6 +33,8 @@ QUOTA_REASON_MARKERS = (
     "try again at",
 )
 SERVICE_KIND = "LOCAL_AI_ORCHESTRATOR_WATCHER_SERVICE"
+STATE_KIND = "LOCAL_AI_ORCHESTRATOR_WATCHER_STATE"
+ACKNOWLEDGEMENT_KIND = "LOCAL_AI_ORCHESTRATOR_WATCHER_ACKNOWLEDGEMENT"
 MIN_HEARTBEAT_MAX_AGE_SECONDS = 30.0
 
 
@@ -183,6 +185,44 @@ def default_stream_state_path(
     )
 
 
+def default_host_state_path(
+    project_root: Path,
+    *,
+    host: str,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+) -> Path:
+    """Return the state file that owns delivery for one host."""
+
+    if host == "claude":
+        return default_stream_state_path(
+            project_root,
+            host=host,
+            state_dir=state_dir,
+        )
+    return default_callback_state_path(
+        project_root,
+        host=host,
+        state_dir=state_dir,
+    )
+
+
+def acknowledgement_receipt_path(
+    project_root: Path,
+    *,
+    host: str,
+    event_id: str,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+) -> Path:
+    if not event_id or "/" in event_id or "\\" in event_id or event_id.startswith("."):
+        raise WatcherError(f"invalid event id: {event_id!r}")
+    return (
+        core.inbox_root(project_root, state_dir=state_dir)
+        / "acknowledgements"
+        / host
+        / f"{event_id}.json"
+    )
+
+
 def default_callback_state_path(
     project_root: Path,
     *,
@@ -241,11 +281,17 @@ def load_state(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {
             "schema_version": core.SCHEMA_VERSION,
+            "kind": STATE_KIND,
             "seen_event_ids": [],
             "deferred_events": {},
             "acknowledged_events": {},
         }
     value = core.load_object(path)
+    kind = value.get("kind")
+    if kind not in {None, STATE_KIND}:
+        raise WatcherError("watcher state has invalid kind")
+    if not core.is_supported_schema_version(value.get("schema_version")):
+        raise WatcherError("watcher state has unsupported schema")
     seen = value.get("seen_event_ids")
     if not isinstance(seen, list) or not all(isinstance(item, str) for item in seen):
         raise WatcherError("watcher state has invalid seen_event_ids")
@@ -287,6 +333,7 @@ def seed_state_from_legacy(
         state_file,
         {
             "schema_version": core.SCHEMA_VERSION,
+            "kind": STATE_KIND,
             "seen_event_ids": list(legacy_state["seen_event_ids"]),
             "deferred_events": {},
             "acknowledged_events": {},
@@ -692,6 +739,91 @@ def retry_deferred_event(
     }
 
 
+def acknowledge_signal(
+    project_root: Path,
+    *,
+    event_id: str,
+    host: str,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    state_path: Path | None = None,
+    reason: str,
+    allow_unbound_signal: bool = False,
+) -> dict[str, Any]:
+    if not event_id:
+        raise WatcherError("event id is required")
+    if host not in binding_module.SUPPORTED_HOSTS:
+        raise WatcherError(f"unsupported host: {host}")
+    if not isinstance(reason, str) or not reason.strip():
+        raise WatcherError("acknowledgement reason is required")
+    project = project_root.expanduser().resolve()
+    state_file = state_path or default_host_state_path(
+        project, host=host, state_dir=state_dir
+    )
+    receipt_path = acknowledgement_receipt_path(
+        project,
+        host=host,
+        event_id=event_id,
+        state_dir=state_dir,
+    )
+    existing_receipt = load_optional_object(receipt_path)
+    state = load_state(state_file)
+    seen = set(state["seen_event_ids"])
+    deferred_events: dict[str, dict[str, Any]] = state["deferred_events"]
+    previous = deferred_events.get(event_id)
+    signal = None
+    fallback_binding = binding_module.load_binding(project, state_dir=state_dir)
+    for candidate in core.inbox(project, state_dir=state_dir, invalid_sink=[]):
+        if candidate.get("event_id") != event_id:
+            continue
+        signal_host_value = signal_host(candidate, fallback_binding=fallback_binding)
+        if signal_host_value == host or (
+            allow_unbound_signal and signal_host_value is None
+        ):
+            signal = candidate
+            break
+    if existing_receipt is not None:
+        if (
+            not core.is_supported_schema_version(existing_receipt.get("schema_version"))
+            or existing_receipt.get("kind") != ACKNOWLEDGEMENT_KIND
+            or existing_receipt.get("event_id") != event_id
+            or existing_receipt.get("host") != host
+            or existing_receipt.get("status") != ACKNOWLEDGED_STATUS
+        ):
+            raise WatcherError(f"invalid acknowledgement receipt: {receipt_path}")
+        acknowledgement = existing_receipt
+    elif previous is None and signal is None and event_id not in seen:
+        raise WatcherError(f"event is not pending or deferred: {event_id}")
+    else:
+        acknowledged_at = core.utc_now()
+        acknowledgement = {
+            "schema_version": core.SCHEMA_VERSION,
+            "kind": ACKNOWLEDGEMENT_KIND,
+            "event_id": event_id,
+            "host": host,
+            "task_id": (previous or {}).get("task_id")
+            or (signal or {}).get("task_id"),
+            "status": ACKNOWLEDGED_STATUS,
+            "reason": reason.strip(),
+            "acknowledged_at": acknowledged_at,
+            "previous_status": deferred_status(previous) if previous else "pending",
+            "previous_attempts": int((previous or {}).get("attempts", 0)),
+            "previous_deferred": previous,
+            "state_path": str(state_file),
+            "receipt_path": str(receipt_path),
+        }
+        core.atomic_json(receipt_path, acknowledgement)
+    seen.add(event_id)
+    state["seen_event_ids"] = sorted(seen)
+    deferred_events.pop(event_id, None)
+    state["deferred_events"] = deferred_events
+    state["acknowledged_events"][event_id] = acknowledgement
+    state["schema_version"] = core.SCHEMA_VERSION
+    state["kind"] = STATE_KIND
+    state["updated_at"] = core.utc_now()
+    core.atomic_json(state_file, state)
+    return {**acknowledgement, "idempotent": existing_receipt is not None}
+
+
 def acknowledge_deferred_event(
     project_root: Path,
     *,
@@ -700,42 +832,67 @@ def acknowledge_deferred_event(
     state_path: Path | None = None,
     reason: str | None = None,
 ) -> dict[str, Any]:
-    if not event_id:
-        raise WatcherError("event id is required")
+    """Compatibility wrapper for the historical unscoped API.
+
+    New CLI workflows call :func:`acknowledge_signal` with an explicit host.
+    """
+
+    return acknowledge_signal(
+        project_root,
+        event_id=event_id,
+        host="codex",
+        state_dir=state_dir,
+        state_path=state_path,
+        reason=reason or "legacy manual acknowledgement",
+        allow_unbound_signal=True,
+    )
+
+
+def acknowledge_pending_signals(
+    project_root: Path,
+    *,
+    host: str,
+    reason: str,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    state_path: Path | None = None,
+) -> dict[str, Any]:
+    """Acknowledge every currently pending signal for one host, explicitly."""
+
     project = project_root.expanduser().resolve()
-    state_file = state_path or default_state_path(project, state_dir=state_dir)
+    state_file = state_path or default_host_state_path(
+        project, host=host, state_dir=state_dir
+    )
     state = load_state(state_file)
     seen = set(state["seen_event_ids"])
-    deferred_events: dict[str, dict[str, Any]] = state["deferred_events"]
-    previous = deferred_events.pop(event_id, None)
-    signal = None
-    for candidate in core.inbox(project, state_dir=state_dir, invalid_sink=[]):
-        if candidate.get("event_id") == event_id:
-            signal = candidate
-            break
-    if previous is None and signal is None and event_id not in seen:
-        raise WatcherError(f"event is not pending or deferred: {event_id}")
-    seen.add(event_id)
-    acknowledged_at = core.utc_now()
-    acknowledgement = {
+    fallback_binding = binding_module.load_binding(project, state_dir=state_dir)
+    event_ids = []
+    for signal in core.inbox(project, state_dir=state_dir, invalid_sink=[]):
+        event_id = signal.get("event_id")
+        if not isinstance(event_id, str) or event_id in seen:
+            continue
+        if signal_host(signal, fallback_binding=fallback_binding) == host:
+            event_ids.append(event_id)
+    receipts = [
+        acknowledge_signal(
+            project,
+            event_id=event_id,
+            host=host,
+            reason=reason,
+            state_dir=state_dir,
+            state_path=state_file,
+        )
+        for event_id in sorted(event_ids)
+    ]
+    return {
         "schema_version": core.SCHEMA_VERSION,
-        "kind": "LOCAL_AI_ORCHESTRATOR_WATCHER_ACKNOWLEDGEMENT",
-        "event_id": event_id,
-        "task_id": (previous or {}).get("task_id")
-        or (signal or {}).get("task_id"),
+        "kind": "LOCAL_AI_ORCHESTRATOR_WATCHER_ACKNOWLEDGEMENT_BULK",
+        "host": host,
         "status": ACKNOWLEDGED_STATUS,
-        "reason": reason or "manual acknowledgement",
-        "acknowledged_at": acknowledged_at,
-        "previous_status": deferred_status(previous) if previous else "pending",
-        "previous_attempts": int((previous or {}).get("attempts", 0)),
+        "reason": reason.strip(),
+        "acknowledged_count": len(receipts),
+        "acknowledgements": receipts,
         "state_path": str(state_file),
     }
-    state["seen_event_ids"] = sorted(seen)
-    state["deferred_events"] = deferred_events
-    state["acknowledged_events"][event_id] = acknowledgement
-    state["updated_at"] = acknowledged_at
-    core.atomic_json(state_file, state)
-    return acknowledgement
 
 
 def scan_once(
@@ -918,6 +1075,7 @@ def scan_once(
     }
     state.update(
         schema_version=core.SCHEMA_VERSION,
+        kind=STATE_KIND,
         seen_event_ids=sorted(seen),
         deferred_events=deferred_events,
         updated_at=output["checked_at"],

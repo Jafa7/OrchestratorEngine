@@ -10,6 +10,11 @@
 # No timeout_seconds on AI worker profiles: long-running workers are allowed.
 # The supervisor refreshes task.json (`last_alive_at`) while they run. Add
 # timeout_seconds to bounded scripts such as smoke tests and check runners.
+# Optional availability probes are adopter-owned local commands, not provider
+# quota APIs. They run only via `worker availability` or the explicit
+# `worker run --preflight-availability` switch, and are advisory at launch.
+# availability_probe = ["/path/to/project-check", "--available"]
+# availability_timeout_seconds = 5
 
 # --- Claude profiles ---------------------------------------------------
 # Keep disabled until the Claude CLI and chosen permission mode are verified.
@@ -145,6 +150,55 @@ capability = "review"
 permission_profile = "readonly"
 cost = "medium"
 recommended_for = ["audit", "explain", "triage"]
+
+
+# --- Codex GPT-5.6 limited-preview profiles ----------------------------
+# GPT-5.6 is available only to approved Codex/API organizations during the
+# limited preview. Keep the broadly available GPT-5.5 profiles above as a
+# fallback, and enable these only after the installed Codex model catalog shows
+# the exact model ids. Luna is the fast/cost-efficient tier, Terra is the
+# balanced tier, and Sol is the most capable tier. Avoid `ultra` as a default:
+# it enables automatic task delegation and can spend more worker capacity than
+# the orchestrator intended.
+
+[workers.codex-56-fast]
+enabled = false
+command = ["codex", "exec", "--json", "-m", "gpt-5.6-luna",
+           "-c", "model_reasoning_effort=\"low\"",
+           "-c", "approval_policy=\"never\"",
+           "-c", "sandbox_mode=\"workspace-write\""]
+prompt_via = "arg"
+expect_long_running = true
+capability = "code-edit"
+permission_profile = "restricted"
+cost = "low"
+recommended_for = ["small-edit", "triage"]
+
+[workers.codex-56]
+enabled = false
+command = ["codex", "exec", "--json", "-m", "gpt-5.6-terra",
+           "-c", "model_reasoning_effort=\"high\"",
+           "-c", "approval_policy=\"never\"",
+           "-c", "sandbox_mode=\"danger-full-access\""]
+prompt_via = "arg"
+expect_long_running = true
+capability = "code-edit"
+permission_profile = "full"
+cost = "medium"
+recommended_for = ["implementation", "tests", "review"]
+
+[workers.codex-56-deep]
+enabled = false
+command = ["codex", "exec", "--json", "-m", "gpt-5.6-sol",
+           "-c", "model_reasoning_effort=\"xhigh\"",
+           "-c", "approval_policy=\"never\"",
+           "-c", "sandbox_mode=\"danger-full-access\""]
+prompt_via = "arg"
+expect_long_running = true
+capability = "code-edit"
+permission_profile = "full"
+cost = "high"
+recommended_for = ["architecture", "large-refactor", "hard-bug"]
 
 
 # --- Verification profiles -------------------------------------------

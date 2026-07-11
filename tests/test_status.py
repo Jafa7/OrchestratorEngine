@@ -87,6 +87,20 @@ def write_failed_check(root: Path) -> None:
 
 
 class StatusTests(unittest.TestCase):
+    def test_status_reports_codex_history_only_delivery(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            create_layout(root)
+            write_worker_config(root)
+            binding.write_binding(root, host="codex", target_thread_id="thread-1")
+            report = status.run_status(root)
+
+        channel = report["components"]["wake_channel"]
+        self.assertEqual(channel["capabilities"]["live_refresh_support"], "unsupported")
+        self.assertIn("cannot refresh", channel["detail"])
+        self.assertIn("manual", channel["hint"])
+        self.assertIn("Do not start", channel["hint"])
+
     def test_status_aggregates_compact_problem_summaries(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

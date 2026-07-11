@@ -7,7 +7,15 @@ import os
 from pathlib import Path
 from typing import Any
 
-from . import __version__, binding, claude_stream, core, watcher, workers
+from . import (
+    __version__,
+    binding,
+    claude_stream,
+    core,
+    host_capabilities,
+    watcher,
+    workers,
+)
 
 DOCTOR_KIND = "ORCHESTRATOR_DOCTOR_REPORT"
 CHECK_STATUSES = {"ok", "warn", "error", "skipped"}
@@ -285,6 +293,26 @@ def check_watcher_channel(
         )
     if selected_host == "claude":
         return check_claude_stream(project, state_dir=state_dir)
+    capabilities = host_capabilities.for_host(selected_host)
+    if capabilities["live_refresh_support"] == "unsupported":
+        return check(
+            "watcher_channel",
+            "Wake channel matches the bound host",
+            "warn",
+            "codex can complete a headless App Server turn, but cannot refresh "
+            "the open Desktop chat",
+            hint=(
+                "Review `inbox` and durable event/result/evidence artifacts "
+                "manually; then use `watcher --host codex acknowledge "
+                "--event-id EVENT_ID --reason \"...\"`. Do not start a "
+                "Codex callback watcher for live refresh."
+            ),
+            data={
+                "host": selected_host,
+                "capabilities": capabilities,
+                "delivery": "history_only_manual_review",
+            },
+        )
     if selected_host not in watcher.HOST_ADAPTERS:
         return check(
             "watcher_channel",
@@ -311,7 +339,11 @@ def check_watcher_channel(
             if severity == "ok"
             else "Start or repair the host-scoped watcher service."
         ),
-        data={"host": selected_host, "service_status": status},
+        data={
+            "host": selected_host,
+            "capabilities": capabilities,
+            "service_status": status,
+        },
     )
 
 

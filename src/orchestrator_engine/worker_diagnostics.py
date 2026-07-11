@@ -2,11 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
+import subprocess
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
 SEVERITIES = ("info", "warning", "error")
 SEVERITY_RANK = {severity: index for index, severity in enumerate(SEVERITIES)}
+RATE_LIMIT_SCAN_BYTES = 32 * 1024
+RATE_LIMIT_PATTERNS = (
+    re.compile(r"you(?:'|\u2019)ve hit your session limit", re.IGNORECASE),
+    re.compile(r"\brate[ _-]limit(?:ed|[ _-]exceeded)\b", re.IGNORECASE),
+    re.compile(r"\busage[ _-]limit(?:ed|[ _-]exceeded)\b", re.IGNORECASE),
+    re.compile(r"too many requests", re.IGNORECASE),
+    re.compile(r"\b(?:http\s*(?:status\s*)?)?429\b", re.IGNORECASE),
+    re.compile(r"insufficient quota", re.IGNORECASE),
+)
 
 
 class WorkerDiagnosticError(RuntimeError):
@@ -37,10 +49,18 @@ def evaluate_profile(
     prompt_via: str,
     timeout_seconds: int | float | None,
     expect_long_running: bool = False,
+    availability_probe: list[str] | None = None,
+    availability_timeout_seconds: int | float | None = None,
 ) -> list[dict[str, str]]:
     """Return non-blocking diagnostics for one worker profile."""
 
     diagnostics: list[dict[str, str]] = []
+    if availability_probe is not None and availability_timeout_seconds is None:
+        diagnostics.append(diagnostic(
+            code="availability_probe_timeout_absent", severity="error",
+            message=f"worker {name} availability probe has no timeout",
+            suggested_action="Set a finite availability_timeout_seconds.",
+        ))
     if command:
         executable = executable_name(command[0])
         flags = set(command[1:])
@@ -71,6 +91,59 @@ def evaluate_profile(
             )
         )
     return diagnostics
+
+
+def output_metadata(value: bytes | str | None) -> dict[str, Any]:
+    """Describe probe output without exposing potentially sensitive content."""
+
+    raw = value if isinstance(value, bytes) else (value or "").encode("utf-8")
+    return {
+        "output_bytes": len(raw),
+        "output_sha256": hashlib.sha256(raw).hexdigest(),
+    }
+
+
+def run_availability_probe(config: dict[str, Any]) -> dict[str, Any]:
+    command = config.get("availability_probe")
+    if command is None:
+        return {"status": "not_configured"}
+    try:
+        completed = subprocess.run(
+            command, capture_output=True, check=False,
+            timeout=float(config["availability_timeout_seconds"]),
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired as error:
+        return {
+            "status": "probe_error",
+            "error": "probe timed out",
+            **output_metadata(error.stdout or error.stderr),
+        }
+    except OSError as error:
+        return {"status": "probe_error", "error": type(error).__name__}
+    output = completed.stdout or completed.stderr
+    return {
+        "status": "available" if completed.returncode == 0 else "unavailable",
+        "exit_code": completed.returncode,
+        **output_metadata(output),
+    }
+
+
+def classify_rate_limit(stdout_path: Path, stderr_path: Path) -> bool:
+    chunks = []
+    for path in (stdout_path, stderr_path):
+        try:
+            with path.open("rb") as handle:
+                handle.seek(0, 2)
+                start = max(handle.tell() - RATE_LIMIT_SCAN_BYTES, 0)
+                handle.seek(start)
+                chunks.append(
+                    handle.read(RATE_LIMIT_SCAN_BYTES).decode("utf-8", errors="replace")
+                )
+        except OSError:
+            continue
+    text = "\n".join(chunks)
+    return any(pattern.search(text) for pattern in RATE_LIMIT_PATTERNS)
 
 
 def executable_name(command: str) -> str:

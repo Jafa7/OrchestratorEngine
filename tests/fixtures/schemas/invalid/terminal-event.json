@@ -1,0 +1,1 @@
+{"schema_version":1,"kind":"WORKER_TERMINAL","event_id":"e1","project_id":"p","task_id":"t1","terminal_status":"unknown","result_path":"relative.json","result_sha256":"bad","evidence_path":"/tmp/evidence.json","evidence_sha256":"bad","created_at":"2026-07-10T00:00:00Z"}

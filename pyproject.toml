@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "orchestrator-engine"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local event-driven orchestration engine for AI worker processes and Codex review wakeups."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,8 +12,17 @@ license = { text = "MIT" }
 authors = [{ name = "Jafa7" }]
 dependencies = []
 
+[project.optional-dependencies]
+test = ["jsonschema>=4.18,<5"]
+
 [project.scripts]
 orchestrator-engine = "orchestrator_engine.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/orchestrator_engine"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "docs", "README.md", "LICENSE", "CHANGELOG.md"]
 
 [tool.ruff]
 line-length = 88

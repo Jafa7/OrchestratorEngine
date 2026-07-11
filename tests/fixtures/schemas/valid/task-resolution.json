@@ -1,0 +1,1 @@
+{"schema_version":1,"kind":"WORKER_TASK_RESOLUTION","task_id":"t1","status":"acknowledged","reason":"reviewed","previous_task_status":"failed","created_at":"2026-07-10T00:00:00Z"}

@@ -3,6 +3,23 @@
 OrchestratorEngine communicates through durable JSON files. Worker output is
 data, not instructions.
 
+## Machine-readable schemas
+
+Packaged JSON Schema Draft 2020-12 files live in `orchestrator_engine/schemas/`.
+Stable names are `worker-task`, `worker-result`, `worker-evidence`,
+`terminal-event`, `inbox-signal`, `binding`, `wake-target`,
+`verification-result`, and `task-resolution`. They are included in wheels and
+source distributions and require no runtime dependency. `orchestrator-engine
+schemas` lists names; pass one name to print its schema. Catalog and schema
+output include `schema_version` and `kind`.
+
+Schemas require v0.1 writer fields and enforce version 1, kind constants,
+status enums, and the host-dependent nested `wake_target` shape. Unknown
+properties remain allowed so compatible optional additions can be introduced.
+Breaking changes to required fields, kinds, path layout, or status names
+require a schema/version bump. `format: date-time` is an annotation unless a
+validator enables format checking.
+
 ## v0.1 stability scope
 
 Version 0.1 stabilizes the local file contract, the CLI commands that write
@@ -50,6 +67,18 @@ The following are intentionally not v0.1 core contracts:
 Forward-compatible additions may add optional fields, new receipt kinds, new
 host adapters or new CLI flags. Breaking changes to required fields, `kind`
 values, path layout or terminal status names require a schema/version bump.
+
+### Host delivery capabilities
+
+`host-capabilities` emits a bounded, versioned provider-neutral report with
+`schema_version`, `kind`, `host_count` and a stable `hosts` array. Every host
+item has `host`, `delivery_mode` and `live_refresh_support`. Current values
+are `session_stream` / `supported` for Claude, `ui_injection` /
+`best_effort` for VS Code, and `headless_app_server_turn` / `unsupported` for
+Codex Desktop. The latter means a `woken` Codex receipt confirms that a
+headless App Server turn completed; it never asserts that an already-open
+Desktop chat refreshed or received a live wakeup. Receipt fields use the same
+precise enums.
 
 ## Operator diagnostics
 
@@ -236,7 +265,8 @@ stored on the Windows side.
 
 Each wake channel only consumes signals for hosts it can deliver:
 
-- `watcher --action callback` handles `codex` and `vscode` wake targets.
+- `watcher --action callback` can submit Codex history turns and handles VS
+  Code UI injection. Only VS Code has live refresh support.
 - `watcher stream` handles `claude` wake targets.
 
 Signals for other hosts are skipped without being marked seen, so a callback
@@ -271,7 +301,26 @@ command = ["claude", "-p"]    # the CLI invocation, including model/effort flags
 prompt_via = "stdin"          # "arg" appends the prompt text as the last argument
 timeout_seconds = 3600        # optional; exceeded -> terminal_status "timed_out"
 expect_long_running = false   # optional; suppresses missing-timeout info when true
+availability_probe = ["/path/to/project-check", "--worker", "claude"] # optional local command
+availability_timeout_seconds = 5 # required with availability_probe; 0 < value <= 300
 ```
+
+`availability_probe` is an adopting project's or adapter's non-AI local
+command. Core executes it only for `worker availability` or when
+`worker run --preflight-availability` is explicitly selected. Exit 0 means
+`available`; nonzero means `unavailable`; timeout or execution failure means
+`probe_error`. Profiles without a probe report `not_configured` and retain
+existing dispatch behavior. This report is bounded and versioned. Probe output
+content is never returned: the report contains only its byte count and SHA-256
+digest, so a local probe cannot accidentally leak private diagnostics.
+
+The preflight is advisory: it is a check-then-run sequence and cannot
+guarantee quota or availability at launch time. It is not a provider quota API;
+the engine does not poll an AI model or invent provider commands. Use
+`worker availability --worker NAME` for one enabled profile, or
+`worker availability --all` to include disabled profiles. The timeout must be
+finite and no greater than 300 seconds, so a probe cannot hold the command
+indefinitely.
 
 **Model and effort selection happens inside `command`.** The engine does not
 interpret keys like `model` or `effort` — free-form keys are recorded in each
@@ -741,13 +790,28 @@ Deferred callback state is kept in `watcher-state.json` under
 - `acknowledged` — recorded in `acknowledged_events` after manual resolution;
   the event id is also added to `seen_event_ids`.
 
-To acknowledge a pending or deferred event without deleting the durable audit
-trail:
+To acknowledge one pending or deferred event without deleting the durable audit
+trail, select its host explicitly and provide the manual-review reason. The
+host-scoped watcher state is updated and a versioned acknowledgement receipt is
+written under `inbox/acknowledgements/<host>/`:
 
 ```bash
 orchestrator-engine --project-root /path/to/project watcher \
-  acknowledge --event-id EVENT_ID --reason "read manually"
+  --host HOST acknowledge --event-id EVENT_ID --reason "read manually"
 ```
+
+For an intentional bulk acknowledgement of every *currently pending* signal
+for one host, use the separate mode and explicit confirmation:
+
+```bash
+orchestrator-engine --project-root /path/to/project watcher \
+  --host HOST acknowledge --all-pending --confirm-all-pending \
+  --reason "reviewed all pending signals manually"
+```
+
+Acknowledgements are idempotent: repeating an event acknowledgement returns
+the original receipt rather than changing its recorded reason or timestamp.
+They never remove events, signals, results or evidence.
 
 To list deferred events:
 
@@ -790,17 +854,18 @@ the rollout. Once a wakeup turn is started, it is watched for a short failure
 window (2 minutes): failures inside the window are classified by the watcher
 state machine. Quota/usage-limit failures require manual handling instead of
 creating an unbounded retry loop. A turn still running at the end of the
-window was delivered — orchestrator turns may legitimately run for hours — so
-the receipt is written as `woken` with `turn_status: "running"` and a
+window was submitted — orchestrator turns may legitimately run for hours — so
+the receipt is written as `submitted` with `turn_status: "running"` and a
 background finalizer keeps the App Server connection open until the turn ends,
 then updates the receipt (`turn_status`, `finalized_at`, optional
-`turn_error`). A turn the user interrupts is recorded as `woken` with
+`turn_error`). A turn the user interrupts is recorded as `interrupted` with
 `turn_status: "interrupted"` and is not retried.
 
-For Codex Desktop on Windows, receipt `status: "woken"` means the callback turn
-was accepted by a Codex App Server/headless engine and written to Codex thread
-storage. It does not prove that the already-open Desktop UI agent woke in the
-same live session. The receipt also records the desktop deep-link activation
+For Codex Desktop on Windows, receipt `status: "woken"` means the headless
+Codex App Server turn completed and was written to Codex thread storage. A
+still-running turn is `status: "submitted"`; it has not completed yet. Neither
+status proves that the already-open Desktop UI agent woke in the same live
+session. The receipt also records the desktop deep-link activation
 outcome (`activation: "requested"` or `"failed"`). Codex Desktop UI refresh is
 separate from wakeup delivery: on Windows the adapter first asks the desktop
 app to open the thread, then sends a best-effort refresh pulse for

@@ -6,7 +6,13 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from orchestrator_engine import binding, claude_stream, core, watcher
+from orchestrator_engine import (
+    binding,
+    claude_stream,
+    core,
+    host_capabilities,
+    watcher,
+)
 
 
 def write_event(root: Path, event_id: str) -> None:
@@ -25,6 +31,14 @@ def write_event(root: Path, event_id: str) -> None:
 
 
 class StreamTests(unittest.TestCase):
+    def test_stream_status_reports_delivery_capabilities(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            report = claude_stream.stream_status([root])
+        self.assertEqual(
+            report["capabilities"], host_capabilities.for_host("claude")
+        )
+
     def test_stream_emits_one_line_per_new_signal(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

@@ -51,11 +51,21 @@ below runs inside WSL.
 ```bash
 git clone https://github.com/Jafa7/OrchestratorEngine.git
 cd OrchestratorEngine
-pip install .
+python -m pip install .
 ```
 
-Use `pip install -e .` if the user wants to track engine updates from git.
-The package has zero runtime dependencies.
+For a reproducible release install outside a source checkout, install the
+release tag directly (this project does not currently publish release wheels to
+PyPI):
+
+```bash
+python -m pip install \
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.1.1"
+```
+
+Use `python -m pip install -e .` if the user wants to track engine updates
+from git. For development and schema conformance tests, install
+`python -m pip install -e '.[test]'`. The package has zero runtime dependencies.
 
 **Check:**
 
@@ -203,6 +213,11 @@ instead of inventing them.
 
 Notes:
 
+- GPT-5.6 Sol, Terra and Luna are limited-preview models. The full example
+  catalog includes opt-in `codex-56-deep`, `codex-56` and `codex-56-fast`
+  profiles, while retaining GPT-5.5 fallbacks for installations without
+  preview access. Enable a GPT-5.6 profile only after the installed Codex
+  client exposes its exact model id.
 - `prompt_via = "arg"` appends the prompt text as the final argument;
   `"stdin"` pipes it.
 - `codex exec` refuses untrusted directories. Either the user marks the
@@ -331,24 +346,31 @@ instead of full logs, and tiny excerpts only when needed to identify a failure.
 
 ## Step 5 — Start the wake channel
 
-### Hosts codex and vscode — push watcher service
+### Host vscode — push watcher service
 
 ```bash
 orchestrator-engine --project-root /path/to/project watcher \
-  --host codex --action callback service start --interval-seconds 5
+  --host vscode --action callback service start --interval-seconds 5
 ```
 
 **Check:**
 
 ```bash
 orchestrator-engine --project-root /path/to/project watcher \
-  --host codex service status
+  --host vscode service status
 ```
 
 Expect `"status": "running"` and `"heartbeat_healthy": true` (heartbeat may
-take one interval to appear). Use `--host vscode` for a VS Code callback
-service. Host-scoped callback services use separate state/service/heartbeat
-files and can coexist with Claude stream watches.
+take one interval to appear). Host-scoped callback services use separate
+state/service/heartbeat files and can coexist with Claude stream watches.
+
+### Host codex — history-only manual review
+
+Do **not** start a Codex callback watcher for live refresh. A completed headless
+App Server receipt is durable history, not proof that the open Desktop chat
+refreshed. Use `inbox` to locate the event/result/evidence artifacts, review
+them manually, then acknowledge the signal with `watcher --host codex
+acknowledge --event-id EVENT_ID --reason "..."`.
 
 ### Host claude — stream watch, no service
 
@@ -397,15 +419,11 @@ cat /path/to/project/.orchestrator/tasks/SMOKE-1/result.json   # terminal_status
 orchestrator-engine --project-root /path/to/project inbox      # contains SMOKE-1
 ```
 
-Then confirm the wake actually reaches the user:
+Then confirm the correct delivery behavior:
 
-- **codex** — within one watcher interval the thread receives a
-  `LOCAL_AI_ORCHESTRATOR_WAKEUP` turn and the desktop app opens it via the
-  `codex://threads/...` deep link. On Windows, the adapter also sends a
-  best-effort UI refresh pulse after activation so an already-open Codex
-  Desktop thread reloads the stored turn. Receipt:
-  `.orchestrator/inbox/thread-wakeups/<event_id>.json` with
-  `"status": "woken"` plus `activation` and `live_refresh` fields.
+- **codex** — review the durable inbox/event/result/evidence history manually.
+  A `"status": "woken"` receipt confirms only that its headless App Server
+  turn completed; it does not prove the visible Desktop chat refreshed.
 - **vscode** — the chat view of the last active window receives the wakeup
   message; same receipt file.
 - **claude** — the armed stream prints the signal line and the chat wakes.
@@ -472,15 +490,15 @@ hosts, or by ending the armed stream command for Claude).
 |---|---|
 | `no binding found` on watcher start | Run Step 2; `callback` requires `binding.json`. |
 | `host claude does not support callback wakeups` | Correct — use `watcher stream` (Step 4, claude). |
-| Codex receipt stuck on `deferred` with a usage-limit message | Codex quota exhausted. New watcher versions classify this as `deferred_manual_required` and stop automatic retries; read event/result/evidence manually, then run `orchestrator-engine --project-root <root> watcher acknowledge --event-id <event-id> --reason "read manually"` or `watcher deferred retry --event-id <event-id> --reason "quota reset"` after quota resets. |
-| `watcher service status` shows `deferred_manual_required` | The watcher stopped retrying a callback that needs operator action. Run `watcher deferred list`, inspect event/result/evidence, then `watcher deferred retry --event-id ...` or `watcher acknowledge --event-id ...`. |
+| Codex receipt stuck on `deferred` with a usage-limit message | Codex quota exhausted. Read event/result/evidence manually, then run `orchestrator-engine --project-root <root> watcher --host codex acknowledge --event-id <event-id> --reason "read manually"` or `watcher deferred retry --event-id <event-id> --reason "quota reset"` after quota resets. |
+| `watcher service status` shows `deferred_manual_required` | The watcher stopped retrying a callback that needs operator action. Run `watcher deferred list`, inspect event/result/evidence, then `watcher deferred retry --event-id ...` or `watcher --host <host> acknowledge --event-id ... --reason "..."`. |
 | Bare `watcher service status` disagrees with `doctor` | Host-scoped callback services use host-specific state files. Run `watcher --host <host> service status` for the active callback channel shown by `bind --status` or `doctor`. |
 | `watcher stream status` is `stale` or `not_started` | Re-arm `watcher stream` from the Claude chat. Re-arming is safe: the stream state keeps seen event ids, so already delivered signals are not repeated. |
 | `watcher stream status` is `erroring` | The stream loop is alive but the latest scan failed. Inspect `last_error`, fix the inbox/state issue, and keep the stream running; the status returns to `fresh` after a successful scan. |
 | Codex receipt `deferred` with `thread_active` or `thread_recently_active` | Normal guard: the worker finished while the target chat was still active or had just written to its rollout. End the orchestrating turn; watcher retries with backoff instead of injecting a parallel turn. The recent-activity grace window is short (30 seconds by default), so this trades a small delay for avoiding concurrent injected turns. |
-| Codex receipt `woken` with `turn_status: "running"` | Normal for long orchestrator turns; a background finalizer updates the receipt when the turn ends. Requires service mode (not `watcher once`). |
+| Codex receipt `submitted` with `turn_status: "running"` | Normal for a long headless App Server turn; a background finalizer updates the receipt when it ends. `woken` is reserved for a completed turn and still does not prove the open Desktop chat refreshed. |
 | Codex receipt `woken` but window did not focus | Check `activation` field in the receipt; the deep link needs `powershell.exe` reachable (WSL interop) and the desktop app installed. |
-| Codex receipt `woken`, window focused, but no new visible turn | Check `live_refresh`; the turn was delivered to Codex storage, but Codex Desktop may not have reloaded the already-open thread. On Windows the adapter sends a best-effort `Ctrl+R` refresh pulse after deep-link activation. |
+| Codex receipt `woken`, but no new visible Desktop turn | Expected limitation: it means a headless App Server turn completed, not that the open Desktop chat refreshed. Review durable event/result/evidence history manually and acknowledge it with the host-scoped command. |
 | `code chat` exits non-zero | VS Code < 1.127 or `code` not on PATH; wakeup stays retryable. |
 | `worker run` → `task already exists` | Task ids are one-shot by design; pick a new id. |
 | Historical failed task keeps `status` or `worker tasks` noisy after a successful rerun | Preserve the task artifacts and write an operator resolution: `orchestrator-engine --project-root <root> worker resolve --task-id <old-task> --status superseded --superseded-by-task-id <new-task> --reason "successful rerun"`. Use `--status acknowledged` for a manually reviewed task that was not superseded by another task. |

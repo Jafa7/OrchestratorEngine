@@ -9,6 +9,7 @@ from . import (
     __version__,
     core,
     diagnostics,
+    host_capabilities,
     task_diagnostics,
     verification,
     worker_diagnostics,
@@ -131,6 +132,11 @@ def summarize_wake_channel(report: dict[str, Any]) -> dict[str, Any]:
         "detail": check.get("detail") if check else None,
         "hint": check.get("hint") if check else None,
     }
+    capabilities = data.get("capabilities")
+    if isinstance(capabilities, dict):
+        summary["capabilities"] = capabilities
+    elif isinstance(data.get("host"), str):
+        summary["capabilities"] = host_capabilities.for_host(data["host"])
     service = data.get("service_status")
     if isinstance(service, dict):
         summary["service_status"] = {

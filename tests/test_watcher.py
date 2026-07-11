@@ -366,6 +366,61 @@ class WatcherTests(unittest.TestCase):
         self.assertNotIn("event-ack", watcher_state["deferred_events"])
         self.assertIn("event-ack", watcher_state["acknowledged_events"])
 
+    def test_host_scoped_acknowledgement_writes_receipt_and_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-scoped-ack")
+            binding.write_binding(root, host="vscode")
+            first = watcher.acknowledge_signal(
+                root,
+                event_id="event-scoped-ack",
+                host="vscode",
+                reason="reviewed event and durable artifacts manually",
+            )
+            second = watcher.acknowledge_signal(
+                root,
+                event_id="event-scoped-ack",
+                host="vscode",
+                reason="different reason must not rewrite the audit receipt",
+            )
+            receipt = core.load_object(Path(first["receipt_path"]))
+            state = watcher.load_state(
+                watcher.default_host_state_path(root, host="vscode")
+            )
+            event_exists = core.event_path_for(root, "event-scoped-ack").is_file()
+            signal_exists = core.signal_path_for(root, "event-scoped-ack").is_file()
+
+        self.assertEqual(receipt["kind"], watcher.ACKNOWLEDGEMENT_KIND)
+        self.assertEqual(receipt["host"], "vscode")
+        self.assertEqual(
+            receipt["reason"], "reviewed event and durable artifacts manually"
+        )
+        self.assertFalse(first["idempotent"])
+        self.assertTrue(second["idempotent"])
+        self.assertIn("event-scoped-ack", state["seen_event_ids"])
+        self.assertTrue(event_exists)
+        self.assertTrue(signal_exists)
+
+    def test_bulk_acknowledgement_only_marks_the_selected_host(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-bulk")
+            binding.write_binding(root, host="codex", target_thread_id="thread-1")
+            report = watcher.acknowledge_pending_signals(
+                root,
+                host="codex",
+                reason="reviewed all currently pending Codex history entries",
+            )
+            state = watcher.load_state(
+                watcher.default_host_state_path(root, host="codex")
+            )
+
+        self.assertEqual(
+            report["kind"], "LOCAL_AI_ORCHESTRATOR_WATCHER_ACKNOWLEDGEMENT_BULK"
+        )
+        self.assertEqual(report["acknowledged_count"], 1)
+        self.assertIn("event-bulk", state["seen_event_ids"])
+
     def test_list_deferred_events_reports_counts_and_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -1309,13 +1364,13 @@ class CodexActivationTests(unittest.TestCase):
                 activator=lambda _t: {"activation": "requested"},
                 finalizer=fake_finalizer,
             )
-        self.assertEqual(receipt["status"], "woken")
+        self.assertEqual(receipt["status"], "submitted")
         self.assertEqual(receipt["turn_status"], "running")
         self.assertEqual(FakeThreadServer.closes, 0)
         self.assertEqual(captured["turn_id"], "turn-1")
         self.assertEqual(captured["target_thread_id"], "thread-1")
 
-    def test_interrupted_turn_is_woken_not_retried(self) -> None:
+    def test_interrupted_turn_is_submitted_not_retried(self) -> None:
         reset_fake_server("idle")
         FakeThreadServer.turn_status = "interrupted"
         with tempfile.TemporaryDirectory() as temporary:
@@ -1329,7 +1384,7 @@ class CodexActivationTests(unittest.TestCase):
                 server_factory=FakeThreadServer,
                 activator=lambda _t: {"activation": "requested"},
             )
-        self.assertEqual(receipt["status"], "woken")
+        self.assertEqual(receipt["status"], "submitted")
         self.assertEqual(receipt["turn_status"], "interrupted")
         self.assertEqual(FakeThreadServer.closes, 1)
 
@@ -1347,6 +1402,7 @@ class CodexActivationTests(unittest.TestCase):
                 activator=lambda _t: {"activation": "requested"},
             )
         self.assertEqual(receipt["turn_status"], "completed")
+        self.assertEqual(receipt["status"], "woken")
         self.assertEqual(FakeThreadServer.closes, 1)
 
     def test_finalize_turn_updates_receipt_and_closes_server(self) -> None:
@@ -1357,7 +1413,7 @@ class CodexActivationTests(unittest.TestCase):
             receipt_path = root / "receipt.json"
             core.atomic_json(
                 receipt_path,
-                {"status": "woken", "turn_status": "running"},
+                {"status": "submitted", "turn_status": "running"},
             )
             codex_app.finalize_turn(
                 FakeThreadServer(),
@@ -1367,6 +1423,7 @@ class CodexActivationTests(unittest.TestCase):
             )
             receipt = core.load_object(receipt_path)
         self.assertEqual(receipt["turn_status"], "completed")
+        self.assertEqual(receipt["status"], "woken")
         self.assertIn("finalized_at", receipt)
         self.assertEqual(FakeThreadServer.closes, 1)
 

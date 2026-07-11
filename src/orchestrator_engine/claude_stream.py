@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import binding, core, watcher
+from . import binding, core, host_capabilities, watcher
 
 
 def emit_line(line: str) -> None:
@@ -71,6 +71,7 @@ def record_stream_error(path: Path, error: BaseException) -> None:
     except (OSError, RuntimeError, ValueError):
         state = {
             "schema_version": core.SCHEMA_VERSION,
+            "kind": watcher.STATE_KIND,
             "seen_event_ids": [],
             "deferred_events": {},
             "acknowledged_events": {},
@@ -88,6 +89,7 @@ def clear_stream_error(path: Path) -> None:
         return
     if "last_error" not in state and "last_error_at" not in state:
         return
+    state.setdefault("kind", watcher.STATE_KIND)
     state.pop("last_error", None)
     state.pop("last_error_at", None)
     core.atomic_json(path, state)
@@ -147,6 +149,7 @@ def stream_status(
         "schema_version": core.SCHEMA_VERSION,
         "kind": "LOCAL_AI_ORCHESTRATOR_STREAM_STATUS",
         "host": "claude",
+        "capabilities": host_capabilities.for_host("claude"),
         "status": status,
         "healthy": healthy,
         "reason": reason,

@@ -283,7 +283,7 @@ class InstallSmokeTests(unittest.TestCase):
             )
             report_draft_text = report_draft.read_text(encoding="utf-8")
         self.assertEqual(bind["host"], "claude")
-        self.assertIn("0.1.0", version)
+        self.assertEqual(version, "orchestrator-engine 0.1.1")
         self.assertTrue(workers["workers"]["smoke"]["enabled"])
         self.assertEqual(worker_diagnostics["kind"], "WORKER_DIAGNOSTICS")
         self.assertEqual(worker_diagnostics["diagnostic_count"], 0)

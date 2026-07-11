@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from . import core, wakeup
+from . import core, host_capabilities, wakeup
 
 
 class VscodeChatError(RuntimeError):
@@ -80,6 +80,7 @@ def wake_chat(
             "event_id": event_id,
             "task_id": event["task_id"],
             "status": "deferred",
+            **host_capabilities.receipt_fields("vscode"),
             "reason": str(error),
             "created_at": core.utc_now(),
         }
@@ -95,6 +96,7 @@ def wake_chat(
             "event_id": event_id,
             "task_id": event["task_id"],
             "status": "deferred",
+            **host_capabilities.receipt_fields("vscode"),
             "reason": (
                 f"code chat exited with {completed.returncode}: "
                 f"{(stderr or '').strip()[:500]}"
@@ -109,6 +111,7 @@ def wake_chat(
         "event_id": event_id,
         "task_id": event["task_id"],
         "status": "woken",
+        **host_capabilities.receipt_fields("vscode"),
         "created_at": core.utc_now(),
     }
     core.atomic_json(receipt_path, receipt)

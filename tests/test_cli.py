@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from orchestrator_engine import cli, core, watcher, workers
+from orchestrator_engine import binding, cli, core, watcher, workers
 
 
 class CliTests(unittest.TestCase):
@@ -664,6 +664,7 @@ command = ["true"]
                 evidence_path=evidence,
                 event_id="event-cli-ack",
             )
+            binding.write_binding(root, host="codex", target_thread_id="thread-1")
             state = watcher.default_state_path(root)
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
@@ -672,6 +673,8 @@ command = ["true"]
                         "--project-root",
                         str(root),
                         "watcher",
+                        "--host",
+                        "codex",
                         "--state-file",
                         str(state),
                         "acknowledge",
@@ -688,6 +691,28 @@ command = ["true"]
         self.assertEqual(ack["status"], watcher.ACKNOWLEDGED_STATUS)
         self.assertEqual(ack["previous_status"], "pending")
         self.assertIn("event-cli-ack", watcher_state["seen_event_ids"])
+
+    def test_watcher_bulk_acknowledge_requires_explicit_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            error_out = io.StringIO()
+            with contextlib.redirect_stderr(error_out):
+                code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "watcher",
+                        "--host",
+                        "codex",
+                        "acknowledge",
+                        "--all-pending",
+                        "--reason",
+                        "reviewed manually",
+                    ]
+                )
+
+        self.assertEqual(code, 1)
+        self.assertIn("--confirm-all-pending", error_out.getvalue())
 
     def test_watcher_deferred_list_and_retry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

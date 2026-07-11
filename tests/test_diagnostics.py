@@ -126,7 +126,7 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(workers_check["status"], "warn")
         self.assertEqual(workers_check["data"]["enabled_count"], 0)
 
-    def test_doctor_reports_watcher_not_started_for_codex_binding(self) -> None:
+    def test_doctor_reports_history_only_manual_review_for_codex_binding(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             binding.write_binding(root, host="codex", target_thread_id="thread-1")
@@ -134,7 +134,11 @@ class DiagnosticsTests(unittest.TestCase):
 
         channel = check_by_name(report, "watcher_channel")
         self.assertEqual(channel["status"], "warn")
-        self.assertEqual(channel["data"]["service_status"]["status"], "not_started")
+        self.assertEqual(channel["data"]["delivery"], "history_only_manual_review")
+        self.assertEqual(
+            channel["data"]["capabilities"]["live_refresh_support"], "unsupported"
+        )
+        self.assertIn("Do not start", channel["hint"])
 
     def test_doctor_warns_on_claude_stream_not_started(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

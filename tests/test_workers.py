@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from typing import ClassVar
@@ -102,6 +103,22 @@ def write_prompt(root: Path) -> Path:
 
 
 class WorkerRegistryTests(unittest.TestCase):
+    def test_example_registry_maps_gpt_56_capability_tiers(self) -> None:
+        catalog = tomllib.loads(
+            (REPO_ROOT / "examples" / "workers.toml").read_text(encoding="utf-8")
+        )["workers"]
+
+        expected_models = {
+            "codex-56-fast": "gpt-5.6-luna",
+            "codex-56": "gpt-5.6-terra",
+            "codex-56-deep": "gpt-5.6-sol",
+        }
+        for profile, model in expected_models.items():
+            command = catalog[profile]["command"]
+            self.assertFalse(catalog[profile]["enabled"])
+            self.assertEqual(command[command.index("-m") + 1], model)
+            self.assertIn('approval_policy="never"', command)
+
     def test_list_workers_reports_registry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
