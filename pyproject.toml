@@ -9,7 +9,7 @@ description = "Local event-driven orchestration engine for AI worker processes a
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "Jafa7" }]
+authors = [{ name = "Oleg Synelnykov (Jafa7)" }]
 dependencies = []
 
 [project.optional-dependencies]
