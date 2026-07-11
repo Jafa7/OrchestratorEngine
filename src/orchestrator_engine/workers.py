@@ -3,7 +3,7 @@
 The host chat dispatches a task with `worker run`, which returns immediately so
 the chat turn can end. A detached supervisor process runs the worker CLI,
 captures its output, and emits the standard terminal event + inbox signal on
-exit — which is what wakes the host chat again.
+exit. The configured host channel decides how that completion is delivered.
 """
 
 from __future__ import annotations

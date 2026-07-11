@@ -285,7 +285,7 @@ def check_watcher_channel(
     if selected_host is None:
         return check(
             "watcher_channel",
-            "Wake channel matches the bound host",
+            "Delivery channel matches the bound host",
             "skipped",
             "no host selected and no binding configured",
             hint="Bind a host or pass `doctor --host HOST`.",
@@ -297,7 +297,7 @@ def check_watcher_channel(
     if capabilities["live_refresh_support"] == "unsupported":
         return check(
             "watcher_channel",
-            "Wake channel matches the bound host",
+            "Delivery channel matches the bound host",
             "warn",
             "codex can complete a headless App Server turn, but cannot refresh "
             "the open Desktop chat",
@@ -316,7 +316,7 @@ def check_watcher_channel(
     if selected_host not in watcher.HOST_ADAPTERS:
         return check(
             "watcher_channel",
-            "Wake channel matches the bound host",
+            "Delivery channel matches the bound host",
             "error",
             f"host {selected_host} has no callback adapter",
             hint="Use the host's documented wake mechanism.",
@@ -331,7 +331,7 @@ def check_watcher_channel(
         severity = "warn"
     return check(
         "watcher_channel",
-        "Wake channel matches the bound host",
+        "Delivery channel matches the bound host",
         severity,
         f"{selected_host} callback service is {status['status']}",
         hint=(
@@ -354,7 +354,7 @@ def check_claude_stream(project: Path, *, state_dir: str) -> dict[str, Any]:
         severity = "error"
     return check(
         "watcher_channel",
-        "Wake channel matches the bound host",
+        "Delivery channel matches the bound host",
         severity,
         f"claude stream is {status['status']}",
         hint=(

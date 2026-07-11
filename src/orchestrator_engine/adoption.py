@@ -112,12 +112,18 @@ def next_steps(project: Path, *, host: str | None) -> list[str]:
         steps.append(
             f"orchestrator-engine --project-root {root} watcher stream"
         )
-    elif host in {"codex", "vscode"}:
+    elif host == "vscode":
         steps.append(
             f"orchestrator-engine --project-root {root} watcher "
-            f"--host {host} --action callback service start"
+            "--host vscode --action callback service start"
+        )
+    elif host == "codex":
+        steps.append(f"orchestrator-engine --project-root {root} inbox")
+        steps.append(
+            "review Codex durable history manually; do not start a callback "
+            "service expecting live Desktop refresh"
         )
     else:
-        steps.append("bind a host, then start its documented wake channel")
+        steps.append("bind a host, then configure its documented delivery channel")
     steps.append(f"orchestrator-engine --project-root {root} doctor")
     return steps

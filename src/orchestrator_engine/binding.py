@@ -1,4 +1,4 @@
-"""Host binding contract: which chat the watcher should wake."""
+"""Host binding contract for deterministic completion delivery."""
 
 from __future__ import annotations
 

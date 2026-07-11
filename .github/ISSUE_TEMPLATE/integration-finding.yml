@@ -47,3 +47,12 @@ body:
       description: Suggested docs/tests/code milestone.
     validations:
       required: false
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy checklist
+      options:
+        - label: Private project content, credentials and unbounded logs are omitted or sanitized.
+          required: true
+        - label: Local artifact paths are treated as pointers, not maintainer-accessible files.
+          required: true

@@ -27,10 +27,10 @@ TURN_FAILURE_WINDOW_SECONDS = 120
 FINALIZER_POLL_WINDOW_SECONDS = 3600
 # Desktop/app-server status can briefly report `idle` while the live Codex UI
 # is still completing or saving the user's turn. Treat a freshly modified
-# rollout as active too, so the watcher does not inject a parallel wakeup turn.
+# rollout as active too, so the watcher does not submit a parallel headless turn.
 THREAD_RECENT_ACTIVITY_GRACE_SECONDS = 30.0
 
-# Server->client requests raised by an injected turn (command approvals,
+# Server->client requests raised by a headless turn (command approvals,
 # patch approvals, elicitations) would otherwise wait forever for a human who
 # cannot see them. They are answered with the protocol's decline decision —
 # never auto-approved — so the turn continues and ends with a text answer
@@ -80,7 +80,7 @@ def activate_thread_window(
 ) -> dict[str, Any]:
     """Bring the Codex Desktop thread to the foreground via its deep link.
 
-    The injected turn lands in shared thread storage, but the live window is a
+    The submitted turn lands in shared thread storage, but the live window is a
     separate process that often does not refresh an already-open thread on
     its own. A best-effort "double deep link" (other thread, then target)
     nudges the Desktop UI to unload and reload the target thread.
@@ -535,7 +535,7 @@ def thread_recent_activity(
     """Return recent rollout activity details when a thread looks live.
 
     This is a conservative guard for Codex Desktop/App Server races: if a
-    target thread's rollout file was just modified, defer wakeup injection even
+    target thread's rollout file was just modified, defer headless submission even
     when `thread/read` currently reports `idle`.
     """
     rollout = rollout_locator(thread_id)

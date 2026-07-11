@@ -19,12 +19,13 @@ the user.
         |  events/<id>.json  <--- terminal event ----|
         |  inbox/signals/<id>.json                   |
         |                                            
-        |  watcher (zero-token local process)        
-        |<-- wakes the host chat with a short        
-        |    pointer to event/evidence/result        
+        |  host delivery channel (zero-token local process)
+        |<-- routes a short pointer to
+        |    event/evidence/result
 ```
 
-The engine never calls model APIs. It moves files and wakes chats.
+The engine never calls model APIs. It moves files and invokes the configured
+local host delivery channel. Live wakeup support depends on that host.
 
 ## Step 0 — Gather facts
 
@@ -39,7 +40,9 @@ Establish these before touching anything. Ask the user rather than guessing.
    installed:
 
 ```bash
-which claude; which codex; which copilot
+command -v claude
+command -v codex
+command -v copilot
 ```
 
 Constraints: Python >= 3.11 on the machine where workers run (typically WSL on
@@ -54,18 +57,19 @@ cd OrchestratorEngine
 python -m pip install .
 ```
 
-For a reproducible release install outside a source checkout, install the
-release tag directly (this project does not currently publish release wheels to
-PyPI):
+Use `python -m pip install -e .` if the user wants to track engine updates
+from git. For development and schema conformance tests, install
+`python -m pip install -e '.[test]'`. The package has zero runtime dependencies.
+
+For a reproducible install outside a source checkout, install the release tag:
 
 ```bash
 python -m pip install \
   "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.1.1"
 ```
 
-Use `python -m pip install -e .` if the user wants to track engine updates
-from git. For development and schema conformance tests, install
-`python -m pip install -e '.[test]'`. The package has zero runtime dependencies.
+GitHub Release archives and wheel/sdist assets are published with the tag;
+OrchestratorEngine is not currently published to PyPI.
 
 **Check:**
 
@@ -98,12 +102,12 @@ workers, overwrite existing files or touch durable events/signals.
 orchestrator-engine --project-root /path/to/project doctor
 ```
 
-Expect warnings until binding, workers and the wake channel are configured.
+Expect warnings until binding, workers and the delivery channel are configured.
 
 ## Step 2 — Bind the host chat
 
-Binding tells the watcher which chat to wake. Run from anywhere, against the
-target project root.
+Binding tells the watcher which host target owns a completion. Run from
+anywhere, against the target project root.
 
 ### Host: codex
 
@@ -132,8 +136,10 @@ orchestrator-engine --project-root /path/to/project bind \
 orchestrator-engine --project-root /path/to/project bind --host vscode
 ```
 
-Requires VS Code 1.127+ with the `code` CLI on PATH (`code chat --help` must
-work).
+Requires a VS Code installation whose `code` CLI exposes the documented
+`chat` subcommand and a signed-in chat provider. Check the actual CLI reached
+from the worker environment; a version number alone does not prove that a
+WSL/Windows wrapper routes `code chat` correctly.
 
 ### Host: claude
 
@@ -149,8 +155,9 @@ orchestrator-engine --project-root /path/to/project bind --status
 
 Expect `"host"` to match, and for codex a non-empty `"target_thread_id"`.
 Run this from each chat that will dispatch work: `worker run` snapshots the
-current binding into the task's `wake_target`, so completed work wakes the chat
-that launched it even if another chat rebinds the same project later.
+current binding into the task's `wake_target`, so completed work is routed to
+the host target that launched it even if another chat rebinds the same project
+later.
 
 ## Step 3 — Configure workers
 
@@ -169,17 +176,17 @@ complexity at dispatch time:
 [workers.claude-fast]                      # trivial checks, small edits
 enabled = true
 command = ["claude", "-p", "--model", "haiku",
-           "--permission-mode", "acceptEdits"]
+           "--permission-mode", "dontAsk"]
 prompt_via = "stdin"
 expect_long_running = true
 capability = "code-edit"
-permission_profile = "full"
+permission_profile = "restricted"
 cost = "low"
 
 [workers.claude-deep]                      # reviews, refactors, hard bugs
 enabled = true
 command = ["claude", "-p", "--model", "opus", "--effort", "xhigh",
-           "--permission-mode", "acceptEdits"]
+           "--dangerously-skip-permissions"]
 prompt_via = "stdin"
 expect_long_running = true
 capability = "code-edit"
@@ -188,7 +195,7 @@ cost = "high"
 
 [workers.codex]
 enabled = true
-command = ["codex", "exec", "--json",
+command = ["codex", "exec", "--json", "-m", "gpt-5.6-terra",
            "-c", "model_reasoning_effort=\"high\"",
            "-c", "approval_policy=\"never\"",
            "-c", "sandbox_mode=\"danger-full-access\""]
@@ -200,7 +207,8 @@ cost = "medium"
 
 [workers.copilot]
 enabled = true
-command = ["copilot", "--prompt", "--allow-all", "--no-ask-user"]
+command = ["copilot", "--model", "auto", "--effort", "high",
+           "--allow-all", "--no-ask-user", "--prompt"]
 prompt_via = "arg"
 expect_long_running = true
 capability = "code-edit"
@@ -213,11 +221,10 @@ instead of inventing them.
 
 Notes:
 
-- GPT-5.6 Sol, Terra and Luna are limited-preview models. The full example
-  catalog includes opt-in `codex-56-deep`, `codex-56` and `codex-56-fast`
-  profiles, while retaining GPT-5.5 fallbacks for installations without
-  preview access. Enable a GPT-5.6 profile only after the installed Codex
-  client exposes its exact model id.
+- Current Codex GPT-5.6 roles are Sol for quality-first complex work, Terra for
+  balanced everyday work, and Luna for efficient high-volume work. Model
+  availability depends on the installed Codex client and account, so verify a
+  profile before enabling it.
 - `prompt_via = "arg"` appends the prompt text as the final argument;
   `"stdin"` pipes it.
 - `codex exec` refuses untrusted directories. Either the user marks the
@@ -228,7 +235,10 @@ Notes:
   `-c approval_policy="never"` and an intentional `sandbox_mode` in the
   worker command or in the Codex config selected by that profile.
 - Detached `claude -p` workers should declare an explicit `--permission-mode`
-  that matches the project's automation policy.
+  that matches the project's automation policy. `dontAsk` avoids interactive
+  prompts but may deny restricted tools. `--dangerously-skip-permissions`
+  provides full autonomy and must be limited to a trusted project with an
+  appropriate external security boundary.
 - Detached Copilot workers cannot answer approval prompts. Use
   `--allow-all --no-ask-user` for fully autonomous local worker profiles, or
   replace them with a narrower project-approved non-interactive policy if the
@@ -250,17 +260,22 @@ Every intended worker appears with `"enabled": true`. `worker diagnose` is
 read-only; it reports machine-readable advisory diagnostics and exits `2` when
 enabled profiles still have warnings.
 
+If the adopter configured `availability_probe` for a worker, run it explicitly
+with `worker availability --worker NAME`. Add `--preflight-availability` to a
+specific `worker run` only when that local probe should gate dispatch. Profiles
+without a probe remain dispatchable and report `not_configured`.
+
 ## Step 4 — Configure verification workers
 
 For long test suites, do not keep the host chat open while tests stream
 output. Run checks as detached workers that write a compact verification
-result, then let the watcher wake the chat.
+result, then let the configured host channel deliver the follow-up.
 
 Operational rule: dispatch the check worker from the chat that needs the
 answer, then end that turn. Do not run `pytest`, `ruff` or similar long checks
 directly in the host chat unless the user explicitly asked for an immediate
 foreground run. The `worker run` descriptor snapshots this chat as
-`wake_target`, so the completion wakeup returns to the chat that launched the
+`wake_target`, so the completion is routed to the host target that launched the
 check even when several chats share the same project.
 
 The repository includes `examples/check_runner.py` as a portable reference
@@ -332,7 +347,7 @@ cat /path/to/project/.orchestrator/checks/*/verification-result.json
 orchestrator-engine --project-root /path/to/project checks --severity warning
 ```
 
-If the verification result reports `"status": "passed"`, the woken agent
+If the verification result reports `"status": "passed"`, the receiving agent
 should read only `verification-result.json` and `summary.txt`. `checks`
 summarizes all check results, failed command log paths and missing artifacts in
 one compact JSON report. If a check reports `"failed"` or `"errored"`, read
@@ -344,7 +359,7 @@ review, implementation, verification and adopter-report workers. They encode
 the same output-economy rule: compact summaries first, durable artifact paths
 instead of full logs, and tiny excerpts only when needed to identify a failure.
 
-## Step 5 — Start the wake channel
+## Step 5 — Start the delivery channel
 
 ### Host vscode — push watcher service
 
@@ -384,7 +399,7 @@ orchestrator-engine --project-root /path/to/project watcher stream
 Each new signal is printed as one JSON line, which wakes the chat.
 The stream consumes only `claude` wake targets and uses its own state file
 (`watcher-claude-stream-state.json`), so it can coexist with a callback
-service delivering Codex or VS Code signals from the same inbox.
+service delivering VS Code signals from the same inbox.
 
 **Check:**
 
@@ -422,9 +437,10 @@ orchestrator-engine --project-root /path/to/project inbox      # contains SMOKE-
 Then confirm the correct delivery behavior:
 
 - **codex** — review the durable inbox/event/result/evidence history manually.
-  A `"status": "woken"` receipt confirms only that its headless App Server
-  turn completed; it does not prove the visible Desktop chat refreshed.
-- **vscode** — the chat view of the last active window receives the wakeup
+  If an explicitly configured history callback produces a `"status": "woken"`
+  receipt, it confirms only that its headless App Server turn completed; it
+  does not prove the visible Desktop chat refreshed.
+- **vscode** — the chat view of the last active window receives the follow-up
   message; same receipt file.
 - **claude** — the armed stream prints the signal line and the chat wakes.
 
@@ -453,8 +469,9 @@ To delegate a task to a CLI worker:
 3. Write the full task prompt to a file (e.g. `.orchestrator/prompts/<task-id>.md`).
 4. Dispatch: `orchestrator-engine --project-root <root> worker run \
    --worker <profile> --task-id <TASK-ID> --prompt-file <file>`
-5. End the turn. Do not poll; the watcher wakes this chat when workers finish.
-   If you must inspect detached task state before wakeup, run
+5. End the turn. Do not poll. Claude supports live stream wakeup, VS Code
+   attempts best-effort UI delivery, and Codex Desktop uses durable history and
+   manual review. If you must inspect detached task state, run
    `orchestrator-engine --project-root <root> worker tasks --severity warning`
    and read only the reported artifacts.
 
@@ -468,7 +485,7 @@ orchestrator-engine --project-root <root> \
 
 See [operator-reporting.md](operator-reporting.md).
 
-When woken by a `LOCAL_AI_ORCHESTRATOR_WAKEUP` message:
+When a `LOCAL_AI_ORCHESTRATOR_WAKEUP` follow-up message arrives:
 
 1. Read the referenced event, result and evidence files.
 2. If the worker produced an `ORCHESTRATOR_VERIFICATION_RESULT`, read its
@@ -489,24 +506,24 @@ hosts, or by ending the armed stream command for Claude).
 | Symptom | Cause / fix |
 |---|---|
 | `no binding found` on watcher start | Run Step 2; `callback` requires `binding.json`. |
-| `host claude does not support callback wakeups` | Correct — use `watcher stream` (Step 4, claude). |
-| Codex receipt stuck on `deferred` with a usage-limit message | Codex quota exhausted. Read event/result/evidence manually, then run `orchestrator-engine --project-root <root> watcher --host codex acknowledge --event-id <event-id> --reason "read manually"` or `watcher deferred retry --event-id <event-id> --reason "quota reset"` after quota resets. |
-| `watcher service status` shows `deferred_manual_required` | The watcher stopped retrying a callback that needs operator action. Run `watcher deferred list`, inspect event/result/evidence, then `watcher deferred retry --event-id ...` or `watcher --host <host> acknowledge --event-id ... --reason "..."`. |
+| `host claude does not support callback wakeups` | Correct — use `watcher stream` (Step 5, claude). |
+| Codex receipt stuck on `deferred` with a usage-limit message | Codex quota exhausted. Read event/result/evidence manually, then run `orchestrator-engine --project-root <root> watcher --host codex acknowledge --event-id <event-id> --reason "read manually"` or `watcher --host codex deferred retry --event-id <event-id> --reason "quota reset"` after quota resets. |
+| `watcher service status` shows `deferred_manual_required` | The watcher stopped retrying a callback that needs operator action. Run `watcher --host <host> deferred list`, inspect event/result/evidence, then `watcher --host <host> deferred retry --event-id ... --reason "..."` or `watcher --host <host> acknowledge --event-id ... --reason "..."`. |
 | Bare `watcher service status` disagrees with `doctor` | Host-scoped callback services use host-specific state files. Run `watcher --host <host> service status` for the active callback channel shown by `bind --status` or `doctor`. |
 | `watcher stream status` is `stale` or `not_started` | Re-arm `watcher stream` from the Claude chat. Re-arming is safe: the stream state keeps seen event ids, so already delivered signals are not repeated. |
 | `watcher stream status` is `erroring` | The stream loop is alive but the latest scan failed. Inspect `last_error`, fix the inbox/state issue, and keep the stream running; the status returns to `fresh` after a successful scan. |
-| Codex receipt `deferred` with `thread_active` or `thread_recently_active` | Normal guard: the worker finished while the target chat was still active or had just written to its rollout. End the orchestrating turn; watcher retries with backoff instead of injecting a parallel turn. The recent-activity grace window is short (30 seconds by default), so this trades a small delay for avoiding concurrent injected turns. |
+| Codex receipt `deferred` with `thread_active` or `thread_recently_active` | Normal guard: the worker finished while the target chat was still active or had just written to its rollout. End the orchestrating turn; watcher retries with backoff instead of submitting a parallel headless turn. The recent-activity grace window is short (30 seconds by default), so this trades a small delay for avoiding concurrent turns. |
 | Codex receipt `submitted` with `turn_status: "running"` | Normal for a long headless App Server turn; a background finalizer updates the receipt when it ends. `woken` is reserved for a completed turn and still does not prove the open Desktop chat refreshed. |
 | Codex receipt `woken` but window did not focus | Check `activation` field in the receipt; the deep link needs `powershell.exe` reachable (WSL interop) and the desktop app installed. |
 | Codex receipt `woken`, but no new visible Desktop turn | Expected limitation: it means a headless App Server turn completed, not that the open Desktop chat refreshed. Review durable event/result/evidence history manually and acknowledge it with the host-scoped command. |
-| `code chat` exits non-zero | VS Code < 1.127 or `code` not on PATH; wakeup stays retryable. |
+| `code chat` exits non-zero | The reached `code` CLI may lack the documented `chat` subcommand, WSL interop may resolve the wrong wrapper, the chat provider may not be signed in, or no usable window may be active. Check `code --version`, the resolved executable and the host's official chat CLI behavior; delivery stays retryable. |
 | `worker run` → `task already exists` | Task ids are one-shot by design; pick a new id. |
 | Historical failed task keeps `status` or `worker tasks` noisy after a successful rerun | Preserve the task artifacts and write an operator resolution: `orchestrator-engine --project-root <root> worker resolve --task-id <old-task> --status superseded --superseded-by-task-id <new-task> --reason "successful rerun"`. Use `--status acknowledged` for a manually reviewed task that was not superseded by another task. |
 | Verification worker passed but logs are huge | Read `.orchestrator/checks/<check_id>/summary.txt`; full logs are durable artifacts and do not need to be pasted into chat. |
 | Verification worker failed | Read `verification-result.json`, then only the command logs referenced by failed command entries. |
 | `worker tasks` reports `task_large_worker_log` | The task may still be successful, but its stdout/stderr/supervisor logs are too large for chat. Read `result.json` and `evidence.json` first, then targeted log tails only. Tune the threshold with `--large-log-bytes`. |
 | Multiple verification runs need triage | Run `checks --severity warning`; inspect `summary_path` and `failed_commands[].log_path` from the JSON output. |
-| Worker appears stuck or no wakeup arrived | Run `worker tasks --severity warning` to inspect stale heartbeats, dead supervisor/worker pids and missing artifacts before reading full logs. |
+| Worker appears stuck or no follow-up arrived | Run `worker tasks --severity warning` to inspect stale heartbeats, dead supervisor/worker pids and missing artifacts before reading full logs. |
 | Copilot worker stalls with `Permission denied and could not request permission from user` | The profile is interactive. Add autonomous Copilot flags such as `--allow-all --no-ask-user`, or configure a project-approved narrower non-interactive policy. |
 | Supervisor log shows `ModuleNotFoundError: orchestrator_engine` | Engine was run via ad-hoc `PYTHONPATH` instead of being installed; run `pip install .` (Step 1). |
 | Watcher status `degraded` / `crashed` | Read `.orchestrator/inbox/logs/watcher-service.log`, then `watcher service restart`. |

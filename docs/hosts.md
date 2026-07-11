@@ -1,7 +1,7 @@
 # Host setup
 
-OrchestratorEngine routes worker completions back to the chat the user
-orchestrates from. Each host has a different wake mechanism; the binding
+OrchestratorEngine routes worker completions back to the host target the user
+orchestrates from. Each host has a different delivery mechanism; the binding
 contract tells the watcher which one to use. Distinguish durable delivery from
 live wakeup:
 
@@ -27,11 +27,17 @@ This is a versioned report with `schema_version`, `kind`, `host_count` and a
 bounded, stable `hosts` collection. These describe delivery quality, not
 deep-link or window activation success.
 
+`ui_injection` is a stable machine-readable v0.1 identifier for invoking the
+documented VS Code chat CLI. It does not mean that the engine bypasses host
+security. All adapters use user-installed local CLIs or interfaces under the
+user's account and an explicit project binding; OrchestratorEngine does not
+access provider accounts directly or bypass authentication.
+
 ## Codex Desktop (Windows app, WSL mode)
 
-Wake mechanism: inject a turn through a headless Codex App Server process.
+Delivery mechanism: submit a turn through a headless Codex App Server process.
 
-Live status: durable delivery only on Windows Desktop. The injected turn is
+Live status: durable delivery only on Windows Desktop. The submitted turn is
 handled by an App Server/headless engine and written to Codex thread storage.
 The already-open Desktop chat does not reliably wake as the same live agent;
 the new turn may become visible only after thread switch, reload, restart or
@@ -51,21 +57,24 @@ Notes:
 - A `status: "woken"` receipt means the headless App Server turn completed.
   It does **not** mean that the already-open Codex Desktop chat refreshed or
   that its visible agent received a live wakeup. A running turn is recorded as
-  `status: "submitted"` with `turn_status: "running"`.
-- Approval prompts raised by a wakeup turn are auto-declined (never
+  `status: "submitted"` with `turn_status: "running"`. The `woken` label is
+  retained as a v0.1 compatibility value; interpret it as completed headless
+  history delivery for Codex.
+- Approval prompts raised by a headless follow-up turn are auto-declined (never
   auto-approved) and recorded in the receipt as `auto_declined_requests` — no
-  human is attached to the injected client. If receipts show declines, relax
+  human is attached to the headless client. If receipts show declines, relax
   the thread's approval policy enough for read-only verification commands.
 - Review the durable inbox/event/result/evidence history manually. Record that
   review without deleting any artifact with `watcher --host codex acknowledge
   --event-id EVENT_ID --reason "reviewed manually"`.
-- For live orchestration, prefer Claude stream or VS Code chat as the host and
-  use `codex exec` as a worker profile. Codex Desktop remains useful for
-  dispatching work when delayed/history visibility is acceptable.
+- For supported live orchestration, prefer Claude stream as the host. VS Code
+  chat is a best-effort UI path. Use `codex exec` as a worker profile; Codex
+  Desktop remains useful for dispatching work when delayed/history visibility
+  is acceptable.
 
 ## Claude Code / Claude for Windows
 
-Wake mechanism: the Claude harness natively wakes a session when a watched
+Delivery mechanism: the Claude harness natively wakes a session when a watched
 command emits output. No push from the engine is needed — do not run a
 callback service for this host.
 
@@ -105,11 +114,11 @@ orchestrator-engine --project-root /path/to/project bind --host claude
 
 ## VS Code Copilot
 
-Wake mechanism: `code chat --reuse-window "<message>"` injects the wakeup
-prompt into the chat view of the last active VS Code window.
+Delivery mechanism: `code chat --reuse-window "<message>"` sends the follow-up
+prompt to the chat view of the last active VS Code window.
 
-Live status: live UI injection into the last active VS Code window, subject to
-the VS Code `code chat` command and the user's active window state.
+Live status: best-effort live UI delivery to the last active VS Code window,
+subject to the VS Code `code chat` command and the user's active window state.
 
 ```bash
 orchestrator-engine --project-root /path/to/project bind --host vscode
@@ -121,7 +130,9 @@ orchestrator-engine --project-root /path/to/project watcher \
 Notes:
 
 - The CLI targets the last active window, not a specific conversation.
-- Requires VS Code with the `chat` CLI subcommand (1.127+).
+- Requires a VS Code installation whose CLI exposes the documented `chat`
+  subcommand and a signed-in chat provider. A version number alone is not a
+  sufficient readiness check, especially across WSL/Windows wrappers.
 
 ## Multi-Host Coexistence
 
@@ -152,4 +163,5 @@ orchestrator-engine --project-root /path/to/project worker run \
 `worker run` returns immediately so the chat turn can end. A detached
 supervisor runs the worker CLI, captures stdout/stderr under
 `.orchestrator/tasks/TASK-001/`, writes `result.json` + `evidence.json` and
-emits the standard terminal event — which is what wakes the host chat.
+emits the standard terminal event, which triggers the configured host-specific
+delivery path.

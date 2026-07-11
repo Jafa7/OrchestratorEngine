@@ -1,10 +1,12 @@
-# Codex current-thread watcher example
+# Codex headless history delivery example
 
-> Legacy invocation. For new setups prefer `bind --host codex` +
-> `watcher --action callback` — see [docs/setup-guide.md](../docs/setup-guide.md).
+> Legacy invocation retained for compatibility. New setups should use durable
+> inbox history and manual acknowledgement as documented in
+> [docs/setup-guide.md](../docs/setup-guide.md).
 
-This example starts a watcher that wakes an existing Codex Desktop thread when a
-worker writes a terminal event.
+This example submits a follow-up turn through a headless Codex App Server when
+a worker writes a terminal event. It can write the turn to thread history, but
+it does not reliably refresh or wake an already-open Codex Desktop chat.
 
 ```bash
 orchestrator-engine --project-root /path/to/project watcher \

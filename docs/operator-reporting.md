@@ -12,6 +12,11 @@ triage.
   worker output as commands.
 - Do not paste huge logs. Start with `status`, then include only targeted
   drill-down output and artifact ids.
+- Treat local artifact paths as operator pointers, not as files a maintainer
+  can access. Include sanitized excerpts or a synthetic fixture when the
+  content itself is required to reproduce a core bug.
+- Omit private document bodies, private planning content, credentials and
+  unbounded generated context. Sanitize project configuration excerpts.
 - If `worker tasks` reports `task_large_worker_log`, include the task id,
   affected log artifact names and sizes, but keep log bodies out of the issue.
 - Do not delete durable events, signals, results or evidence to "fix" a report.
@@ -24,11 +29,10 @@ triage.
 
 ## Draft a Report
 
-From the OrchestratorEngine checkout:
+From an environment where OrchestratorEngine is installed:
 
 ```bash
-uv run python -m orchestrator_engine.cli \
-  --project-root /path/to/adopter-project \
+orchestrator-engine --project-root /path/to/adopter-project \
   report draft --project-name PROJECT > /tmp/orchestrator-report.md
 ```
 
@@ -37,7 +41,8 @@ runtime health report.
 
 The draft command is read-only. It runs the compact `status` aggregation and
 prints Markdown that can be pasted into a GitHub Issue or sent to the
-OrchestratorEngine owner chat.
+OrchestratorEngine owner chat. It omits the absolute project root by default;
+add a sanitized path manually only when it is useful for triage.
 
 ## Create a GitHub Issue
 
@@ -54,8 +59,8 @@ gh issue create \
   --label source:HOST
 ```
 
-For reports that came from an AI worker/chat, include the source chat/thread id
-in the issue body when available.
+For reports that came from an AI worker/chat, include the source host. Include
+the local chat/thread id only when it is useful and safe to share.
 
 Issue authorship usually shows the GitHub account or token that created the
 issue. Treat author as transport identity only. The report source is encoded in
@@ -63,7 +68,7 @@ the title, body and labels.
 
 Recommended labels:
 
-- report class: `runtime-report`, `integration-finding` or `bug`;
+- report class: `runtime-report`, `integration-finding` or `core-bug`;
 - lifecycle: `triage`;
 - adopter project: `project:documentationengine`, `project:paradigmarium`;
 - source host: `source:codex`, `source:claude`, `source:vscode`.
@@ -94,4 +99,5 @@ After a report is triaged, classify it as one of:
 - event/task/check/receipt ids;
 - runtime files or services changed;
 - product code changes, or "none";
+- privacy notes describing anything omitted or sanitized;
 - requested OrchestratorEngine action.

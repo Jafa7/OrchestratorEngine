@@ -1,7 +1,7 @@
 name: Core Bug
 description: Report a deterministic OrchestratorEngine core bug.
 title: "[Bug] "
-labels: ["bug", "triage"]
+labels: ["core-bug", "triage"]
 body:
   - type: textarea
     id: bug
@@ -38,3 +38,12 @@ body:
       render: markdown
     validations:
       required: false
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy checklist
+      options:
+        - label: Private documents, credentials and unbounded logs are omitted or sanitized.
+          required: true
+        - label: Local paths are pointers only; a minimal fixture or sanitized excerpt is included when needed.
+          required: true

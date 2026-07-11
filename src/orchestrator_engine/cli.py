@@ -80,7 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument(
         "--host",
         choices=sorted(binding.SUPPORTED_HOSTS),
-        help="Check the wake channel for one host instead of the bound host.",
+        help="Check the delivery channel for one host instead of the bound host.",
     )
     doctor.add_argument(
         "--strict",
@@ -95,7 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument(
         "--host",
         choices=sorted(binding.SUPPORTED_HOSTS),
-        help="Check the wake channel for one host instead of the bound host.",
+        help="Check the delivery channel for one host instead of the bound host.",
     )
     status.add_argument(
         "--severity",
@@ -138,7 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
     report_draft.add_argument(
         "--host",
         choices=sorted(binding.SUPPORTED_HOSTS),
-        help="Check the wake channel for one host instead of the bound host.",
+        help="Check the delivery channel for one host instead of the bound host.",
     )
     report_draft.add_argument(
         "--severity",
@@ -177,7 +177,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     bind = subparsers.add_parser(
         "bind",
-        help="Declare which host chat the watcher should wake.",
+        help="Declare the host target for deterministic completion delivery.",
     )
     bind_group = bind.add_mutually_exclusive_group()
     bind_group.add_argument(

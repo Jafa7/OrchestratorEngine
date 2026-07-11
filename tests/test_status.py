@@ -263,6 +263,8 @@ class StatusTests(unittest.TestCase):
         self.assertIn("`project:fixture`", draft)
         self.assertIn("`source:codex`", draft)
         self.assertIn("None by this report draft command", draft)
+        self.assertNotIn(str(root), draft)
+        self.assertIn("Project root: omitted by default", draft)
 
     def test_report_draft_lists_resolved_historical_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -282,6 +284,15 @@ class StatusTests(unittest.TestCase):
         self.assertIn("## Resolved Historical Tasks", draft)
         self.assertIn("task_id=`T-FAIL`", draft)
         self.assertIn("resolution=`acknowledged`", draft)
+
+    def test_report_text_redacts_adopter_root(self) -> None:
+        self.assertEqual(
+            status.redact_report_text(
+                "Inspect /private/adopter/.orchestrator/tasks/T-1",
+                "/private/adopter",
+            ),
+            "Inspect <project-root>/.orchestrator/tasks/T-1",
+        )
 
     def test_recommended_report_labels_are_stable_slugs(self) -> None:
         labels = status.recommended_report_labels(

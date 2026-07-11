@@ -538,7 +538,7 @@ def deferred_operator_action(status: str, reason_code: str) -> str:
             )
         return (
             "Inspect the callback failure, read event/result/evidence if "
-            "needed, then acknowledge the event or restart the wake channel."
+            "needed, then acknowledge the event or restart the delivery channel."
         )
     return "Watcher will retry after next_retry_at unless the event is acknowledged."
 
@@ -1245,9 +1245,9 @@ def service_warnings(
 ) -> list[str]:
     """Cross-check binding, service action and pending signals.
 
-    A stale or mismatched wake channel must be loud: a crashed service or a
-    callback service pointed at the wrong host silently drops wakeups, which
-    the user only notices when a finished worker never wakes their chat.
+    A stale or mismatched delivery channel must be loud: a crashed service or
+    a callback service pointed at the wrong host silently drops follow-ups,
+    which the user only notices after a worker finishes without delivery.
     """
     warnings: list[str] = []
     host = bound.get("host") if bound else None

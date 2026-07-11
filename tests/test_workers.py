@@ -109,15 +109,19 @@ class WorkerRegistryTests(unittest.TestCase):
         )["workers"]
 
         expected_models = {
-            "codex-56-fast": "gpt-5.6-luna",
-            "codex-56": "gpt-5.6-terra",
-            "codex-56-deep": "gpt-5.6-sol",
+            "codex-fast": "gpt-5.6-luna",
+            "codex": "gpt-5.6-terra",
+            "codex-deep": "gpt-5.6-sol",
         }
         for profile, model in expected_models.items():
             command = catalog[profile]["command"]
             self.assertFalse(catalog[profile]["enabled"])
             self.assertEqual(command[command.index("-m") + 1], model)
             self.assertIn('approval_policy="never"', command)
+
+        for profile, config in catalog.items():
+            validated = workers.validate_worker_config(profile, config)
+            self.assertEqual(validated["warnings"], [], profile)
 
     def test_list_workers_reports_registry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

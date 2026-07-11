@@ -8,7 +8,7 @@ body:
     attributes:
       label: Adopter project
       description: Project name and local path if safe to share.
-      placeholder: "DocumentationEngine — /home/user/Project/DocumentationEngine"
+      placeholder: "DocumentationEngine (local path omitted or sanitized)"
     validations:
       required: true
   - type: dropdown
@@ -26,8 +26,8 @@ body:
     id: source_thread
     attributes:
       label: Source chat/thread id
-      description: Optional local chat/thread id that produced this report.
-      placeholder: "019f..."
+      description: Optional local chat/thread id, only when useful and safe to share.
+      placeholder: "Omit unless it materially helps local triage"
     validations:
       required: false
   - type: input
@@ -75,3 +75,12 @@ body:
       description: What should core/docs/tests do next?
     validations:
       required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy checklist
+      options:
+        - label: Private documents, credentials, config secrets and unbounded logs are omitted or sanitized.
+          required: true
+        - label: Local artifact paths are pointers only; compact diagnostics contain the evidence needed for triage.
+          required: true

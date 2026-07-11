@@ -180,7 +180,12 @@ def provider_diagnostics(
             )
         )
     if executable in {"codex", "codex.exe"} and "exec" in flags:
-        if "approval_policy" not in command_text or "never" not in command_text:
+        bypasses_approvals_and_sandbox = (
+            "--dangerously-bypass-approvals-and-sandbox" in flags
+        )
+        if not bypasses_approvals_and_sandbox and (
+            "approval_policy" not in command_text or "never" not in command_text
+        ):
             diagnostics.append(
                 diagnostic(
                     code="codex_may_request_approval",
@@ -196,7 +201,10 @@ def provider_diagnostics(
                     ),
                 )
             )
-        if "sandbox_mode" not in command_text:
+        has_sandbox_strategy = (
+            "sandbox_mode" in command_text or "--sandbox" in flags or "-s" in flags
+        )
+        if not bypasses_approvals_and_sandbox and not has_sandbox_strategy:
             diagnostics.append(
                 diagnostic(
                     code="codex_missing_sandbox_strategy",
@@ -207,8 +215,9 @@ def provider_diagnostics(
                         "Codex config is intentional for this worker profile"
                     ),
                     suggested_action=(
-                        "Set an explicit `-c sandbox_mode=\"...\"` appropriate "
-                        "for this detached worker profile."
+                        "Set `--sandbox ...` or an explicit "
+                        "`-c sandbox_mode=\"...\"` appropriate for this "
+                        "detached worker profile."
                     ),
                 )
             )
@@ -216,6 +225,7 @@ def provider_diagnostics(
         executable in {"claude", "claude.exe"}
         and "-p" in flags
         and "--permission-mode" not in flags
+        and "--dangerously-skip-permissions" not in flags
     ):
         diagnostics.append(
             diagnostic(
@@ -228,7 +238,9 @@ def provider_diagnostics(
                 ),
                 suggested_action=(
                     "Add an explicit --permission-mode value that matches this "
-                    "profile's intended autonomy."
+                    "profile's intended autonomy, or use "
+                    "--dangerously-skip-permissions only inside an appropriate "
+                    "external security boundary."
                 ),
             )
         )

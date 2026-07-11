@@ -95,8 +95,14 @@ class AdoptionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             claude = adoption.adopt_project(root, host="claude")
+            codex = adoption.adopt_project(root, host="codex")
+            vscode = adoption.adopt_project(root, host="vscode")
 
         self.assertIn("watcher stream", " ".join(claude["next_steps"]))
+        self.assertIn(" inbox", " ".join(codex["next_steps"]))
+        self.assertNotIn("service start", " ".join(codex["next_steps"]))
+        self.assertIn("--host vscode", " ".join(vscode["next_steps"]))
+        self.assertIn("service start", " ".join(vscode["next_steps"]))
 
     def test_adopt_refuses_home_and_filesystem_root(self) -> None:
         with self.assertRaises(adoption.AdoptionError):

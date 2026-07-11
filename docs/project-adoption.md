@@ -47,7 +47,6 @@ documented delivery mechanism:
 ```bash
 orchestrator-engine --project-root /path/to/project bind \
   --host codex --thread-id THREAD_ID
-
 ```
 
 For Codex, use durable history and explicit manual acknowledgement instead of

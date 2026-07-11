@@ -23,8 +23,8 @@ validator enables format checking.
 ## v0.1 stability scope
 
 Version 0.1 stabilizes the local file contract, the CLI commands that write
-and read it, and the host-neutral wakeup message. Adopting projects may depend
-on these behaviors:
+and read it, and the host-neutral follow-up message. Adopting projects may
+depend on these behaviors:
 
 - `adopt` creates only missing local orchestration layout files and never
   overwrites existing worker configuration or durable audit artifacts.
@@ -78,7 +78,10 @@ are `session_stream` / `supported` for Claude, `ui_injection` /
 Codex Desktop. The latter means a `woken` Codex receipt confirms that a
 headless App Server turn completed; it never asserts that an already-open
 Desktop chat refreshed or received a live wakeup. Receipt fields use the same
-precise enums.
+precise enums. `ui_injection` is a stable v0.1 protocol identifier for invoking
+the documented VS Code CLI, not a claim that host security is bypassed. The
+`woken` status is likewise retained for v0.1 compatibility and means completed
+headless history delivery when `host` is `codex`.
 
 ## Operator diagnostics
 
@@ -215,8 +218,8 @@ Path:
 
 - `.orchestrator/inbox/binding.json`
 
-Declares which host chat the `callback` watcher action should wake. Written by
-`orchestrator-engine bind`.
+Declares which host target the `callback` watcher action should use. Written
+by `orchestrator-engine bind`.
 
 ```json
 {
@@ -240,10 +243,10 @@ Path:
 - Optional `wake_target` object embedded in `task.json`, `evidence.json`,
   terminal events and inbox signals created through `worker run`.
 
-`wake_target` captures the host chat that dispatched a specific task. This is
-what makes multi-chat orchestration deterministic: if chat A starts task A and
-chat B later rebinds the same project before task A finishes, task A's signal
-still wakes chat A.
+`wake_target` captures the host target that dispatched a specific task. This
+is what makes multi-chat orchestration deterministic: if chat A starts task A
+and chat B later rebinds the same project before task A finishes, task A's
+signal is still routed to chat A's host target.
 
 ```json
 {
@@ -263,10 +266,11 @@ stored on the Windows side.
 
 ## Channel routing
 
-Each wake channel only consumes signals for hosts it can deliver:
+Each delivery channel only consumes signals for hosts it can handle:
 
 - `watcher --action callback` can submit Codex history turns and handles VS
-  Code UI injection. Only VS Code has live refresh support.
+  Code chat CLI delivery. Among callback adapters, only VS Code attempts live
+  UI delivery, and that support is `best_effort`.
 - `watcher stream` handles `claude` wake targets.
 
 Signals for other hosts are skipped without being marked seen, so a callback
@@ -314,6 +318,10 @@ existing dispatch behavior. This report is bounded and versioned. Probe output
 content is never returned: the report contains only its byte count and SHA-256
 digest, so a local probe cannot accidentally leak private diagnostics.
 
+With `worker run --preflight-availability`, only `unavailable` blocks dispatch.
+`not_configured` and `probe_error` remain advisory because core cannot infer
+provider quota from a missing or broken adopter-owned command.
+
 The preflight is advisory: it is a check-then-run sequence and cannot
 guarantee quota or availability at launch time. It is not a provider quota API;
 the engine does not poll an AI model or invent provider commands. Use
@@ -330,20 +338,32 @@ how hard it thinks, pass the CLI's own flags:
 ```toml
 [workers.claude-fast]                      # cheap: trivial checks, small edits
 enabled = true
-command = ["claude", "-p", "--model", "haiku"]
+command = ["claude", "-p", "--model", "haiku", "--effort", "low",
+           "--permission-mode", "dontAsk"]
 prompt_via = "stdin"
 
 [workers.claude-deep]                      # expensive: reviews, refactors
 enabled = true
-command = ["claude", "-p", "--model", "opus", "--effort", "xhigh"]
+command = ["claude", "-p", "--model", "opus", "--effort", "xhigh",
+           "--dangerously-skip-permissions"]
 prompt_via = "stdin"
-timeout_seconds = 14400
+expect_long_running = true
 
 [workers.codex-deep]
 enabled = true
-command = ["codex", "exec", "--json",
-           "-c", "model_reasoning_effort=\"high\""]
+command = ["codex", "exec", "--json", "-m", "gpt-5.6-sol",
+           "-c", "model_reasoning_effort=\"xhigh\"",
+           "-c", "approval_policy=\"never\"",
+           "-c", "sandbox_mode=\"danger-full-access\""]
 prompt_via = "arg"
+expect_long_running = true
+
+[workers.copilot]
+enabled = true
+command = ["copilot", "--model", "auto", "--effort", "high",
+           "--allow-all", "--no-ask-user", "--prompt"]
+prompt_via = "arg"
+expect_long_running = true
 ```
 
 This profile pattern is the intended division of labor: the project owner
@@ -365,11 +385,12 @@ the engine reports `copilot_may_request_approval`. Known advisory codes:
 - `copilot_may_request_approval` — Copilot profile lacks
   `--allow-all --no-ask-user`.
 - `codex_may_request_approval` — `codex exec` profile lacks an explicit
-  `approval_policy="never"` override or equivalent non-interactive policy.
+  `approval_policy="never"` override or the official full-bypass flag.
 - `codex_missing_sandbox_strategy` — `codex exec` profile lacks an explicit
-  `sandbox_mode` override; verify the selected config is intentional.
+  `--sandbox` / `sandbox_mode` setting or the official full-bypass flag; verify
+  the selected policy is intentional.
 - `claude_missing_permission_mode` — `claude -p` profile lacks an explicit
-  `--permission-mode`.
+  `--permission-mode` or `--dangerously-skip-permissions` flag.
 
 `worker diagnose` is the read-only deep registry diagnostic command. It never
 dispatches workers or rewrites commands.
@@ -450,12 +471,14 @@ it writes a compact machine-readable result and durable logs. The bundled
 `examples/check_runner.py` is a portable reference implementation, not core
 runtime logic.
 
-The intended control flow is sleep/wake: the host chat dispatches a
-verification worker with `worker run`, then ends the current turn without
+The intended control flow is dispatch/end-turn/follow-up: the host chat starts
+a verification worker with `worker run`, then ends the current turn without
 polling. The worker terminal event carries the task's `wake_target`, so the
-watcher wakes the same chat that launched the check when the result is ready.
-This keeps long test suites from spending host-chat tokens while they are only
-waiting for local processes.
+result is routed through the channel selected by the dispatching host. Claude
+supports live stream wakeup, VS Code attempts best-effort UI delivery, and
+Codex Desktop requires durable history and manual review. This keeps long test
+suites from spending host-chat tokens while they are only waiting for local
+processes.
 
 Recommended path layout:
 
@@ -510,7 +533,7 @@ should be relative to the project root so results stay portable. Full stdout
 and stderr belong in log files; `verification-result.json` should keep only a
 short `output_tail` suitable for failure triage.
 
-When a host chat wakes for a verification worker, it should read
+When a verification follow-up is received, the host agent should read
 `verification-result.json` and `summary.txt` first. If `status` is `passed`,
 do not read the full log unless the user asks. If `status` is not `passed`,
 read the relevant command log(s) referenced by failed command entries.
@@ -769,7 +792,8 @@ The watcher writes:
 - `watcher-<host>-callback-heartbeat.json` — host-scoped callback heartbeat.
 - `watcher-claude-stream-state.json` — Claude stream seen-event state and
   scan heartbeat.
-- `thread-wakeups/<event_id>.json` — current-thread wakeup receipt.
+- `thread-wakeups/<event_id>.json` — legacy-named host delivery receipt path,
+  retained as a v0.1 file contract.
 
 An event is marked seen only after a successful action, deterministic skip or
 manual acknowledgement. Active target threads remain retryable with
@@ -816,14 +840,15 @@ They never remove events, signals, results or evidence.
 To list deferred events:
 
 ```bash
-orchestrator-engine --project-root /path/to/project watcher deferred list
+orchestrator-engine --project-root /path/to/project watcher \
+  --host HOST deferred list
 ```
 
 To re-arm a deferred event for the next scan without marking it handled:
 
 ```bash
-orchestrator-engine --project-root /path/to/project watcher deferred retry \
-  --event-id EVENT_ID --reason "quota reset"
+orchestrator-engine --project-root /path/to/project watcher \
+  --host HOST deferred retry --event-id EVENT_ID --reason "quota reset"
 ```
 
 Pass the same `--host HOST` the service was started with (or an explicit
@@ -842,19 +867,19 @@ that names the exact `watcher --host HOST service status` command to run.
 id, terminal status, attempts, last reason, evidence paths, next retry and
 suggested operator action.
 
-Codex wakeup turns are guarded before injection. If `thread/read` reports the
-target thread as active, or if the target thread's rollout file was modified
-within the recent-activity grace window (30 seconds by default), the receipt is
-written as `deferred` (`reason: "thread_active"` or
+Codex headless turns are guarded before submission. If `thread/read` reports
+the target thread as active, or if the target thread's rollout file was
+modified within the recent-activity grace window (30 seconds by default), the
+receipt is written as `deferred` (`reason: "thread_active"` or
 `"thread_recently_active"`) and the event remains retryable. This prevents a
 worker that finishes while the orchestrating turn is still running from
-creating a parallel injected turn in the same chat. The tradeoff is a short
-wakeup delay when a worker finishes immediately after the user's turn writes to
-the rollout. Once a wakeup turn is started, it is watched for a short failure
-window (2 minutes): failures inside the window are classified by the watcher
-state machine. Quota/usage-limit failures require manual handling instead of
-creating an unbounded retry loop. A turn still running at the end of the
-window was submitted — orchestrator turns may legitimately run for hours — so
+creating a parallel headless turn for the same thread. The tradeoff is a short
+delivery delay when a worker finishes immediately after the user's turn writes
+to the rollout. Once a headless turn is started, it is watched for a short
+failure window (2 minutes): failures inside the window are classified by the
+watcher state machine. Quota/usage-limit failures require manual handling
+instead of creating an unbounded retry loop. A turn still running at the end
+of the window was submitted — orchestrator turns may legitimately run for hours — so
 the receipt is written as `submitted` with `turn_status: "running"` and a
 background finalizer keeps the App Server connection open until the turn ends,
 then updates the receipt (`turn_status`, `finalized_at`, optional
@@ -867,25 +892,25 @@ still-running turn is `status: "submitted"`; it has not completed yet. Neither
 status proves that the already-open Desktop UI agent woke in the same live
 session. The receipt also records the desktop deep-link activation
 outcome (`activation: "requested"` or `"failed"`). Codex Desktop UI refresh is
-separate from wakeup delivery: on Windows the adapter first asks the desktop
+separate from history delivery: on Windows the adapter first asks the desktop
 app to open the thread, then sends a best-effort refresh pulse for
 already-loaded threads. Receipts record that attempt with `live_refresh` and
 `live_refresh_strategy`; failure to refresh the visible UI does not erase the
-delivered turn from Codex thread storage. Use Claude stream or VS Code chat as
-the host when a true live wakeup is required; Codex remains a normal CLI worker
-through `codex exec`.
+delivered turn from Codex thread storage. Use Claude stream when supported live
+wakeup is required; VS Code chat remains a best-effort UI path, and Codex
+remains a normal CLI worker through `codex exec`.
 
-Long-running wakeups do not starve health reporting: the watch loop keeps the
-heartbeat fresh from a background ticker while a scan is busy.
+Long-running headless turns do not starve health reporting: the watch loop
+keeps the heartbeat fresh from a background ticker while a scan is busy.
 
-Approval requests raised by an injected turn (command/patch approvals,
+Approval requests raised by a headless turn (command/patch approvals,
 elicitations, user-input prompts) are answered with the protocol's decline
-decision — never auto-approved — because no human is attached to the injected
+decision — never auto-approved — because no human is attached to the headless
 client. The turn continues and finishes with a text answer instead of hanging;
 declined request methods are recorded in the receipt as
 `auto_declined_requests`. Threads used for orchestration should run with an
-approval policy that permits the read-only verification the wakeup prompt asks
-for.
+approval policy that permits the read-only verification the follow-up prompt
+asks for.
 
 `watcher service status` reports:
 

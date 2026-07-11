@@ -5,15 +5,17 @@ processes. A user orchestrates from a host chat (Claude Code / Claude for
 Windows, VS Code Copilot, or Codex Desktop with the limitation documented
 below), dispatches tasks to CLI workers, and ends the turn. Workers run
 detached, write a terminal event to disk when they finish, and a local watcher
-routes the completion back to the dispatching chat — without API keys and
-without token-spending heartbeat prompts.
+routes the completion through the dispatching host's configured delivery
+channel — without engine-managed provider API keys or token-spending heartbeat
+prompts. Host and worker CLIs retain responsibility for their own local
+authentication.
 
 Supported host/worker combinations are symmetric: any host chat can manage any
 CLI workers (Claude, Codex, Copilot, or any other command-line worker).
 Long verification runs can use the same flow: run checks detached, keep full
-logs as artifacts, and wake the chat with a compact pass/fail summary.
+logs as artifacts, and return a compact pass/fail summary through that channel.
 
-Host wakeup quality is provider-specific. Claude stream wakeups are the
+Host delivery quality is provider-specific. Claude stream wakeups are the
 recommended live orchestration path today: the already-open Claude chat wakes
 and continues in that session. VS Code uses its chat CLI. Codex Desktop on
 Windows can receive durable delivery into thread history and best-effort
@@ -26,7 +28,8 @@ CLI worker through `codex exec`.
 **If you are an AI agent** asked to set this up: follow
 [docs/setup-guide.md](docs/setup-guide.md) step by step. It contains every
 command, a check after each step, and a troubleshooting table. Do not improvise
-a different layout — the file contract is what makes wakeups work.
+a different layout — the file contract is what makes deterministic delivery
+work.
 
 **If you are a human**: paste this to the agent in the chat you orchestrate
 from:
@@ -42,7 +45,8 @@ I orchestrate from this chat; ask me anything the guide says to ask.
 
 - Run workers detached from the active orchestrator turn.
 - Store terminal events and inbox signals as durable JSON files.
-- Wake the host chat with a bounded pointer to event/evidence/result.
+- Route a bounded pointer to event/evidence/result through the bound host
+  channel.
 - Avoid token-spending heartbeat prompts.
 - Keep provider integrations at explicit adapter boundaries.
 - Provide service-style watcher control: start, status, stop and restart.
@@ -52,7 +56,8 @@ I orchestrate from this chat; ask me anything the guide says to ask.
 - This is not an AI agent runtime.
 - This does not own product-specific task contracts.
 - This does not replace Codex, Claude, Copilot or project-local review logic.
-- This does not use provider API keys for orchestration.
+- This does not manage provider API keys or call provider APIs directly; local
+  host and worker CLIs own their authentication.
 
 ## How it fits together
 
@@ -61,8 +66,8 @@ I orchestrate from this chat; ask me anything the guide says to ask.
 2. **Dispatch** tasks from the host chat (`worker run`), which returns
    immediately; a detached supervisor runs the worker CLI and emits a terminal
    event on exit.
-3. **Wake**: a watcher service (`--action callback`) pushes a wakeup to VS
-   Code, while Claude watches `watcher stream`. Codex App Server turns are
+3. **Deliver**: a watcher service (`--action callback`) sends a follow-up to
+   VS Code, while Claude watches `watcher stream`. Codex App Server turns are
    history-only and do not refresh the already-open Desktop chat. Callback
    services can be scoped with `watcher --host vscode` so
    multiple host channels can share one inbox without consuming each other's
@@ -76,12 +81,16 @@ Release and upgrade notes:
 
 ## File layout inside an adopted project
 
-By default the orchestrator writes under `.orchestrator/` in the target
-project:
+By default the orchestrator and adopting agents use `.orchestrator/` in the
+target project:
 
 ```text
 .orchestrator/
   workers.toml
+  prompts/
+    <prompt>.md
+  task-resolutions/
+    <task_id>.json
   events/
     <event_id>.json
   tasks/
@@ -106,6 +115,9 @@ project:
       <event_id>.json
     thread-wakeups/
       <event_id>.json
+    acknowledgements/
+      <host>/
+        <event_id>.json
     logs/
       watcher-service.log
     watcher-state.json
@@ -127,14 +139,14 @@ by the product, not by OrchestratorEngine core.
 Create the local orchestration layout in the project:
 
 ```bash
-orchestrator-engine --project-root /path/to/project adopt --host codex
+orchestrator-engine --project-root /path/to/project adopt --host vscode
 ```
 
-Bind the project to the host chat (example: Codex Desktop):
+Bind the project to the host chat (this quick start uses VS Code because its
+callback path can be exercised end to end):
 
 ```bash
-orchestrator-engine --project-root /path/to/project bind \
-  --host codex --thread-id THREAD_ID
+orchestrator-engine --project-root /path/to/project bind --host vscode
 ```
 
 Configure workers in `/path/to/project/.orchestrator/workers.toml`:
@@ -142,23 +154,35 @@ Configure workers in `/path/to/project/.orchestrator/workers.toml`:
 ```toml
 [workers.claude]
 enabled = true
-command = ["claude", "-p", "--permission-mode", "acceptEdits"]
+command = ["claude", "-p", "--model", "sonnet", "--effort", "high",
+           "--dangerously-skip-permissions"]
 prompt_via = "stdin"
 expect_long_running = true
 permission_profile = "full"
 
 [workers.codex]
 enabled = true
-command = ["codex", "exec", "--json",
+command = ["codex", "exec", "--json", "-m", "gpt-5.6-terra",
+           "-c", "model_reasoning_effort=\"high\"",
            "-c", "approval_policy=\"never\"",
            "-c", "sandbox_mode=\"danger-full-access\""]
 prompt_via = "arg"
 expect_long_running = true
 permission_profile = "full"
+
+[workers.copilot]
+enabled = true
+command = ["copilot", "--model", "auto", "--effort", "high",
+           "--allow-all", "--no-ask-user", "--prompt"]
+prompt_via = "arg"
+expect_long_running = true
+permission_profile = "full"
 ```
 
-For a fuller fast/default/deep profile catalog with autonomous and restricted
-examples, start from [examples/workers.toml](examples/workers.toml).
+These three profiles are fully autonomous and should be enabled only for a
+trusted project. For fast/default/deep plus restricted and read-only examples,
+start from [examples/workers.toml](examples/workers.toml), then enable only the
+profiles supported by the installed CLIs and account.
 
 Check worker profiles before dispatch:
 
@@ -166,7 +190,22 @@ Check worker profiles before dispatch:
 orchestrator-engine --project-root /path/to/project worker diagnose --enabled-only
 ```
 
-Start the VS Code wakeup watcher (use `watcher stream` from Claude; for Codex,
+An adopter may configure a bounded, non-AI `availability_probe` for a profile.
+Run it explicitly before dispatch when local quota or account tooling can
+provide a deterministic answer:
+
+```bash
+orchestrator-engine --project-root /path/to/project worker availability \
+  --worker codex
+orchestrator-engine --project-root /path/to/project worker run \
+  --worker codex --task-id PREFLIGHT-001 --prompt-file task-001.md \
+  --preflight-availability
+```
+
+Profiles without an adopter-provided probe report `not_configured`; the engine
+does not invent a provider quota API or spend model tokens to poll availability.
+
+Start the VS Code delivery watcher (use `watcher stream` from Claude; for Codex,
 review durable history manually):
 
 ```bash
@@ -195,8 +234,8 @@ orchestrator-engine --project-root /path/to/project watcher \
 ```
 
 Use `status` first for a compact operator report. It summarizes `doctor`,
-the active wake channel, worker task diagnostics and verification checks, then
-lists only issues and problem tasks/checks that need follow-up.
+the active delivery channel, worker task diagnostics and verification checks,
+then lists only issues and problem tasks/checks that need follow-up.
 
 If a failed historical worker task has been handled manually or superseded by a
 successful rerun, keep the task artifacts and add an operator resolution:
@@ -271,10 +310,13 @@ exceeds `--log-max-bytes`. Terminal events and inbox signals are never
 removed by `cleanup`; they are the durable audit trail and are the
 responsibility of the adopting project to retire.
 
-## Wakeup contract
+## Follow-up message contract
 
-The watcher delivers a short deterministic prompt (injected as a Codex turn,
-a VS Code chat message, or a JSON stream line for Claude):
+A terminal event produces a short deterministic follow-up message. Depending
+on the bound host, it is submitted to a headless Codex App Server and stored
+in thread history, sent to VS Code chat, or emitted as a JSON stream line for
+Claude. Codex Desktop history delivery does not refresh or wake an already-open
+Desktop chat.
 
 ```text
 LOCAL_AI_ORCHESTRATOR_WAKEUP v1
@@ -310,3 +352,9 @@ Additional documentation:
 - [Contracts](docs/contracts.md)
 - [Host setup](docs/hosts.md)
 - [Project integration and legacy adoption](docs/project-adoption.md)
+
+## License
+
+OrchestratorEngine is available under the permissive [MIT License](LICENSE).
+Copyright remains with Oleg Synelnykov (Jafa7); copies or substantial portions
+must retain the copyright and license notice.

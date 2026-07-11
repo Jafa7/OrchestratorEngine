@@ -11,6 +11,10 @@ Output policy:
 - Include full log paths instead of log bodies.
 - Keep stdout/stderr bodies out of chat unless a tiny excerpt is necessary to
   identify the failure.
+- Run the requested suite once. Do not repeat a passing suite to produce a
+  different summary.
+- Do not modify product code, commit or push unless the task prompt explicitly
+  authorizes it.
 
 Expected final shape:
 

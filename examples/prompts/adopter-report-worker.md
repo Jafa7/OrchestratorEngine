@@ -12,6 +12,9 @@ Output policy:
 - Use sanitized snippets or synthetic fixtures when private data is involved.
 - Preserve durable state; do not delete events, signals, results or evidence
   just to make status clean.
+- Treat local paths as pointers rather than maintainer-accessible files.
+- Do not modify adopter product code, commit or push unless the task prompt
+  explicitly authorizes it.
 
 Expected final shape:
 

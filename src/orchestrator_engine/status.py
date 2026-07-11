@@ -447,7 +447,7 @@ def report_draft(
         "## Summary",
         "",
         f"- Project: `{name}`",
-        f"- Project root: `{report['project_root']}`",
+        "- Project root: omitted by default; add a sanitized path only if needed.",
         f"- Engine version: `{report['engine_version']}`",
         f"- Overall status: `{report['status']}`",
         f"- Worst severity: `{report['worst_severity']}`",
@@ -485,9 +485,18 @@ def report_draft(
                 lines.append(f"   - check_id: `{issue['check_id']}`")
             if issue.get("code"):
                 lines.append(f"   - code: `{issue['code']}`")
-            lines.append(f"   - message: {issue.get('message')}")
+            lines.append(
+                "   - message: "
+                f"{redact_report_text(issue.get('message'), report['project_root'])}"
+            )
             if issue.get("suggested_action"):
-                lines.append(f"   - suggested action: {issue['suggested_action']}")
+                suggested_action = redact_report_text(
+                    issue["suggested_action"],
+                    report["project_root"],
+                )
+                lines.append(
+                    f"   - suggested action: {suggested_action}"
+                )
     else:
         lines.append("No issues at the selected severity.")
     append_large_log_task_details(lines, report)
@@ -511,6 +520,14 @@ def report_draft(
         ]
     )
     return "\n".join(lines) + "\n"
+
+
+def redact_report_text(value: object, project_root: object) -> str:
+    """Replace the adopter root in report prose while preserving useful paths."""
+
+    text = str(value)
+    root = str(project_root)
+    return text.replace(root, "<project-root>") if root else text
 
 
 def append_component_details(
