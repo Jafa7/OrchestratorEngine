@@ -98,6 +98,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Check the delivery channel for one host instead of the bound host.",
     )
     status.add_argument(
+        "--since",
+        dest="since_cursor",
+        help="Return full bodies only for components changed since this opaque cursor.",
+    )
+    status.add_argument(
         "--severity",
         choices=worker_diagnostics.SEVERITIES,
         default="warning",
@@ -305,6 +310,28 @@ def build_parser() -> argparse.ArgumentParser:
         "resolutions",
         help="List operator resolutions for historical worker task outcomes.",
     )
+    worker_subparsers.add_parser(
+        "reap",
+        help="Finalize leased tasks whose supervisor is proven gone.",
+    )
+    worker_queue = worker_subparsers.add_parser(
+        "queue",
+        help="Inspect or advance the deterministic worker queue.",
+    )
+    worker_queue_subparsers = worker_queue.add_subparsers(
+        dest="worker_queue_command", required=True
+    )
+    worker_queue_subparsers.add_parser(
+        "tick", help="Admit queued tasks while configured slots are available."
+    )
+    worker_cancel = worker_subparsers.add_parser(
+        "cancel", help="Request durable cancellation of a queued or running task."
+    )
+    worker_cancel.add_argument("--task-id", required=True)
+    worker_cancel.add_argument(
+        "--mode", choices=("graceful", "forced"), default="graceful"
+    )
+    worker_cancel.add_argument("--reason", required=True)
     worker_run = worker_subparsers.add_parser(
         "run",
         help="Dispatch a task to a worker detached and return immediately.",
@@ -317,6 +344,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run the configured local probe before dispatch (advisory).",
     )
+    worker_run.add_argument("--intent-file", type=Path)
+    worker_run.add_argument("--allow-duplicate", action="store_true")
+    worker_run.add_argument("--duplicate-reason")
+    worker_retry = worker_subparsers.add_parser(
+        "retry", help="Dispatch a bounded retry with durable lineage."
+    )
+    worker_retry.add_argument("--task-id", required=True)
+    worker_retry.add_argument("--new-task-id")
+    worker_retry.add_argument("--max-attempts", type=int, default=3)
+    worker_retry.add_argument("--delay-seconds", type=float, default=0.0)
+    worker_retry.add_argument("--reason", required=True)
     worker_supervise = worker_subparsers.add_parser(
         "supervise",
         help="Internal: run a worker to completion and emit its terminal event.",
@@ -505,8 +543,7 @@ def main(argv: list[str] | None = None) -> int:
             print_json(output)
         elif args.command == "inbox":
             output = {
-                str(root): core.inbox(root, state_dir=args.state_dir)
-                for root in roots
+                str(root): core.inbox(root, state_dir=args.state_dir) for root in roots
             }
             print_json(output)
         elif args.command == "host-capabilities":
@@ -546,9 +583,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "doctor":
             if len(roots) != 1:
-                raise core.OrchestratorError(
-                    "doctor requires exactly one project root"
-                )
+                raise core.OrchestratorError("doctor requires exactly one project root")
             output = diagnostics.run_doctor(
                 roots[0],
                 state_dir=args.state_dir,
@@ -566,6 +601,7 @@ def main(argv: list[str] | None = None) -> int:
                 minimum_severity=args.severity,
                 stale_after_seconds=args.stale_after_seconds,
                 large_log_bytes=args.large_log_bytes,
+                since_cursor=args.since_cursor,
             )
             print_json(output)
             return status.exit_code(output)
@@ -592,16 +628,12 @@ def main(argv: list[str] | None = None) -> int:
             print_json(output)
         elif args.command == "worker":
             if len(roots) != 1:
-                raise core.OrchestratorError(
-                    "worker requires exactly one project root"
-                )
+                raise core.OrchestratorError("worker requires exactly one project root")
             output = run_worker_cli_command(args, roots[0])
             print_json(output)
             if args.worker_command in {"diagnose", "tasks"}:
                 return worker_diagnostics.exit_code_for_worst(
-                    output.get("worst_severity")
-                    if isinstance(output, dict)
-                    else None
+                    output.get("worst_severity") if isinstance(output, dict) else None
                 )
         elif args.command == "watcher":
             output = run_watcher_command(args, roots)
@@ -713,6 +745,18 @@ def run_worker_cli_command(args: argparse.Namespace, root: Path) -> object:
         )
     if args.worker_command == "resolutions":
         return task_resolution.list_resolutions(root, state_dir=args.state_dir)
+    if args.worker_command == "reap":
+        return workers.reap_worker_tasks(root, state_dir=args.state_dir)
+    if args.worker_command == "queue" and args.worker_queue_command == "tick":
+        return workers.queue_tick(root, state_dir=args.state_dir)
+    if args.worker_command == "cancel":
+        return workers.cancel_worker_task(
+            root,
+            task_id=args.task_id,
+            mode=args.mode,
+            reason=args.reason,
+            state_dir=args.state_dir,
+        )
     if args.worker_command == "run":
         return workers.run_worker(
             root,
@@ -721,6 +765,19 @@ def run_worker_cli_command(args: argparse.Namespace, root: Path) -> object:
             prompt_file=args.prompt_file,
             state_dir=args.state_dir,
             preflight_availability=args.preflight_availability,
+            intent_file=args.intent_file,
+            allow_duplicate=args.allow_duplicate,
+            duplicate_reason=args.duplicate_reason,
+        )
+    if args.worker_command == "retry":
+        return workers.retry_worker_task(
+            root,
+            task_id=args.task_id,
+            new_task_id=args.new_task_id,
+            max_attempts=args.max_attempts,
+            delay_seconds=args.delay_seconds,
+            reason=args.reason,
+            state_dir=args.state_dir,
         )
     if args.worker_command == "supervise":
         return workers.supervise_worker(

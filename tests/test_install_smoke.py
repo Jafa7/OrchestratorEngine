@@ -48,8 +48,15 @@ class InstallSmokeTests(unittest.TestCase):
                 env=env,
             ).stdout.strip()
 
+            adoption = self.run_cli(cli, project, "adopt", "--host", "claude")
+
             config_path = project / ".orchestrator" / "workers.toml"
-            config_path.parent.mkdir(parents=True)
+            policy_path = (
+                project
+                / ".orchestrator"
+                / "policies"
+                / "quality-efficient.md"
+            )
             scripts = project / "scripts"
             scripts.mkdir()
             check_runner = scripts / "orchestrator_check_runner.py"
@@ -68,11 +75,16 @@ class InstallSmokeTests(unittest.TestCase):
             config_path.write_text(
                 "\n".join(
                     [
+                        "[policies.quality-efficient]",
+                        'files = ["policies/quality-efficient.md"]',
+                        'quality_priority = "correctness-first"',
+                        "",
                         "[workers.smoke]",
                         "enabled = true",
                         f"command = [{json.dumps(str(python))}, "
                         f"\"-c\", {json.dumps(worker_script)}]",
                         'prompt_via = "stdin"',
+                        'policy = "quality-efficient"',
                         "timeout_seconds = 10",
                         "",
                         "[workers.failing]",
@@ -80,6 +92,7 @@ class InstallSmokeTests(unittest.TestCase):
                         f"command = [{json.dumps(str(python))}, "
                         f"\"-c\", {json.dumps(failing_script)}]",
                         'prompt_via = "stdin"',
+                        'policy = "quality-efficient"',
                         "timeout_seconds = 10",
                         "",
                         "[workers.check]",
@@ -92,6 +105,7 @@ class InstallSmokeTests(unittest.TestCase):
                         f"{json.dumps(str(python))}, "
                         '"-c", "print(\'check-ok\')"]',
                         'prompt_via = "stdin"',
+                        'policy = "quality-efficient"',
                         "timeout_seconds = 30",
                         "",
                     ]
@@ -170,6 +184,15 @@ class InstallSmokeTests(unittest.TestCase):
             result = wait_result("SMOKE-1")
             failed_result = wait_result("SMOKE-FAIL")
             check_result = wait_result("SMOKE-CHECK")
+            smoke_evidence = json.loads(
+                (
+                    project
+                    / ".orchestrator"
+                    / "tasks"
+                    / "SMOKE-1"
+                    / "evidence.json"
+                ).read_text(encoding="utf-8")
+            )
             task_diagnostics = self.run_cli(
                 cli,
                 project,
@@ -282,13 +305,22 @@ class InstallSmokeTests(unittest.TestCase):
                 env=clean_env(),
             )
             report_draft_text = report_draft.read_text(encoding="utf-8")
+            policy_exists = policy_path.is_file()
         self.assertEqual(bind["host"], "claude")
-        self.assertEqual(version, "orchestrator-engine 0.1.1")
+        self.assertEqual(version, "orchestrator-engine 0.2.0")
+        self.assertEqual(adoption["kind"], "ORCHESTRATOR_ADOPTION")
+        self.assertTrue(policy_exists)
         self.assertTrue(workers["workers"]["smoke"]["enabled"])
         self.assertEqual(worker_diagnostics["kind"], "WORKER_DIAGNOSTICS")
         self.assertEqual(worker_diagnostics["diagnostic_count"], 0)
-        self.assertEqual(dispatched["status"], "running")
+        # Dispatch hands the descriptor to the supervisor, which claims it and
+        # records `running` itself; the dispatcher never writes it again.
+        self.assertEqual(dispatched["status"], "starting")
         self.assertEqual(result["terminal_status"], "completed")
+        self.assertEqual(
+            smoke_evidence["worker_policy"]["name"],
+            "quality-efficient",
+        )
         self.assertEqual(failed_result["terminal_status"], "failed")
         self.assertEqual(check_result["terminal_status"], "completed")
         self.assertEqual(task_diagnostics["kind"], "WORKER_TASK_DIAGNOSTICS")

@@ -16,6 +16,24 @@
 # availability_probe = ["/path/to/project-check", "--available"]
 # availability_timeout_seconds = 5
 
+[policies.quality-efficient]
+files = ["policies/quality-efficient.md"]
+quality_priority = "correctness-first"
+context_strategy = "progressive"
+verification_strategy = "risk-based-final-gate"
+output_strategy = "compact-evidence"
+
+# Optional bounded admission. Uncomment only after choosing host capacity.
+# [dispatch]
+# max_concurrent = 3
+# Per-profile controls are also optional:
+# max_concurrent = 1
+# max_no_progress_seconds = 900   # warning only; never kills by default
+# soft_duration_seconds = 3600    # informational budget
+# soft_output_bytes = 1048576     # informational budget
+# soft_token_budget = 100000      # needs an explicit usage_adapter
+# usage_adapter = "json-lines-usage"
+
 # --- Claude profiles ---------------------------------------------------
 # Keep disabled until the Claude CLI and chosen permission mode are verified.
 # `dontAsk` is non-interactive but may deny tools that need permission. Full
@@ -27,6 +45,7 @@ enabled = false
 command = ["claude", "-p", "--model", "haiku", "--effort", "low",
            "--permission-mode", "dontAsk"]
 prompt_via = "stdin"
+policy = "quality-efficient"
 expect_long_running = true
 capability = "code-edit"
 permission_profile = "restricted"
@@ -38,6 +57,7 @@ enabled = false
 command = ["claude", "-p", "--model", "sonnet", "--effort", "high",
            "--dangerously-skip-permissions"]
 prompt_via = "stdin"
+policy = "quality-efficient"
 expect_long_running = true
 capability = "code-edit"
 permission_profile = "full"
@@ -49,6 +69,7 @@ enabled = false
 command = ["claude", "-p", "--model", "opus", "--effort", "xhigh",
            "--dangerously-skip-permissions"]
 prompt_via = "stdin"
+policy = "quality-efficient"
 expect_long_running = true
 capability = "code-edit"
 permission_profile = "full"
@@ -56,10 +77,14 @@ cost = "high"
 recommended_for = ["architecture", "large-refactor", "hard-bug"]
 
 [workers.claude-readonly]
+# Plan mode may also write under ~/.claude/plans. That provider-owned copy is
+# not durable evidence: the complete result must still be returned on stdout or
+# below ORCHESTRATOR_DECLARED_OUTPUT_DIR, otherwise worker diagnostics warn.
 enabled = false
 command = ["claude", "-p", "--model", "sonnet", "--effort", "medium",
            "--permission-mode", "plan"]
 prompt_via = "stdin"
+policy = "quality-efficient"
 expect_long_running = true
 capability = "review"
 permission_profile = "readonly"
@@ -78,6 +103,7 @@ enabled = false
 command = ["copilot", "--model", "auto", "--effort", "low",
            "--allow-all", "--no-ask-user", "--prompt"]
 prompt_via = "arg"
+policy = "quality-efficient"
 expect_long_running = true
 capability = "code-edit"
 permission_profile = "full"
@@ -89,6 +115,7 @@ enabled = false
 command = ["copilot", "--model", "auto", "--effort", "high",
            "--allow-all", "--no-ask-user", "--prompt"]
 prompt_via = "arg"
+policy = "quality-efficient"
 expect_long_running = true
 capability = "code-edit"
 permission_profile = "full"
@@ -100,6 +127,7 @@ enabled = false
 command = ["copilot", "--model", "auto", "--effort", "xhigh",
            "--allow-all", "--no-ask-user", "--prompt"]
 prompt_via = "arg"
+policy = "quality-efficient"
 expect_long_running = true
 capability = "code-edit"
 permission_profile = "full"
@@ -122,6 +150,7 @@ command = ["codex", "exec", "--json", "-m", "gpt-5.6-luna",
            "-c", "approval_policy=\"never\"",
            "-c", "sandbox_mode=\"workspace-write\""]
 prompt_via = "arg"
+policy = "quality-efficient"
 expect_long_running = true
 capability = "code-edit"
 permission_profile = "restricted"
@@ -135,6 +164,7 @@ command = ["codex", "exec", "--json", "-m", "gpt-5.6-terra",
            "-c", "approval_policy=\"never\"",
            "-c", "sandbox_mode=\"danger-full-access\""]
 prompt_via = "arg"
+policy = "quality-efficient"
 expect_long_running = true
 capability = "code-edit"
 permission_profile = "full"
@@ -148,6 +178,7 @@ command = ["codex", "exec", "--json", "-m", "gpt-5.6-sol",
            "-c", "approval_policy=\"never\"",
            "-c", "sandbox_mode=\"danger-full-access\""]
 prompt_via = "arg"
+policy = "quality-efficient"
 expect_long_running = true
 capability = "code-edit"
 permission_profile = "full"
@@ -161,6 +192,7 @@ command = ["codex", "exec", "--json", "-m", "gpt-5.6-terra",
            "-c", "approval_policy=\"never\"",
            "-c", "sandbox_mode=\"read-only\""]
 prompt_via = "arg"
+policy = "quality-efficient"
 expect_long_running = true
 capability = "review"
 permission_profile = "readonly"

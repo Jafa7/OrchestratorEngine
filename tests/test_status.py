@@ -87,6 +87,19 @@ def write_failed_check(root: Path) -> None:
 
 
 class StatusTests(unittest.TestCase):
+    def test_status_cursor_omits_unchanged_component_bodies(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            create_layout(root)
+            write_worker_config(root)
+            first = status.run_status(root)
+            delta = status.run_status(root, since_cursor=first["cursor"])
+
+        self.assertEqual(delta["changed_component_count"], 0)
+        self.assertTrue(
+            all(value == {"unchanged": True} for value in delta["components"].values())
+        )
+
     def test_status_reports_codex_history_only_delivery(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -207,6 +220,10 @@ class StatusTests(unittest.TestCase):
             tasks["large_log_tasks"]["T-LOUD"]["large_logs"]["stdout"],
             64,
         )
+        self.assertEqual(
+            tasks["large_log_tasks"]["T-LOUD"]["large_log_paths"]["stdout"],
+            str(task_dir / "worker-stdout.log"),
+        )
         self.assertIn("## Large Worker Logs", draft)
 
     def test_status_surfaces_large_verification_logs_without_warning(self) -> None:
@@ -245,6 +262,10 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(
             checks["large_log_checks"]["CHECK-LOUD"]["large_logs"]["full_log"],
             64,
+        )
+        self.assertEqual(
+            checks["large_log_checks"]["CHECK-LOUD"]["large_log_paths"]["full_log"],
+            str(check_dir / "full.log"),
         )
         self.assertIn("## Large Verification Logs", draft)
 

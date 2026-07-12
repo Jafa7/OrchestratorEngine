@@ -17,6 +17,9 @@ triage.
   content itself is required to reproduce a core bug.
 - Omit private document bodies, private planning content, credentials and
   unbounded generated context. Sanitize project configuration excerpts.
+- Treat `effective-prompt.md` as private durable task evidence. Report its path,
+  size or hash when useful, but do not paste its policy/task body into a public
+  issue.
 - If `worker tasks` reports `task_large_worker_log`, include the task id,
   affected log artifact names and sizes, but keep log bodies out of the issue.
 - Do not delete durable events, signals, results or evidence to "fix" a report.

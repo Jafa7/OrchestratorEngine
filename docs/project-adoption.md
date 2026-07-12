@@ -9,6 +9,12 @@ For a new project, start with the create-only scaffolder:
 about deeper project integration and legacy bridges after that local layout
 exists.
 
+The scaffolder also creates a provider-neutral quality-efficient worker policy
+under `.orchestrator/policies/`. Worker profiles opt into it explicitly in
+`workers.toml`; projects may replace or layer policy files while keeping them
+project-local. Policy contents never become product logic in core: the engine
+only validates paths, snapshots bytes and records hashes.
+
 Projects integrate with OrchestratorEngine by implementing its standard file
 contract. OrchestratorEngine should not grow project-specific layouts.
 

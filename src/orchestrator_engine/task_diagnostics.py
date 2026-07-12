@@ -11,11 +11,12 @@ from typing import Any
 from . import core, task_resolution, worker_diagnostics, workers
 
 TASK_DIAGNOSTICS_KIND = "WORKER_TASK_DIAGNOSTICS"
-RUNNING_STATUSES = {"starting", "running"}
+RUNNING_STATUSES = {"starting", "running", "cancelling"}
+QUEUED_STATUSES = {"queued"}
 UNSUCCESSFUL_TERMINAL_STATUSES = core.TERMINAL_STATUSES - {"completed"}
 DEFAULT_STALE_AFTER_SECONDS = workers.TASK_HEARTBEAT_INTERVAL_SECONDS * 3
 DEFAULT_LARGE_LOG_BYTES = 1024 * 1024
-TASK_STATUSES = RUNNING_STATUSES | core.TERMINAL_STATUSES
+TASK_STATUSES = RUNNING_STATUSES | QUEUED_STATUSES | core.TERMINAL_STATUSES
 ProcessChecker = Callable[[int], bool]
 
 
@@ -245,9 +246,7 @@ def summarize_task(
     worker_pid = descriptor.get("worker_pid")
     if status in RUNNING_STATUSES:
         supervisor_alive = (
-            process_checker(supervisor_pid)
-            if isinstance(supervisor_pid, int)
-            else None
+            process_checker(supervisor_pid) if isinstance(supervisor_pid, int) else None
         )
         worker_alive = (
             process_checker(worker_pid) if isinstance(worker_pid, int) else None
@@ -261,13 +260,19 @@ def summarize_task(
         worker_alive = None
         heartbeat_age = None
 
+    descriptor_items = descriptor_diagnostics(
+        task_id=task_id,
+        descriptor=descriptor,
+        descriptor_path=descriptor_path,
+        directory_task_id=task_dir.name,
+        status=status,
+    )
+    diagnostics.extend(descriptor_items)
     diagnostics.extend(
-        descriptor_diagnostics(
+        historical_profile_diagnostics(
             task_id=task_id,
-            descriptor=descriptor,
-            descriptor_path=descriptor_path,
-            directory_task_id=task_dir.name,
-            status=status,
+            evidence_path=artifacts["evidence"],
+            existing_codes={item["code"] for item in descriptor_items},
         )
     )
     diagnostics.extend(
@@ -298,6 +303,15 @@ def summarize_task(
             large_log_bytes=large_log_bytes,
         )
     )
+    diagnostics.extend(
+        runtime_policy_diagnostics(
+            task_id=task_id,
+            status=status,
+            descriptor=descriptor,
+            log_sizes=log_sizes,
+            now=now,
+        )
+    )
 
     summary = base_summary(
         task_id=task_id,
@@ -322,9 +336,140 @@ def summarize_task(
             "worker_alive": worker_alive,
             "artifacts": {name: str(path) for name, path in artifacts.items()},
             "log_sizes": log_sizes,
+            "progress": descriptor.get("progress"),
+            "usage": descriptor.get("usage"),
+            "runtime_policy": descriptor.get("runtime_policy", {}),
         }
     )
     return summary
+
+
+def runtime_policy_diagnostics(
+    *,
+    task_id: str,
+    status: str,
+    descriptor: dict[str, Any],
+    log_sizes: dict[str, int | None],
+    now: datetime,
+) -> list[dict[str, str]]:
+    policy = descriptor.get("runtime_policy")
+    if not isinstance(policy, dict):
+        return []
+    diagnostics: list[dict[str, str]] = []
+    progress = descriptor.get("progress")
+    no_progress_limit = policy.get("max_no_progress_seconds")
+    if status in RUNNING_STATUSES and isinstance(no_progress_limit, (int, float)):
+        stamp = (
+            progress.get("last_output_growth_at")
+            if isinstance(progress, dict)
+            else descriptor.get("created_at")
+        )
+        no_progress_age = age_seconds(stamp, now=now)
+        if no_progress_age is not None and no_progress_age > no_progress_limit:
+            diagnostics.append(
+                diagnostic(
+                    code="task_no_output_growth",
+                    severity="warning",
+                    message=(
+                        f"task {task_id} has no mechanical output growth for "
+                        f"{no_progress_age:.1f}s (soft limit {no_progress_limit:g}s)"
+                    ),
+                    suggested_action=(
+                        "Inspect the bounded log tail and worker process state; "
+                        "do not cancel solely from this advisory."
+                    ),
+                )
+            )
+    duration_limit = policy.get("soft_duration_seconds")
+    duration_end = parse_timestamp(descriptor.get("finished_at")) or now
+    duration = age_seconds(descriptor.get("created_at"), now=duration_end)
+    if (
+        isinstance(duration_limit, (int, float))
+        and duration is not None
+        and duration > duration_limit
+    ):
+        diagnostics.append(
+            diagnostic(
+                code="task_soft_duration_exceeded",
+                severity="info",
+                message=(f"task {task_id} exceeded soft duration {duration_limit:g}s"),
+                suggested_action=(
+                    "Review progress; this soft budget never stops work."
+                ),
+            )
+        )
+    output_limit = policy.get("soft_output_bytes")
+    output_bytes = sum(value or 0 for value in log_sizes.values())
+    if isinstance(output_limit, (int, float)) and output_bytes > output_limit:
+        diagnostics.append(
+            diagnostic(
+                code="task_soft_output_exceeded",
+                severity="info",
+                message=(
+                    f"task {task_id} exceeded soft output budget {output_limit:g} bytes"
+                ),
+                suggested_action=(
+                    "Use compact evidence and inspect full logs only as needed."
+                ),
+            )
+        )
+    token_limit = policy.get("soft_token_budget")
+    usage = descriptor.get("usage")
+    total_tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
+    if (
+        isinstance(token_limit, (int, float))
+        and isinstance(total_tokens, int)
+        and total_tokens > token_limit
+    ):
+        diagnostics.append(
+            diagnostic(
+                code="task_soft_token_budget_exceeded",
+                severity="info",
+                message=(
+                    f"task {task_id} used {total_tokens} tokens "
+                    f"(soft budget {token_limit:g})"
+                ),
+                suggested_action=(
+                    "Review future profile selection; the completed result "
+                    "remains valid."
+                ),
+            )
+        )
+    return diagnostics
+
+
+def historical_profile_diagnostics(
+    *,
+    task_id: str,
+    evidence_path: Path,
+    existing_codes: set[str],
+) -> list[dict[str, str]]:
+    if not evidence_path.is_file():
+        return []
+    try:
+        evidence = core.load_object(evidence_path)
+    except (OSError, core.OrchestratorError):
+        return []
+    command = evidence.get("command")
+    worker_config = evidence.get("worker_config")
+    prompt_via = (
+        worker_config.get("prompt_via") if isinstance(worker_config, dict) else None
+    )
+    if (
+        not isinstance(command, list)
+        or not all(isinstance(item, str) for item in command)
+        or not isinstance(prompt_via, str)
+    ):
+        return []
+    return [
+        item
+        for item in workers.worker_profile_warnings(
+            name=str(evidence.get("worker") or task_id),
+            command=command,
+            prompt_via=prompt_via,
+        )
+        if item["code"] not in existing_codes
+    ]
 
 
 def base_summary(
@@ -475,6 +620,39 @@ def descriptor_diagnostics(
                 suggested_action="Inspect task.json and result.json manually.",
             )
         )
+    profile_warnings = descriptor.get("warnings")
+    if isinstance(profile_warnings, list):
+        for warning in profile_warnings:
+            if not isinstance(warning, dict):
+                continue
+            if warning.get("severity") not in worker_diagnostics.SEVERITIES:
+                continue
+            diagnostics.append(
+                diagnostic(
+                    code=str(warning.get("code") or "worker_profile_warning"),
+                    severity=str(warning["severity"]),
+                    message=str(warning.get("message") or "worker profile warning"),
+                    suggested_action=str(
+                        warning.get("suggested_action")
+                        or "Review the worker profile before accepting this task."
+                    ),
+                )
+            )
+    if isinstance(descriptor.get("output_collection_error"), str):
+        diagnostics.append(
+            diagnostic(
+                code="task_declared_output_collection_failed",
+                severity="warning",
+                message=(
+                    f"task {task_id} declared output collection failed: "
+                    f"{descriptor['output_collection_error']}"
+                ),
+                suggested_action=(
+                    "Inspect task-local outputs and import the complete result "
+                    "before accepting the task."
+                ),
+            )
+        )
     return diagnostics
 
 
@@ -572,9 +750,7 @@ def log_size_diagnostics(
     }
     if not large:
         return diagnostics
-    details = ", ".join(
-        f"{name}={size} bytes" for name, size in sorted(large.items())
-    )
+    details = ", ".join(f"{name}={size} bytes" for name, size in sorted(large.items()))
     diagnostics.append(
         diagnostic(
             code="task_large_worker_log",

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-engine://schemas/worker-usage",
+  "title": "Optional worker usage telemetry",
+  "schema_version": 1,
+  "kind": "WORKER_USAGE",
+  "type": "object",
+  "required": ["schema_version", "kind", "task_id", "worker", "adapter", "total_tokens", "captured_at"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "WORKER_USAGE"},
+    "task_id": {"type": "string", "minLength": 1},
+    "worker": {"type": "string", "minLength": 1},
+    "adapter": {"type": "string", "minLength": 1},
+    "parsed_records": {"type": "integer", "minimum": 0},
+    "token_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+    "total_tokens": {"type": "integer", "minimum": 0},
+    "captured_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}

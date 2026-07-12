@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-engine://schemas/worker-lease",
+  "title": "Worker supervisor lease",
+  "schema_version": 1,
+  "kind": "WORKER_LEASE",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "kind",
+    "task_id",
+    "worker",
+    "status",
+    "supervisor_pid",
+    "supervisor_identity",
+    "lease_interval_seconds",
+    "lease_expiry_seconds",
+    "acquired_at",
+    "renewed_at"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "WORKER_LEASE"},
+    "task_id": {"type": "string", "minLength": 1},
+    "worker": {"type": "string", "minLength": 1},
+    "status": {"enum": ["held", "released"]},
+    "holder": {"const": "supervisor"},
+    "supervisor_pid": {"type": "integer", "minimum": 1},
+    "supervisor_identity": {"$ref": "#/$defs/processIdentity"},
+    "worker_pid": {"type": "integer", "minimum": 1},
+    "worker_pgid": {"type": "integer", "minimum": 1},
+    "worker_identity": {"$ref": "#/$defs/processIdentity"},
+    "lease_interval_seconds": {"type": "number", "exclusiveMinimum": 0},
+    "lease_expiry_seconds": {"type": "number", "exclusiveMinimum": 0},
+    "acquired_at": {"type": "string", "format": "date-time"},
+    "renewed_at": {"type": "string", "format": "date-time"},
+    "released_at": {"type": "string", "format": "date-time"},
+    "released_by": {"enum": ["supervisor", "reaper"]},
+    "terminal_status": {"type": "string", "minLength": 1}
+  },
+  "$defs": {
+    "processIdentity": {
+      "type": "object",
+      "required": ["source", "pid", "start_ticks", "state"],
+      "properties": {
+        "source": {"const": "linux-proc-stat"},
+        "pid": {"type": "integer", "minimum": 1},
+        "start_ticks": {"type": "integer", "minimum": 0},
+        "state": {"type": "string", "minLength": 1},
+        "boot_id": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

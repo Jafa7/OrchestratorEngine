@@ -4,13 +4,40 @@ build-backend = "hatchling.build"
 
 [project]
 name = "orchestrator-engine"
-version = "0.1.1"
+version = "0.2.0"
 description = "Portable local event-driven coordination layer for AI agents and CLI workers."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Oleg Synelnykov (Jafa7)" }]
+keywords = [
+    "ai-agents",
+    "orchestration",
+    "multi-agent",
+    "claude",
+    "codex",
+    "copilot",
+    "automation",
+    "cli",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Utilities",
+]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Jafa7/OrchestratorEngine"
+Documentation = "https://github.com/Jafa7/OrchestratorEngine/tree/main/docs"
+Changelog = "https://github.com/Jafa7/OrchestratorEngine/blob/main/CHANGELOG.md"
+Issues = "https://github.com/Jafa7/OrchestratorEngine/issues"
 
 [project.optional-dependencies]
 test = ["jsonschema>=4.18,<5"]
@@ -22,7 +49,16 @@ orchestrator-engine = "orchestrator_engine.cli:main"
 packages = ["src/orchestrator_engine"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src", "tests", "docs", "README.md", "LICENSE", "CHANGELOG.md"]
+include = [
+    "src",
+    "tests",
+    "docs",
+    "benchmarks",
+    "examples",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+]
 
 [tool.ruff]
 line-length = 88

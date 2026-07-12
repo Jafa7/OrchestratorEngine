@@ -418,9 +418,7 @@ def log_size_diagnostics(
     }
     if not large:
         return []
-    details = ", ".join(
-        f"{name}={size} bytes" for name, size in sorted(large.items())
-    )
+    details = ", ".join(f"{name}={size} bytes" for name, size in sorted(large.items()))
     return [
         diagnostic(
             code="verification_large_log",

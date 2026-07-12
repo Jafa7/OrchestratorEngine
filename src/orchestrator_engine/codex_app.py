@@ -55,11 +55,11 @@ def build_auto_response(message: dict[str, Any]) -> dict[str, Any]:
         "id": request_id,
         "error": {
             "code": -32601,
-            "message": (
-                f"{method} auto-declined by orchestrator-engine watcher"
-            ),
+            "message": (f"{method} auto-declined by orchestrator-engine watcher"),
         },
     }
+
+
 DEEP_LINK_COMMAND = [
     "powershell.exe",
     "-NoProfile",
@@ -160,9 +160,7 @@ def activate_thread_window(
         outcome["live_refresh"] = "requested"
     else:
         outcome["live_refresh"] = "failed"
-        outcome["live_refresh_error"] = (
-            f"exit code {refresh_completed.returncode}"
-        )
+        outcome["live_refresh_error"] = f"exit code {refresh_completed.returncode}"
     return outcome
 
 
@@ -221,9 +219,7 @@ class AppServer:
             raise CodexAppError("App Server exited before request")
         assert self._process.stdin is not None
         with self._send_lock:
-            self._process.stdin.write(
-                json.dumps(value, separators=(",", ":")) + "\n"
-            )
+            self._process.stdin.write(json.dumps(value, separators=(",", ":")) + "\n")
             self._process.stdin.flush()
 
     def notify(self, method: str, params: dict[str, Any] | None = None) -> None:
@@ -713,9 +709,7 @@ def wake_current_thread(
             },
         )
         started_turn = started.get("turn")
-        turn_id = (
-            started_turn.get("id") if isinstance(started_turn, dict) else None
-        )
+        turn_id = started_turn.get("id") if isinstance(started_turn, dict) else None
         if not isinstance(turn_id, str) or not turn_id:
             raise CodexAppError("turn/start returned no turn id")
         outcome = server.await_turn_outcome(
@@ -726,9 +720,7 @@ def wake_current_thread(
         if outcome is not None and outcome.get("status") == "failed":
             turn_error = outcome.get("error")
             message = (
-                turn_error.get("message")
-                if isinstance(turn_error, dict)
-                else None
+                turn_error.get("message") if isinstance(turn_error, dict) else None
             )
             raise CodexAppError(f"turn failed: {message or 'no error detail'}")
         # A turn still running after the failure window was submitted; it may

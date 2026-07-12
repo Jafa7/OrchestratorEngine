@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "kind": "WORKER_LEASE",
+  "task_id": "TASK-1",
+  "worker": "codex",
+  "status": "held",
+  "holder": "supervisor",
+  "supervisor_pid": 123,
+  "supervisor_identity": {
+    "source": "linux-proc-stat",
+    "pid": 123,
+    "start_ticks": 456,
+    "state": "S",
+    "boot_id": "example-boot-id"
+  },
+  "lease_interval_seconds": 30,
+  "lease_expiry_seconds": 90,
+  "acquired_at": "2026-07-12T12:00:00+00:00",
+  "renewed_at": "2026-07-12T12:00:30+00:00"
+}

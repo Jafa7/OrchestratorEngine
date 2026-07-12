@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-engine://schemas/worker-output-manifest",
+  "title": "Task-local declared worker outputs",
+  "schema_version": 1,
+  "kind": "WORKER_OUTPUT_MANIFEST",
+  "type": "object",
+  "required": ["schema_version", "kind", "task_id", "worker", "file_count", "total_bytes", "files", "captured_at"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "WORKER_OUTPUT_MANIFEST"},
+    "task_id": {"type": "string", "minLength": 1},
+    "worker": {"type": "string", "minLength": 1},
+    "file_count": {"type": "integer", "minimum": 0, "maximum": 64},
+    "total_bytes": {"type": "integer", "minimum": 0, "maximum": 16777216},
+    "files": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "required": ["path", "bytes", "sha256"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "bytes": {"type": "integer", "minimum": 0, "maximum": 4194304},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "captured_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}

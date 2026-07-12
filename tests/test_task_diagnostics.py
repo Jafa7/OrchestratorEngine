@@ -25,6 +25,44 @@ def alive_only(*alive_pids: int):
 
 
 class TaskDiagnosticTests(unittest.TestCase):
+    def test_completed_task_preserves_profile_artifact_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            task_dir = workers.task_dir_for(root, "T-PLAN")
+            task_dir.mkdir(parents=True, exist_ok=True)
+            core.atomic_json(task_dir / "result.json", {"terminal_status": "completed"})
+            core.atomic_json(
+                task_dir / "evidence.json",
+                {
+                    "worker": "claude-readonly",
+                    "command": [
+                        "claude",
+                        "-p",
+                        "--permission-mode",
+                        "plan",
+                    ],
+                    "worker_config": {"prompt_via": "stdin"},
+                },
+            )
+            write_task(
+                root,
+                "T-PLAN",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-PLAN",
+                    "worker": "claude-readonly",
+                    "status": "completed",
+                },
+            )
+            report = task_diagnostics.diagnose_tasks(root)
+
+        self.assertEqual(report["diagnostic_count"], 1)
+        self.assertEqual(
+            report["tasks"]["T-PLAN"]["diagnostics"][0]["code"],
+            "claude_plan_output_may_be_external",
+        )
+
     def test_completed_task_with_artifacts_is_clean(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

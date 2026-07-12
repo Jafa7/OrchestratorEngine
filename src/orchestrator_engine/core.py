@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -35,21 +37,70 @@ def utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds")
 
 
+def json_text(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+
 def atomic_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    temporary.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    temporary.write_text(json_text(value), encoding="utf-8")
     os.replace(temporary, path)
 
 
-def load_object(path: Path) -> dict[str, Any]:
+def claim_json(path: Path, value: object) -> bool:
+    """Write `value` to `path` only if this process creates the file.
+
+    An exclusive create is the election: concurrent writers of the same durable
+    artifact — a supervisor finalizing its own task and a reaper finalizing what
+    it believes is a lost one — cannot both win, so the artifact can never hold
+    two divergent terminal records. The loser is told it lost and must read the
+    winner's file instead of overwriting it.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as error:
-        raise OrchestratorError(f"file not found: {path}") from error
+        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        return False
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(json_text(value))
+        handle.flush()
+        os.fsync(handle.fileno())
+    return True
+
+
+def terminal_event_id(project_root: Path, *, task_id: str) -> str:
+    """Return the one event id a task's terminal event may ever use.
+
+    The id is derived from the task rather than generated, so a repeated or
+    raced emission converges on a single event file instead of leaving two
+    contradictory terminal events in the durable audit trail.
+    """
+    return str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"orchestrator-engine://terminal/{project_id(project_root)}/{task_id}",
+        )
+    )
+
+
+def load_object(path: Path) -> dict[str, Any]:
+    text: str | None = None
+    for attempt in range(5):
+        try:
+            text = path.read_text(encoding="utf-8")
+            break
+        except FileNotFoundError as error:
+            if attempt == 4:
+                raise OrchestratorError(f"file not found: {path}") from error
+            time.sleep(0.02)
+        except OSError as error:
+            if error.errno != errno.ENODATA or attempt == 4:
+                raise
+            time.sleep(0.02)
+    assert text is not None
+    try:
+        value = json.loads(text)
     except json.JSONDecodeError as error:
         raise OrchestratorError(f"invalid JSON: {path}") from error
     if not isinstance(value, dict):
@@ -95,10 +146,13 @@ def event_path_for(
     *,
     state_dir: str = DEFAULT_STATE_DIR,
 ) -> Path:
-    return events_root(
-        project_root,
-        state_dir=state_dir,
-    ) / f"{event_id}.json"
+    return (
+        events_root(
+            project_root,
+            state_dir=state_dir,
+        )
+        / f"{event_id}.json"
+    )
 
 
 def signal_path_for(
@@ -108,9 +162,7 @@ def signal_path_for(
     state_dir: str = DEFAULT_STATE_DIR,
 ) -> Path:
     return (
-        inbox_root(project_root, state_dir=state_dir)
-        / "signals"
-        / f"{event_id}.json"
+        inbox_root(project_root, state_dir=state_dir) / "signals" / f"{event_id}.json"
     )
 
 

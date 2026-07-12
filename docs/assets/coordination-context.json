@@ -1,0 +1,49 @@
+{
+  "baseline": "read_all_cumulative_worker_stdout_logs_at_each_poll",
+  "kind": "ORCHESTRATOR_COORDINATION_CONTEXT_BENCHMARK",
+  "large_log_threshold_bytes": 32768,
+  "metric": "utf8_bytes_presented_during_four_polling_checks",
+  "orchestrated": "read_full_status_once_then_cursor_deltas",
+  "scenarios": [
+    {
+      "context_reduction_percent": 97.75,
+      "context_share_percent": 2.25,
+      "detail": "1 task | 256 KB log",
+      "final_log_bytes": 262144,
+      "key": "long-test",
+      "naive_polling_bytes": 655360,
+      "orchestrator_status_bytes": 14725,
+      "poll_count": 4,
+      "quality_guard": "passed",
+      "task_count": 1,
+      "title": "Long test"
+    },
+    {
+      "context_reduction_percent": 99.44,
+      "context_share_percent": 0.56,
+      "detail": "1 task | 1 MB log",
+      "final_log_bytes": 1048576,
+      "key": "ai-worker",
+      "naive_polling_bytes": 2621440,
+      "orchestrator_status_bytes": 14727,
+      "poll_count": 4,
+      "quality_guard": "passed",
+      "task_count": 1,
+      "title": "AI worker"
+    },
+    {
+      "context_reduction_percent": 99.56,
+      "context_share_percent": 0.44,
+      "detail": "3 tasks | 512 KB logs",
+      "final_log_bytes": 1572864,
+      "key": "parallel-workers",
+      "naive_polling_bytes": 3932160,
+      "orchestrator_status_bytes": 17314,
+      "poll_count": 4,
+      "quality_guard": "passed",
+      "task_count": 3,
+      "title": "Parallel workers"
+    }
+  ],
+  "schema_version": 1
+}

@@ -131,9 +131,7 @@ def check_schema_compatibility(project: Path, *, state_dir: str) -> dict[str, An
         for item in survey["unsupported"]
         if type(item.get("schema_version")) is int
     ]
-    malformed = [
-        item for item in survey["unsupported"] if item not in incompatible
-    ]
+    malformed = [item for item in survey["unsupported"] if item not in incompatible]
     if incompatible:
         return check(
             "schema_compatibility",
@@ -172,9 +170,7 @@ def check_binding(project: Path, *, state_dir: str) -> dict[str, Any]:
             f"binding is invalid: {error}",
             hint="Recreate the binding from the host chat.",
             data={
-                "binding_path": str(
-                    binding.binding_path(project, state_dir=state_dir)
-                )
+                "binding_path": str(binding.binding_path(project, state_dir=state_dir))
             },
         )
     if bound is None:
@@ -185,9 +181,7 @@ def check_binding(project: Path, *, state_dir: str) -> dict[str, Any]:
             "no host binding configured",
             hint="Run `orchestrator-engine bind --host ...` from the host chat.",
             data={
-                "binding_path": str(
-                    binding.binding_path(project, state_dir=state_dir)
-                )
+                "binding_path": str(binding.binding_path(project, state_dir=state_dir))
             },
         )
     return check(
@@ -304,7 +298,7 @@ def check_watcher_channel(
             hint=(
                 "Review `inbox` and durable event/result/evidence artifacts "
                 "manually; then use `watcher --host codex acknowledge "
-                "--event-id EVENT_ID --reason \"...\"`. Do not start a "
+                '--event-id EVENT_ID --reason "..."`. Do not start a '
                 "Codex callback watcher for live refresh."
             ),
             data={

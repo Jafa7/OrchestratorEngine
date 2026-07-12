@@ -9,15 +9,29 @@ exit. The configured host channel decides how that completion is delivered.
 from __future__ import annotations
 
 import contextlib
+import fcntl
+import hashlib
+import json
 import math
+import os
+import signal
 import subprocess
 import sys
 import time
 import tomllib
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from . import binding, core, worker_diagnostics
+from . import (
+    binding,
+    core,
+    task_resolution,
+    telemetry_adapters,
+    worker_diagnostics,
+    worker_lease,
+    worker_policy,
+)
 
 WORKERS_CONFIG_NAME = "workers.toml"
 PROMPT_MODES = {"arg", "stdin"}
@@ -30,16 +44,137 @@ RESERVED_KEYS = {
     "expect_long_running",
     "availability_probe",
     "availability_timeout_seconds",
+    "policy",
+    "max_concurrent",
+    "max_no_progress_seconds",
+    "soft_duration_seconds",
+    "soft_output_bytes",
+    "soft_token_budget",
+    "usage_adapter",
 }
 # Workers may legitimately run for hours with no configured timeout; the
 # supervisor refreshes the task descriptor on this cadence so long tasks stay
 # observable (`last_alive_at`) instead of looking stuck.
 TASK_HEARTBEAT_INTERVAL_SECONDS = 30.0
 MAX_AVAILABILITY_TIMEOUT_SECONDS = 300.0
+# A timed-out worker is asked to stop with a process-group SIGTERM and gets this
+# long to exit on its own before the group is force-killed.
+WORKER_TERMINATION_GRACE_SECONDS = 10.0
+# Bound on how long forced termination may take before the supervisor gives up
+# waiting and finalizes the task anyway.
+WORKER_TERMINATION_TIMEOUT_SECONDS = 10.0
+WORKER_TERMINATION_POLL_SECONDS = 0.1
+CONTROL_POLL_SECONDS = 1.0
+MAX_DECLARED_OUTPUT_FILES = 64
+MAX_DECLARED_OUTPUT_FILE_BYTES = 4 * 1024 * 1024
+MAX_DECLARED_OUTPUT_TOTAL_BYTES = 16 * 1024 * 1024
+_DETACHED_PROCESSES: list[Any] = []
+INTENT_ENUMS = {
+    "role": {
+        "implementation",
+        "review",
+        "verification",
+        "architecture",
+        "triage",
+        "documentation",
+    },
+    "risk": {"low", "medium", "high"},
+    "verification": {"structural", "focused", "full"},
+    "permissions": {"readonly", "restricted", "full"},
+}
 
 
 class WorkerError(RuntimeError):
     """A deterministic worker registry or runner failure."""
+
+
+def canonical_sha256(value: object) -> str:
+    payload = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def collect_declared_outputs(output_dir: Path, task_dir: Path) -> dict[str, Any]:
+    """Hash bounded task-local outputs without following symlinks."""
+    files: list[dict[str, Any]] = []
+    total_bytes = 0
+    if output_dir.is_symlink():
+        raise WorkerError("declared output directory must not be a symlink")
+    for path in sorted(output_dir.rglob("*")) if output_dir.is_dir() else []:
+        if path.is_symlink() or not path.is_file():
+            continue
+        if len(files) >= MAX_DECLARED_OUTPUT_FILES:
+            raise WorkerError(
+                f"declared outputs exceed {MAX_DECLARED_OUTPUT_FILES} files"
+            )
+        size = path.stat().st_size
+        if size > MAX_DECLARED_OUTPUT_FILE_BYTES:
+            raise WorkerError(
+                "declared output exceeds "
+                f"{MAX_DECLARED_OUTPUT_FILE_BYTES} bytes: {path}"
+            )
+        total_bytes += size
+        if total_bytes > MAX_DECLARED_OUTPUT_TOTAL_BYTES:
+            raise WorkerError(
+                f"declared outputs exceed {MAX_DECLARED_OUTPUT_TOTAL_BYTES} total bytes"
+            )
+        files.append(
+            {
+                "path": str(path.relative_to(task_dir)),
+                "bytes": size,
+                "sha256": core.sha256_file(path),
+            }
+        )
+    return {
+        "schema_version": core.SCHEMA_VERSION,
+        "kind": "WORKER_OUTPUT_MANIFEST",
+        "file_count": len(files),
+        "total_bytes": total_bytes,
+        "files": files,
+        "captured_at": core.utc_now(),
+    }
+
+
+def remember_detached_process(process: Any) -> None:
+    """Keep detached children reachable and reap completed ones opportunistically."""
+    _DETACHED_PROCESSES[:] = [
+        child for child in _DETACHED_PROCESSES if child.poll() is None
+    ]
+    _DETACHED_PROCESSES.append(process)
+
+
+def load_task_intent(path: Path | None) -> tuple[dict[str, Any] | None, str | None]:
+    if path is None:
+        return None, None
+    intent_path = core.ensure_file(path.expanduser().resolve(), field="task intent")
+    intent = core.load_object(intent_path)
+    unknown = sorted(
+        set(intent) - set(INTENT_ENUMS) - {"authorizations", "schema_version", "kind"}
+    )
+    if unknown:
+        raise WorkerError(f"task intent contains unknown fields: {', '.join(unknown)}")
+    if (
+        intent.get("schema_version", 1) != 1
+        or intent.get("kind", "WORKER_TASK_INTENT") != "WORKER_TASK_INTENT"
+    ):
+        raise WorkerError("task intent has unsupported schema_version or kind")
+    for key, allowed in INTENT_ENUMS.items():
+        value = intent.get(key)
+        if value is not None and value not in allowed:
+            raise WorkerError(
+                f"task intent {key} must be one of: {', '.join(sorted(allowed))}"
+            )
+    authorizations = intent.get("authorizations", {})
+    if not isinstance(authorizations, dict) or any(
+        key not in {"commit", "push", "network"} or not isinstance(value, bool)
+        for key, value in authorizations.items()
+    ):
+        raise WorkerError(
+            "task intent authorizations must contain boolean commit/push/network fields"
+        )
+    normalized = {**intent, "schema_version": 1, "kind": "WORKER_TASK_INTENT"}
+    return normalized, canonical_sha256(normalized)
 
 
 def workers_config_path(
@@ -84,10 +219,95 @@ def load_registry(
     workers = value.get("workers")
     if not isinstance(workers, dict):
         raise WorkerError(f"workers config must contain a [workers.*] table: {path}")
+    try:
+        policies = worker_policy.load_policies(path, value.get("policies"))
+    except worker_policy.WorkerPolicyError as error:
+        raise WorkerError(str(error)) from error
     registry: dict[str, dict[str, Any]] = {}
     for name, config in workers.items():
-        registry[name] = validate_worker_config(name, config)
+        validated = validate_worker_config(name, config)
+        policy_name = validated["policy"]
+        if policy_name is not None and policy_name not in policies:
+            raise WorkerError(f"worker {name} references unknown policy: {policy_name}")
+        validated["policy_config"] = (
+            policies[policy_name] if policy_name is not None else None
+        )
+        if validated["policy_config"] is not None:
+            try:
+                worker_policy.read_policy_materials(
+                    project_root,
+                    validated["policy_config"],
+                )
+            except worker_policy.WorkerPolicyError as error:
+                validated["diagnostics"].append(
+                    worker_diagnostics.diagnostic(
+                        code="worker_policy_unreadable",
+                        severity="error",
+                        message=f"worker {name} policy is not dispatchable: {error}",
+                        suggested_action=(
+                            "Repair the configured policy files before a new "
+                            "dispatch. Existing tasks use their saved effective "
+                            "prompt snapshots."
+                        ),
+                    )
+                )
+                validated["warnings"] = worker_diagnostics.filter_diagnostics(
+                    validated["diagnostics"],
+                    minimum_severity="warning",
+                )
+        registry[name] = validated
     return registry
+
+
+def load_dispatch_config(
+    project_root: Path,
+    *,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+) -> dict[str, Any]:
+    path = workers_config_path(project_root, state_dir=state_dir)
+    if not path.is_file():
+        return {"max_concurrent": None, "enforce_intent": False}
+    try:
+        value = tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as error:
+        raise WorkerError(f"invalid workers config: {path}: {error}") from error
+    dispatch = value.get("dispatch", {})
+    if not isinstance(dispatch, dict):
+        raise WorkerError("workers config [dispatch] must be a table")
+    limit = dispatch.get("max_concurrent")
+    if limit is not None and (
+        not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0
+    ):
+        raise WorkerError("dispatch max_concurrent must be a positive integer")
+    enforce_intent = dispatch.get("enforce_intent", False)
+    if not isinstance(enforce_intent, bool):
+        raise WorkerError("dispatch enforce_intent must be a boolean")
+    return {"max_concurrent": limit, "enforce_intent": enforce_intent}
+
+
+def enforce_task_intent(
+    project_root: Path,
+    *,
+    intent: dict[str, Any] | None,
+    config: dict[str, Any],
+    state_dir: str,
+) -> None:
+    dispatch = load_dispatch_config(project_root, state_dir=state_dir)
+    if not dispatch["enforce_intent"] or intent is None:
+        return
+    requested = intent.get("permissions")
+    if not isinstance(requested, str):
+        return
+    configured = config.get("extras", {}).get("permission_profile")
+    if configured not in {"readonly", "restricted", "full"}:
+        raise WorkerError(
+            "intent enforcement requires worker permission_profile metadata"
+        )
+    rank = {"readonly": 0, "restricted": 1, "full": 2}
+    if rank[str(configured)] > rank[requested]:
+        raise WorkerError(
+            f"worker permission_profile {configured} exceeds task intent {requested}"
+        )
 
 
 def validate_worker_config(name: str, config: object) -> dict[str, Any]:
@@ -117,9 +337,46 @@ def validate_worker_config(name: str, config: object) -> dict[str, Any]:
     expect_long_running = config.get("expect_long_running", False)
     if not isinstance(expect_long_running, bool):
         raise WorkerError(f"worker {name} expect_long_running flag must be a boolean")
+    policy = config.get("policy")
+    if policy is not None and (not isinstance(policy, str) or not policy.strip()):
+        raise WorkerError(f"worker {name} policy must be a non-empty string")
+    max_concurrent = config.get("max_concurrent")
+    if max_concurrent is not None and (
+        not isinstance(max_concurrent, int)
+        or isinstance(max_concurrent, bool)
+        or max_concurrent <= 0
+    ):
+        raise WorkerError(f"worker {name} max_concurrent must be a positive integer")
+    numeric_limits: dict[str, int | float | None] = {}
+    for key in (
+        "max_no_progress_seconds",
+        "soft_duration_seconds",
+        "soft_output_bytes",
+        "soft_token_budget",
+    ):
+        limit = config.get(key)
+        if limit is not None and (
+            not isinstance(limit, (int, float))
+            or isinstance(limit, bool)
+            or not math.isfinite(limit)
+            or limit <= 0
+        ):
+            raise WorkerError(f"worker {name} {key} must be positive and finite")
+        numeric_limits[key] = limit
+    usage_adapter = config.get("usage_adapter")
+    if usage_adapter is not None and (
+        not isinstance(usage_adapter, str) or not usage_adapter.strip()
+    ):
+        raise WorkerError(f"worker {name} usage_adapter must be a non-empty string")
+    if (
+        usage_adapter is not None
+        and usage_adapter not in telemetry_adapters.USAGE_ADAPTERS
+    ):
+        raise WorkerError(f"worker {name} has unknown usage_adapter: {usage_adapter}")
     availability_probe = config.get("availability_probe")
     if availability_probe is not None and (
-        not isinstance(availability_probe, list) or not availability_probe
+        not isinstance(availability_probe, list)
+        or not availability_probe
         or not all(isinstance(item, str) and item for item in availability_probe)
     ):
         raise WorkerError(
@@ -137,11 +394,7 @@ def validate_worker_config(name: str, config: object) -> dict[str, Any]:
             f"worker {name} availability_timeout_seconds must be finite and between "
             f"0 and {MAX_AVAILABILITY_TIMEOUT_SECONDS:g} seconds"
         )
-    extras = {
-        key: value
-        for key, value in config.items()
-        if key not in RESERVED_KEYS
-    }
+    extras = {key: value for key, value in config.items() if key not in RESERVED_KEYS}
     diagnostics = worker_diagnostics.evaluate_profile(
         name=name,
         command=list(command),
@@ -151,6 +404,21 @@ def validate_worker_config(name: str, config: object) -> dict[str, Any]:
         availability_probe=availability_probe,
         availability_timeout_seconds=availability_timeout,
     )
+    if policy is None:
+        diagnostics.append(
+            worker_diagnostics.diagnostic(
+                code="worker_policy_not_configured",
+                severity="info",
+                message=(
+                    f"worker {name} has no composed behavior policy; only its "
+                    "task prompt and provider-local instructions will apply"
+                ),
+                suggested_action=(
+                    "Assign an explicit [policies.*] entry when deterministic "
+                    "quality/economy behavior is required."
+                ),
+            )
+        )
     return {
         "name": name,
         "enabled": enabled,
@@ -158,6 +426,10 @@ def validate_worker_config(name: str, config: object) -> dict[str, Any]:
         "prompt_via": prompt_via,
         "timeout_seconds": timeout_seconds,
         "expect_long_running": expect_long_running,
+        "policy": policy,
+        "max_concurrent": max_concurrent,
+        "usage_adapter": usage_adapter,
+        **numeric_limits,
         "availability_probe": list(availability_probe) if availability_probe else None,
         "availability_timeout_seconds": availability_timeout,
         "extras": extras,
@@ -224,6 +496,7 @@ def list_workers(
     return {
         "schema_version": core.SCHEMA_VERSION,
         "config_path": str(workers_config_path(project_root, state_dir=state_dir)),
+        "dispatch": load_dispatch_config(project_root, state_dir=state_dir),
         "workers": {
             name: {
                 "enabled": config["enabled"],
@@ -231,6 +504,23 @@ def list_workers(
                 "prompt_via": config["prompt_via"],
                 "timeout_seconds": config["timeout_seconds"],
                 "expect_long_running": config["expect_long_running"],
+                "policy": config["policy"],
+                "max_concurrent": config["max_concurrent"],
+                "max_no_progress_seconds": config["max_no_progress_seconds"],
+                "soft_duration_seconds": config["soft_duration_seconds"],
+                "soft_output_bytes": config["soft_output_bytes"],
+                "soft_token_budget": config["soft_token_budget"],
+                "usage_adapter": config["usage_adapter"],
+                "policy_files": (
+                    [str(path) for path in config["policy_config"]["files"]]
+                    if config["policy_config"] is not None
+                    else []
+                ),
+                "policy_metadata": (
+                    config["policy_config"]["metadata"]
+                    if config["policy_config"] is not None
+                    else {}
+                ),
                 "availability_probe_configured": (
                     config["availability_probe"] is not None
                 ),
@@ -255,15 +545,11 @@ def diagnose_workers(
     if worker is not None:
         if worker not in registry:
             configured = ", ".join(sorted(registry)) or "<none>"
-            raise WorkerError(
-                f"unknown worker: {worker}; configured: {configured}"
-            )
+            raise WorkerError(f"unknown worker: {worker}; configured: {configured}")
         registry = {worker: registry[worker]}
     if enabled_only:
         registry = {
-            name: config
-            for name, config in registry.items()
-            if config["enabled"]
+            name: config for name, config in registry.items() if config["enabled"]
         }
 
     summaries: dict[str, Any] = {}
@@ -322,6 +608,356 @@ def availability_workers(
     }
 
 
+def queue_root(
+    project_root: Path,
+    *,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+) -> Path:
+    return core.state_root(project_root, state_dir=state_dir) / "queue"
+
+
+@contextlib.contextmanager
+def admission_lock(project_root: Path, *, state_dir: str):
+    path = queue_root(project_root, state_dir=state_dir) / "admission.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def active_task_counts(
+    project_root: Path,
+    *,
+    state_dir: str,
+) -> tuple[int, dict[str, int]]:
+    total = 0
+    by_worker: dict[str, int] = {}
+    for path in sorted(
+        tasks_root(project_root, state_dir=state_dir).glob("*/task.json")
+    ):
+        with contextlib.suppress(OSError, core.OrchestratorError):
+            descriptor = core.load_object(path)
+            if descriptor.get("status") not in {"starting", "running", "cancelling"}:
+                continue
+            worker = descriptor.get("worker")
+            if not isinstance(worker, str):
+                continue
+            total += 1
+            by_worker[worker] = by_worker.get(worker, 0) + 1
+    return total, by_worker
+
+
+def can_admit_worker(
+    project_root: Path,
+    *,
+    worker: str,
+    config: dict[str, Any],
+    state_dir: str,
+) -> bool:
+    total, by_worker = active_task_counts(project_root, state_dir=state_dir)
+    global_limit = load_dispatch_config(project_root, state_dir=state_dir)[
+        "max_concurrent"
+    ]
+    worker_limit = config.get("max_concurrent")
+    return not (
+        (global_limit is not None and total >= global_limit)
+        or (worker_limit is not None and by_worker.get(worker, 0) >= worker_limit)
+    )
+
+
+def supervisor_command(
+    project_root: Path,
+    *,
+    worker: str,
+    task_id: str,
+    prompt_file: Path,
+    state_dir: str,
+) -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "orchestrator_engine.cli",
+        "--project-root",
+        str(project_root),
+        "--state-dir",
+        state_dir,
+        "worker",
+        "supervise",
+        "--worker",
+        worker,
+        "--task-id",
+        task_id,
+        "--prompt-file",
+        str(prompt_file),
+    ]
+
+
+def spawn_supervisor(
+    project_root: Path,
+    *,
+    worker: str,
+    task_id: str,
+    prompt_file: Path,
+    state_dir: str,
+    supervisor_log: Path,
+    popen_factory=subprocess.Popen,
+) -> Any:
+    with supervisor_log.open("ab") as log:
+        process = popen_factory(
+            supervisor_command(
+                project_root,
+                worker=worker,
+                task_id=task_id,
+                prompt_file=prompt_file,
+                state_dir=state_dir,
+            ),
+            cwd=str(project_root),
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+            close_fds=True,
+        )
+    if hasattr(process, "poll"):
+        remember_detached_process(process)
+    return process
+
+
+def pending_queue_path(project_root: Path, task_id: str, *, state_dir: str) -> Path:
+    return queue_root(project_root, state_dir=state_dir) / "pending" / f"{task_id}.json"
+
+
+def fingerprint_root(project_root: Path, *, state_dir: str) -> Path:
+    return (
+        core.state_root(project_root, state_dir=state_dir) / "dispatch" / "fingerprints"
+    )
+
+
+def claim_dispatch_fingerprint(
+    project_root: Path,
+    *,
+    descriptor: dict[str, Any],
+    config: dict[str, Any],
+    intent_sha256: str | None,
+    state_dir: str,
+    allow_duplicate: bool,
+    duplicate_reason: str | None,
+) -> dict[str, Any]:
+    policy = descriptor.get("worker_policy")
+    policy_identity = (
+        {key: policy.get(key) for key in ("name", "files", "metadata")}
+        if isinstance(policy, dict)
+        else None
+    )
+    fingerprint = canonical_sha256(
+        {
+            "version": 1,
+            "worker": descriptor["worker"],
+            "prompt_sha256": descriptor["prompt_sha256"],
+            "worker_policy": policy_identity,
+            "intent_sha256": intent_sha256,
+            "command": config["command"],
+        }
+    )
+    descriptor["dispatch_fingerprint"] = fingerprint
+    claim_dir = fingerprint_root(project_root, state_dir=state_dir) / fingerprint
+    claim_path = claim_dir / f"{descriptor['task_id']}.json"
+    claim = {
+        "schema_version": 1,
+        "kind": "WORKER_DISPATCH_CLAIM",
+        "fingerprint": fingerprint,
+        "task_id": descriptor["task_id"],
+        "worker": descriptor["worker"],
+        "created_at": core.utc_now(),
+    }
+    active_tasks: list[str] = []
+    for existing_claim_path in sorted(claim_dir.glob("*.json")):
+        with contextlib.suppress(OSError, core.OrchestratorError):
+            existing = core.load_object(existing_claim_path)
+            existing_task = str(existing.get("task_id", ""))
+            existing_path = (
+                task_dir_for(project_root, existing_task, state_dir=state_dir)
+                / "task.json"
+            )
+            existing_descriptor = core.load_object(existing_path)
+            if existing_descriptor.get("status") in core.TERMINAL_STATUSES:
+                release_dispatch_claim(
+                    project_root,
+                    existing_descriptor,
+                    state_dir=state_dir,
+                )
+            else:
+                active_tasks.append(existing_task)
+    if active_tasks and not allow_duplicate:
+        raise WorkerError(
+            f"exact duplicate of active task {active_tasks[0]}; "
+            "use --allow-duplicate with --duplicate-reason to override"
+        )
+    if active_tasks and (not duplicate_reason or not duplicate_reason.strip()):
+        raise WorkerError("--allow-duplicate requires --duplicate-reason")
+    if not core.claim_json(claim_path, claim):
+        raise WorkerError(
+            f"dispatch claim already exists for task {descriptor['task_id']}"
+        )
+    descriptor["dispatch_claim_path"] = str(claim_path)
+    if active_tasks:
+        descriptor["duplicate_override"] = {
+            "reason": duplicate_reason.strip(),
+            "conflicts_with_task_id": active_tasks[0],
+            "active_conflicts": active_tasks,
+            "recorded_at": core.utc_now(),
+        }
+    return descriptor
+
+
+def release_dispatch_claim(
+    project_root: Path,
+    descriptor: dict[str, Any],
+    *,
+    state_dir: str,
+) -> None:
+    value = descriptor.get("dispatch_claim_path")
+    if not isinstance(value, str):
+        return
+    claim_path = Path(value)
+    if not claim_path.is_file():
+        return
+    history = (
+        core.state_root(project_root, state_dir=state_dir)
+        / "dispatch"
+        / "history"
+        / f"{descriptor.get('task_id', claim_path.stem)}.json"
+    )
+    history.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.replace(claim_path, history)
+    except FileNotFoundError:
+        return
+
+
+def enqueue_task(
+    project_root: Path,
+    descriptor: dict[str, Any],
+    *,
+    state_dir: str,
+) -> dict[str, Any]:
+    queued = {**descriptor, "status": "queued", "queued_at": core.utc_now()}
+    entry = {
+        "schema_version": core.SCHEMA_VERSION,
+        "kind": "WORKER_QUEUE_ENTRY",
+        "task_id": queued["task_id"],
+        "worker": queued["worker"],
+        "created_at": queued["created_at"],
+        "queued_at": queued["queued_at"],
+        "descriptor_path": str(Path(queued["task_dir"]) / "task.json"),
+    }
+    core.atomic_json(Path(entry["descriptor_path"]), queued)
+    core.atomic_json(
+        pending_queue_path(project_root, queued["task_id"], state_dir=state_dir),
+        entry,
+    )
+    return queued
+
+
+def task_not_before_pending(descriptor: dict[str, Any]) -> bool:
+    lineage = descriptor.get("retry_lineage")
+    value = lineage.get("not_before") if isinstance(lineage, dict) else None
+    if not isinstance(value, str):
+        return False
+    try:
+        not_before = datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    if not_before.tzinfo is None:
+        not_before = not_before.replace(tzinfo=UTC)
+    return datetime.now(UTC) < not_before.astimezone(UTC)
+
+
+def queue_tick(
+    project_root: Path,
+    *,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    popen_factory=subprocess.Popen,
+) -> dict[str, Any]:
+    project = project_root.expanduser().resolve()
+    with contextlib.suppress(OSError, core.OrchestratorError, WorkerError):
+        reap_worker_tasks(project, state_dir=state_dir)
+    admitted: list[str] = []
+    with admission_lock(project, state_dir=state_dir):
+        pending = queue_root(project, state_dir=state_dir) / "pending"
+        entries: list[tuple[str, str, Path, dict[str, Any]]] = []
+        for path in pending.glob("*.json"):
+            with contextlib.suppress(OSError, core.OrchestratorError):
+                entry = core.load_object(path)
+                entries.append(
+                    (
+                        str(entry.get("queued_at", "")),
+                        str(entry.get("task_id", "")),
+                        path,
+                        entry,
+                    )
+                )
+        for _, task_id, path, entry in sorted(entries):
+            descriptor_path = Path(str(entry.get("descriptor_path", "")))
+            try:
+                descriptor = core.load_object(descriptor_path)
+                config = require_worker(
+                    project, str(entry["worker"]), state_dir=state_dir
+                )
+            except (OSError, KeyError, core.OrchestratorError, WorkerError):
+                continue
+            if descriptor.get("status") != "queued":
+                path.unlink(missing_ok=True)
+                continue
+            if task_not_before_pending(descriptor) or not can_admit_worker(
+                project,
+                worker=str(entry["worker"]),
+                config=config,
+                state_dir=state_dir,
+            ):
+                continue
+            claimed = queue_root(project, state_dir=state_dir) / "admitted" / path.name
+            claimed.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.replace(path, claimed)
+            except FileNotFoundError:
+                continue
+            descriptor["status"] = "starting"
+            descriptor["admitted_at"] = core.utc_now()
+            descriptor["queue_entry_path"] = str(claimed)
+            core.atomic_json(descriptor_path, descriptor)
+            try:
+                process = spawn_supervisor(
+                    project,
+                    worker=str(entry["worker"]),
+                    task_id=task_id,
+                    prompt_file=Path(str(descriptor["prompt_file"])),
+                    state_dir=state_dir,
+                    supervisor_log=Path(str(descriptor["supervisor_log"])),
+                    popen_factory=popen_factory,
+                )
+            except OSError as error:
+                descriptor["status"] = "queued"
+                descriptor["queue_last_error"] = str(error)
+                descriptor.pop("admitted_at", None)
+                core.atomic_json(descriptor_path, descriptor)
+                os.replace(claimed, path)
+                continue
+            admitted.append(task_id)
+            entry["supervisor_pid"] = int(process.pid)
+            entry["admitted_at"] = descriptor["admitted_at"]
+            core.atomic_json(claimed, entry)
+    return {
+        "schema_version": core.SCHEMA_VERSION,
+        "kind": "WORKER_QUEUE_TICK",
+        "admitted_count": len(admitted),
+        "admitted_task_ids": admitted,
+    }
+
+
 def run_worker(
     project_root: Path,
     *,
@@ -331,17 +967,32 @@ def run_worker(
     state_dir: str = core.DEFAULT_STATE_DIR,
     popen_factory=subprocess.Popen,
     preflight_availability: bool = False,
+    intent_file: Path | None = None,
+    allow_duplicate: bool = False,
+    duplicate_reason: str | None = None,
+    lineage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Spawn a detached supervisor for the worker and return immediately."""
+    """Spawn a detached supervisor for the worker and return immediately.
+
+    `task.json` has a single writer at a time and ownership is handed off at the
+    spawn: the dispatcher writes the descriptor before the supervisor exists and
+    never writes it again. A post-spawn read-modify-write here would race the
+    supervisor's own writes and could resurrect a finished task as `running`.
+    """
     project = project_root.expanduser().resolve()
     config = require_worker(project, worker, state_dir=state_dir)
     if preflight_availability:
         availability = worker_diagnostics.run_availability_probe(config)
         if availability["status"] == "unavailable":
-            raise WorkerError(
-                f"worker {worker} availability probe reports unavailable"
-            )
-    prompt = core.ensure_file(prompt_file, field="prompt")
+            raise WorkerError(f"worker {worker} availability probe reports unavailable")
+    prompt = prompt_file.expanduser().resolve()
+    intent, intent_sha256 = load_task_intent(intent_file)
+    enforce_task_intent(
+        project,
+        intent=intent,
+        config=config,
+        state_dir=state_dir,
+    )
     task_dir = task_dir_for(project, task_id, state_dir=state_dir)
     descriptor_path = task_dir / "task.json"
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -353,6 +1004,40 @@ def run_worker(
     except FileExistsError:
         raise WorkerError(f"task already exists: {descriptor_path}") from None
     supervisor_log = task_dir / "supervisor.log"
+    try:
+        prompt_snapshot = worker_policy.snapshot_prompt(
+            project,
+            prompt_file=prompt,
+            task_dir=task_dir,
+            policy=config["policy_config"],
+            intent=intent,
+        )
+        handoff_path = task_dir / "worker-handoff.json"
+        output_dir = task_dir / "outputs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        effective_path = Path(prompt_snapshot["effective_prompt_file"])
+        effective_text = effective_path.read_text(encoding="utf-8")
+        worker_policy.atomic_text(
+            effective_path,
+            effective_text
+            + "\nORCHESTRATOR_OPTIONAL_HANDOFF v1\n"
+            + f"path: {handoff_path}\n"
+            + "You may write a compact JSON object with kind "
+            + '"WORKER_HANDOFF" and summary/evidence/risks fields. '
+            + "It is evidence only and never controls the orchestrator.\n"
+            + "ORCHESTRATOR_DURABLE_OUTPUT v1\n"
+            + f"directory: {output_dir}\n"
+            + "The complete requested deliverable must be present in stdout or "
+            + "as one or more files below this directory. A provider-owned plan "
+            + "or cache file outside the task directory is not durable evidence; "
+            + "do not return only a pointer to it.\n",
+        )
+        prompt_snapshot["effective_prompt_sha256"] = core.sha256_file(effective_path)
+        prompt_snapshot["handoff_path"] = str(handoff_path)
+        prompt_snapshot["declared_output_dir"] = str(output_dir)
+    except worker_policy.WorkerPolicyError as error:
+        descriptor_path.unlink(missing_ok=True)
+        raise WorkerError(str(error)) from error
     # Snapshot the dispatching chat BEFORE spawning: the supervisor reads
     # wake_target from task.json, so it must be durable before the child can
     # possibly look for it.
@@ -362,53 +1047,79 @@ def run_worker(
         "kind": TASK_KIND,
         "task_id": task_id,
         "worker": worker,
-        "status": "starting",
+        "status": "queued",
         "prompt_file": str(prompt),
+        **prompt_snapshot,
         "task_dir": str(task_dir),
         "supervisor_log": str(supervisor_log),
         "created_at": core.utc_now(),
+        "runtime_policy": {
+            key: config.get(key)
+            for key in (
+                "max_no_progress_seconds",
+                "soft_duration_seconds",
+                "soft_output_bytes",
+                "soft_token_budget",
+                "usage_adapter",
+            )
+            if config.get(key) is not None
+        },
+        "lease_required": True,
     }
+    if intent is not None:
+        intent_path = task_dir / "intent.json"
+        core.atomic_json(intent_path, intent)
+        descriptor["intent_file"] = str(intent_path)
+        descriptor["intent_sha256"] = intent_sha256
+        descriptor["task_intent"] = intent
+    if lineage is not None:
+        descriptor["retry_lineage"] = lineage
     if config["warnings"]:
         descriptor["warnings"] = config["warnings"]
     if wake_target is not None:
         descriptor["wake_target"] = wake_target
-    core.atomic_json(descriptor_path, descriptor)
-    command = [
-        sys.executable,
-        "-m",
-        "orchestrator_engine.cli",
-        "--project-root",
-        str(project),
-        "--state-dir",
-        state_dir,
-        "worker",
-        "supervise",
-        "--worker",
-        worker,
-        "--task-id",
-        task_id,
-        "--prompt-file",
-        str(prompt),
-    ]
-    with supervisor_log.open("ab") as log:
-        process = popen_factory(
-            command,
-            cwd=str(project),
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=log,
-            start_new_session=True,
-            close_fds=True,
-        )
-    # Merge instead of overwrite: a very fast worker may already have
-    # finished and finalized the descriptor between spawn and this write.
-    with contextlib.suppress(OSError, core.OrchestratorError):
-        descriptor.update(core.load_object(descriptor_path))
-    if descriptor.get("status") == "starting":
-        descriptor["status"] = "running"
-    descriptor["supervisor_pid"] = int(process.pid)
-    core.atomic_json(descriptor_path, descriptor)
-    return {**descriptor, "descriptor_path": str(descriptor_path)}
+    try:
+        with admission_lock(project, state_dir=state_dir):
+            descriptor = claim_dispatch_fingerprint(
+                project,
+                descriptor=descriptor,
+                config=config,
+                intent_sha256=intent_sha256,
+                state_dir=state_dir,
+                allow_duplicate=allow_duplicate,
+                duplicate_reason=duplicate_reason,
+            )
+            core.atomic_json(descriptor_path, descriptor)
+            if task_not_before_pending(descriptor) or not can_admit_worker(
+                project,
+                worker=worker,
+                config=config,
+                state_dir=state_dir,
+            ):
+                queued = enqueue_task(project, descriptor, state_dir=state_dir)
+                return {**queued, "descriptor_path": str(descriptor_path)}
+            descriptor["status"] = "starting"
+            core.atomic_json(descriptor_path, descriptor)
+            process = spawn_supervisor(
+                project,
+                worker=worker,
+                task_id=task_id,
+                prompt_file=prompt,
+                state_dir=state_dir,
+                supervisor_log=supervisor_log,
+                popen_factory=popen_factory,
+            )
+    except WorkerError:
+        descriptor_path.unlink(missing_ok=True)
+        raise
+    # The task stays `starting` on disk until the supervisor claims it and
+    # records its own pid: the dispatcher must not write the descriptor again.
+    # The spawned pid is still reported to the dispatching chat.
+    return {
+        **descriptor,
+        "supervisor_pid": int(process.pid),
+        "descriptor_path": str(descriptor_path),
+    }
 
 
 def capture_wake_target(
@@ -422,14 +1133,459 @@ def capture_wake_target(
     return binding.wake_target_from_binding(bound)
 
 
-def touch_descriptor(task_dir: Path, updates: dict[str, Any]) -> None:
-    descriptor_path = task_dir / "task.json"
+def worker_process_group(pid: int) -> int | None:
+    """Return the process group the worker leads, or None if it leads none.
+
+    The supervisor only signals a group whose leader is the worker itself. A
+    worker that shares the supervisor's group (an injected `popen_factory` that
+    ignores `process_group`) must be signalled as a single process, because
+    signalling that group would kill the supervisor too.
+    """
     try:
-        descriptor = core.load_object(descriptor_path)
+        group = os.getpgid(pid)
+    except OSError:
+        return None
+    if group != pid or group == os.getpgid(0):
+        return None
+    return group
+
+
+def wait_for_exit(pid: int, *, timeout_seconds: float, poll_seconds: float) -> bool:
+    """Wait for a child to exit without reaping it.
+
+    `WNOWAIT` leaves the exited child as a zombie, which keeps its pid — and so
+    its process group id — reserved. That is what makes it safe to send the
+    group a final signal after the worker itself has already died.
+    """
+    deadline = time.monotonic() + max(timeout_seconds, 0.0)
+    while True:
+        try:
+            state = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except ChildProcessError:
+            return True
+        if state is not None:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(poll_seconds)
+
+
+def terminate_worker(
+    process: Any,
+    *,
+    process_group: int | None,
+    reason: str,
+    grace_seconds: float = WORKER_TERMINATION_GRACE_SECONDS,
+    timeout_seconds: float = WORKER_TERMINATION_TIMEOUT_SECONDS,
+    poll_seconds: float = WORKER_TERMINATION_POLL_SECONDS,
+) -> dict[str, Any]:
+    """Stop the worker and its descendants, and return the signal ledger.
+
+    Termination is group-wide and escalates deterministically: SIGTERM so the
+    worker can flush and exit, then a bounded grace period, then SIGKILL. Killing
+    only the direct child would leave the model CLI's own subprocesses running as
+    orphans that keep writing into the task's inherited log files after the
+    result is durable.
+    """
+    scope = "process_group" if process_group is not None else "process"
+    signals: list[dict[str, str]] = []
+
+    def deliver(sent: signal.Signals) -> None:
+        try:
+            if process_group is not None:
+                os.killpg(process_group, sent)
+            else:
+                os.kill(process.pid, sent)
+        except OSError:
+            # The target is already gone; nothing to escalate against.
+            return
+        signals.append({"signal": sent.name, "scope": scope, "at": core.utc_now()})
+
+    deliver(signal.SIGTERM)
+    exited = wait_for_exit(
+        process.pid,
+        timeout_seconds=grace_seconds,
+        poll_seconds=poll_seconds,
+    )
+    escalated = not exited
+    if escalated or process_group is not None:
+        # Forced escalation for a worker that ignored SIGTERM, and — when the
+        # worker did stop — a sweep for descendants that did not.
+        deliver(signal.SIGKILL)
+    if escalated:
+        exited = wait_for_exit(
+            process.pid,
+            timeout_seconds=timeout_seconds,
+            poll_seconds=poll_seconds,
+        )
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=timeout_seconds)
+    return {
+        "reason": reason,
+        "scope": scope,
+        "process_group": process_group,
+        "grace_seconds": grace_seconds,
+        "escalated": escalated,
+        "exited": exited,
+        "signals": signals,
+    }
+
+
+def force_terminate_worker(
+    process: Any, *, process_group: int | None
+) -> dict[str, Any]:
+    scope = "process_group" if process_group is not None else "process"
+    sent = False
+    try:
+        if process_group is not None:
+            os.killpg(process_group, signal.SIGKILL)
+        else:
+            os.kill(process.pid, signal.SIGKILL)
+        sent = True
+    except OSError:
+        pass
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=WORKER_TERMINATION_TIMEOUT_SECONDS)
+    return {
+        "reason": "cancelled_forced",
+        "scope": scope,
+        "process_group": process_group,
+        "grace_seconds": 0.0,
+        "escalated": True,
+        "exited": process.poll() is not None,
+        "signals": (
+            [{"signal": "SIGKILL", "scope": scope, "at": core.utc_now()}]
+            if sent
+            else []
+        ),
+    }
+
+
+def cancel_request_path(task_dir: Path) -> Path:
+    return task_dir / "control" / "cancel.json"
+
+
+def load_cancel_request(task_dir: Path) -> dict[str, Any] | None:
+    path = cancel_request_path(task_dir)
+    if not path.is_file():
+        return None
+    with contextlib.suppress(OSError, core.OrchestratorError):
+        request = core.load_object(path)
+        if request.get("kind") == "WORKER_CANCEL_REQUEST":
+            return request
+    return None
+
+
+def queued_cancellation_artifacts(
+    descriptor: dict[str, Any],
+    *,
+    reason: str,
+    mode: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    now = core.utc_now()
+    task_dir = Path(str(descriptor["task_dir"]))
+    result = {
+        "schema_version": core.SCHEMA_VERSION,
+        "kind": "WORKER_RESULT",
+        "task_id": descriptor["task_id"],
+        "worker": descriptor["worker"],
+        "terminal_status": "cancelled",
+        "exit_code": None,
+        "failure_reason": reason,
+        "duration_seconds": 0.0,
+        "stdout_path": str(task_dir / "worker-stdout.log"),
+        "stderr_path": str(task_dir / "worker-stderr.log"),
+        "started_at": descriptor["created_at"],
+        "finished_at": now,
+        "cancellation": {"mode": mode, "reason": reason, "before_start": True},
+    }
+    evidence = {
+        "schema_version": core.SCHEMA_VERSION,
+        "kind": "WORKER_EVIDENCE",
+        "task_id": descriptor["task_id"],
+        "worker": descriptor["worker"],
+        "command": ["<not started: cancelled while queued>"],
+        "prompt_file": descriptor["prompt_file"],
+        "prompt_sha256": descriptor.get("prompt_sha256"),
+        "worker_config": {"cancelled_before_start": True},
+        "started_at": descriptor["created_at"],
+        "finished_at": now,
+        "cancellation": result["cancellation"],
+    }
+    for key in ("effective_prompt_file", "effective_prompt_sha256", "worker_policy"):
+        if key in descriptor:
+            evidence[key] = descriptor[key]
+    if isinstance(descriptor.get("wake_target"), dict):
+        evidence["wake_target"] = descriptor["wake_target"]
+    return result, evidence
+
+
+def cancel_worker_task(
+    project_root: Path,
+    *,
+    task_id: str,
+    mode: str,
+    reason: str,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+) -> dict[str, Any]:
+    if mode not in {"graceful", "forced"}:
+        raise WorkerError(f"unsupported cancellation mode: {mode}")
+    if not reason.strip():
+        raise WorkerError("cancellation reason is required")
+    project = project_root.expanduser().resolve()
+    task_dir = task_dir_for(project, task_id, state_dir=state_dir)
+    descriptor_path = task_dir / "task.json"
+    descriptor = core.load_object(descriptor_path)
+    status = descriptor.get("status")
+    if status in core.TERMINAL_STATUSES:
+        return {
+            "schema_version": 1,
+            "kind": "WORKER_CANCEL_RESULT",
+            "task_id": task_id,
+            "status": "already_terminal",
+            "terminal_status": status,
+        }
+    if status == "queued":
+        with admission_lock(project, state_dir=state_dir):
+            descriptor = core.load_object(descriptor_path)
+            if descriptor.get("status") != "queued":
+                status = descriptor.get("status")
+            else:
+                pending = pending_queue_path(project, task_id, state_dir=state_dir)
+                cancelled_entry = (
+                    queue_root(project, state_dir=state_dir)
+                    / "cancelled"
+                    / f"{task_id}.json"
+                )
+                cancelled_entry.parent.mkdir(parents=True, exist_ok=True)
+                if pending.exists():
+                    os.replace(pending, cancelled_entry)
+                result, evidence = queued_cancellation_artifacts(
+                    descriptor, reason=reason, mode=mode
+                )
+                finalized = finalize_terminal_task(
+                    project,
+                    task_id=task_id,
+                    task_dir=task_dir,
+                    result=result,
+                    evidence=evidence,
+                    state_dir=state_dir,
+                    wake_target=(
+                        descriptor.get("wake_target")
+                        if isinstance(descriptor.get("wake_target"), dict)
+                        else None
+                    ),
+                )
+                descriptor.update(
+                    {
+                        "status": "cancelled",
+                        "finished_at": result["finished_at"],
+                        "event_path": finalized["event_path"],
+                        "signal_path": finalized["signal_path"],
+                    }
+                )
+                core.atomic_json(descriptor_path, descriptor)
+                release_dispatch_claim(project, descriptor, state_dir=state_dir)
+                return {
+                    "schema_version": 1,
+                    "kind": "WORKER_CANCEL_RESULT",
+                    "task_id": task_id,
+                    "status": "cancelled",
+                    "before_start": True,
+                }
+    request = {
+        "schema_version": core.SCHEMA_VERSION,
+        "kind": "WORKER_CANCEL_REQUEST",
+        "task_id": task_id,
+        "mode": mode,
+        "reason": reason.strip(),
+        "requested_at": core.utc_now(),
+    }
+    path = cancel_request_path(task_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not core.claim_json(path, request):
+        request = core.load_object(path)
+        return {
+            "schema_version": 1,
+            "kind": "WORKER_CANCEL_RESULT",
+            "task_id": task_id,
+            "status": "already_requested",
+            "request": request,
+        }
+    return {
+        "schema_version": 1,
+        "kind": "WORKER_CANCEL_RESULT",
+        "task_id": task_id,
+        "status": "requested",
+        "request_path": str(path),
+        "observed_task_status": status,
+    }
+
+
+def retry_worker_task(
+    project_root: Path,
+    *,
+    task_id: str,
+    reason: str,
+    new_task_id: str | None = None,
+    max_attempts: int = 3,
+    delay_seconds: float = 0.0,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+) -> dict[str, Any]:
+    if not reason.strip():
+        raise WorkerError("retry reason is required")
+    if max_attempts < 2:
+        raise WorkerError("max_attempts must be at least 2")
+    if not math.isfinite(delay_seconds) or delay_seconds < 0:
+        raise WorkerError("delay_seconds must be finite and non-negative")
+    project = project_root.expanduser().resolve()
+    parent_path = task_dir_for(project, task_id, state_dir=state_dir) / "task.json"
+    parent = core.load_object(parent_path)
+    if parent.get("status") not in {
+        "failed",
+        "timed_out",
+        "rate_limited",
+        "invalid_result",
+    }:
+        raise WorkerError("only unsuccessful terminal tasks may be retried")
+    previous = parent.get("retry_lineage")
+    attempt = int(previous.get("attempt", 1)) + 1 if isinstance(previous, dict) else 2
+    inherited_max = (
+        int(previous.get("max_attempts", max_attempts))
+        if isinstance(previous, dict)
+        else max_attempts
+    )
+    effective_max = min(max_attempts, inherited_max)
+    if attempt > effective_max:
+        raise WorkerError(
+            f"retry attempt {attempt} exceeds max_attempts {effective_max}"
+        )
+    root_task_id = (
+        str(previous.get("root_task_id"))
+        if isinstance(previous, dict) and previous.get("root_task_id")
+        else task_id
+    )
+    retry_id = new_task_id or f"{root_task_id}-a{attempt}"
+    task_prompt = parent.get("task_prompt_file") or parent.get("prompt_file")
+    if not isinstance(task_prompt, str) or not Path(task_prompt).is_file():
+        raise WorkerError("retry source task prompt is unavailable")
+    intent_path = parent.get("intent_file")
+    lineage = {
+        "schema_version": 1,
+        "root_task_id": root_task_id,
+        "parent_task_id": task_id,
+        "attempt": attempt,
+        "max_attempts": effective_max,
+        "attempt_reason": reason.strip(),
+        "created_at": core.utc_now(),
+        "not_before": (datetime.now(UTC) + timedelta(seconds=delay_seconds)).isoformat(
+            timespec="milliseconds"
+        ),
+    }
+    return run_worker(
+        project,
+        worker=str(parent["worker"]),
+        task_id=retry_id,
+        prompt_file=Path(task_prompt),
+        state_dir=state_dir,
+        intent_file=Path(intent_path) if isinstance(intent_path, str) else None,
+        lineage=lineage,
+    )
+
+
+def load_terminal_result(result_path: Path) -> dict[str, Any] | None:
+    """Return an existing terminal result, or None if it is absent or torn.
+
+    A zero-length or unparsable `result.json` is a claim whose holder died
+    mid-write. It carries no evidence, so it is not a terminal record — but only
+    a caller that has proven the claim holder is dead may replace it.
+    """
+    try:
+        result = core.load_object(result_path)
     except (OSError, core.OrchestratorError):
-        descriptor = {}
-    descriptor.update(updates)
-    core.atomic_json(descriptor_path, descriptor)
+        return None
+    if result.get("kind") != "WORKER_RESULT":
+        return None
+    if result.get("terminal_status") not in core.TERMINAL_STATUSES:
+        return None
+    return result
+
+
+def finalize_terminal_task(
+    project_root: Path,
+    *,
+    task_id: str,
+    task_dir: Path,
+    result: dict[str, Any],
+    evidence: dict[str, Any],
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    wake_target: dict[str, Any] | None = None,
+    takeover: bool = False,
+) -> dict[str, Any]:
+    """Write the terminal artifacts for a task as its single elected writer.
+
+    `result.json` is created exclusively, and creating it *is* the election: a
+    supervisor and a reaper that both believe they own the same task cannot both
+    write, so the task can never end with two divergent terminal records. The
+    loser reports the winner's result instead of overwriting it.
+
+    `takeover` may only be set by a caller that has proven the previous writer is
+    dead. It permits two recoveries, neither of which discards durable evidence:
+    replacing an empty claim left by a writer that died mid-write, and completing
+    a finalization whose result was written but whose event never was.
+
+    Outcomes: `claimed` (this caller wrote the result), `reconciled` (the
+    previous writer's result stands and this caller completed the emission), or
+    `lost` (another writer owns the terminal record).
+    """
+    result_path = task_dir / "result.json"
+    evidence_path = task_dir / "evidence.json"
+    outcome = "claimed"
+    final = result
+    if not core.claim_json(result_path, result):
+        existing = load_terminal_result(result_path)
+        if existing is not None:
+            if not takeover:
+                return {
+                    "outcome": "lost",
+                    "result": existing,
+                    "result_path": str(result_path),
+                }
+            outcome = "reconciled"
+            final = existing
+        elif takeover and result_path.stat().st_size == 0:
+            core.atomic_json(result_path, result)
+        else:
+            return {
+                "outcome": "lost",
+                "result": None,
+                "result_path": str(result_path),
+                "conflict": "result.json exists but is not a readable terminal result",
+            }
+
+    terminal_status = str(final["terminal_status"])
+    if not evidence_path.is_file() or outcome == "claimed":
+        evidence["finished_at"] = final.get("finished_at", evidence["finished_at"])
+        core.atomic_json(evidence_path, evidence)
+    emitted = core.write_terminal_event(
+        project_root,
+        task_id=task_id,
+        terminal_status=terminal_status,
+        result_path=result_path,
+        evidence_path=evidence_path,
+        state_dir=state_dir,
+        event_id=core.terminal_event_id(project_root, task_id=task_id),
+        wake_target=wake_target,
+    )
+    return {
+        "outcome": outcome,
+        "result": final,
+        "terminal_status": terminal_status,
+        "result_path": str(result_path),
+        "evidence_path": str(evidence_path),
+        "event_path": emitted["event_path"],
+        "signal_path": emitted["signal_path"],
+    }
 
 
 def supervise_worker(
@@ -441,16 +1597,24 @@ def supervise_worker(
     state_dir: str = core.DEFAULT_STATE_DIR,
     popen_factory=subprocess.Popen,
     heartbeat_interval_seconds: float = TASK_HEARTBEAT_INTERVAL_SECONDS,
+    termination_grace_seconds: float = WORKER_TERMINATION_GRACE_SECONDS,
 ) -> dict[str, Any]:
-    """Run the worker CLI to completion and emit the terminal event."""
+    """Run the worker CLI to completion and emit the terminal event.
+
+    The supervisor owns `task.json` from the moment it starts: the dispatcher
+    hands the descriptor over at spawn and never writes it again. The
+    supervisor's in-memory snapshot is therefore authoritative, and each update
+    publishes that whole object instead of re-reading a file another writer
+    could have changed underneath it.
+    """
     project = project_root.expanduser().resolve()
     config = require_worker(project, worker, state_dir=state_dir)
-    prompt = core.ensure_file(prompt_file, field="prompt")
-    prompt_text = prompt.read_text(encoding="utf-8")
+    prompt = prompt_file.expanduser().resolve()
     task_dir = task_dir_for(project, task_id, state_dir=state_dir)
     task_dir.mkdir(parents=True, exist_ok=True)
     wake_target: dict[str, Any] | None = None
     descriptor_path = task_dir / "task.json"
+    descriptor_snapshot: dict[str, Any] = {}
     if descriptor_path.exists():
         with contextlib.suppress(OSError, core.OrchestratorError, binding.BindingError):
             descriptor_snapshot = core.load_object(descriptor_path)
@@ -458,8 +1622,84 @@ def supervise_worker(
             if isinstance(maybe_target, dict):
                 binding.validate_wake_target(maybe_target)
                 wake_target = maybe_target
+
+    def write_descriptor(updates: dict[str, Any]) -> None:
+        descriptor_snapshot.update(updates)
+        core.atomic_json(descriptor_path, descriptor_snapshot)
+
+    # Claim the descriptor first: the dispatcher leaves the task `starting` with
+    # no pid, so this is the first record of which process drives the task.
+    descriptor_snapshot.setdefault("prompt_file", str(prompt))
+    descriptor_snapshot.setdefault("created_at", core.utc_now())
+    lease = worker_lease.acquire_lease(
+        task_dir,
+        task_id=task_id,
+        worker=worker,
+        interval_seconds=heartbeat_interval_seconds,
+    )
+    write_descriptor(
+        {
+            "schema_version": core.SCHEMA_VERSION,
+            "kind": TASK_KIND,
+            "task_id": task_id,
+            "worker": worker,
+            "task_dir": str(task_dir),
+            "status": "running",
+            "supervisor_pid": os.getpid(),
+            "lease_path": str(worker_lease.lease_path(task_dir)),
+            "last_alive_at": core.utc_now(),
+        }
+    )
+    try:
+        effective_prompt, policy_snapshot = worker_policy.load_snapshotted_prompt(
+            descriptor_snapshot,
+            original_prompt=prompt,
+        )
+        policy_was_snapshotted = "worker_policy" in descriptor_snapshot
+        if (
+            not policy_was_snapshotted
+            and effective_prompt == prompt
+            and config["policy_config"] is not None
+        ):
+            created_snapshot = worker_policy.snapshot_prompt(
+                project,
+                prompt_file=prompt,
+                task_dir=task_dir,
+                policy=config["policy_config"],
+            )
+            effective_prompt = Path(created_snapshot["effective_prompt_file"])
+            policy_snapshot = created_snapshot.get("worker_policy")
+            write_descriptor(created_snapshot)
+        effective_prompt = core.ensure_file(
+            effective_prompt,
+            field="effective prompt",
+        )
+    except worker_policy.WorkerPolicyError as error:
+        raise WorkerError(str(error)) from error
+    source_prompt_hash = descriptor_snapshot.get("prompt_sha256")
+    if not isinstance(source_prompt_hash, str):
+        prompt = core.ensure_file(prompt, field="prompt")
+        source_prompt_hash = core.sha256_file(prompt)
+    effective_prompt_hash = core.sha256_file(effective_prompt)
+    # Publish the prompt identity now, not at exit: a reaper that has to finalize
+    # this task after the supervisor dies can only produce real evidence from
+    # what the descriptor already holds. Values claimed at dispatch win.
+    prompt_identity = {
+        key: value
+        for key, value in {
+            "prompt_sha256": source_prompt_hash,
+            "effective_prompt_file": str(effective_prompt),
+            "effective_prompt_sha256": effective_prompt_hash,
+        }.items()
+        if key not in descriptor_snapshot
+    }
+    if prompt_identity:
+        write_descriptor(prompt_identity)
+    prompt_text = effective_prompt.read_text(encoding="utf-8")
     stdout_path = task_dir / "worker-stdout.log"
     stderr_path = task_dir / "worker-stderr.log"
+    declared_output_dir = task_dir / "outputs"
+    declared_output_dir.mkdir(parents=True, exist_ok=True)
 
     command = list(config["command"])
     stdin_payload: str | None = None
@@ -470,9 +1710,14 @@ def supervise_worker(
 
     started_at = core.utc_now()
     start = time.monotonic()
+    last_output_bytes = 0
+    last_output_growth_at = started_at
+    heartbeat_count = 0
     terminal_status = "completed"
     exit_code: int | None = None
     failure_reason: str | None = None
+    termination: dict[str, Any] | None = None
+    cancellation: dict[str, Any] | None = None
     try:
         with (
             stdout_path.open("wb") as stdout,
@@ -481,24 +1726,76 @@ def supervise_worker(
             process = popen_factory(
                 command,
                 cwd=str(project),
-                stdin=subprocess.PIPE if stdin_payload is not None else (
-                    subprocess.DEVNULL
-                ),
+                env={
+                    **os.environ,
+                    "ORCHESTRATOR_TASK_DIR": str(task_dir),
+                    "ORCHESTRATOR_HANDOFF_PATH": str(task_dir / "worker-handoff.json"),
+                    "ORCHESTRATOR_DECLARED_OUTPUT_DIR": str(declared_output_dir),
+                },
+                stdin=subprocess.PIPE
+                if stdin_payload is not None
+                else (subprocess.DEVNULL),
                 stdout=stdout,
                 stderr=stderr,
+                # The worker leads its own process group so the supervisor can
+                # stop the whole worker tree — the model CLI's own subprocesses
+                # included — without signalling itself.
+                process_group=0,
+            )
+            # Record the group before any wait: a supervisor that dies here must
+            # still leave behind the identity needed to stop the worker tree.
+            worker_group = worker_process_group(process.pid)
+            worker_identity: dict[str, Any] = {"worker_pid": process.pid}
+            if worker_group is not None:
+                worker_identity["worker_pgid"] = worker_group
+            write_descriptor(worker_identity)
+            lease = worker_lease.record_worker_identity(
+                lease,
+                task_dir,
+                worker_pid=process.pid,
+                worker_pgid=worker_group,
             )
             if stdin_payload is not None:
                 assert process.stdin is not None
-                process.stdin.write(stdin_payload.encode("utf-8"))
-                process.stdin.close()
+                # A very fast worker may exit before consuming stdin. That is
+                # still its real process result, not a supervisor I/O failure.
+                with contextlib.suppress(BrokenPipeError):
+                    process.stdin.write(stdin_payload.encode("utf-8"))
+                with contextlib.suppress(BrokenPipeError):
+                    process.stdin.close()
             timeout_seconds = config["timeout_seconds"]
             deadline = (
-                start + float(timeout_seconds)
-                if timeout_seconds is not None
-                else None
+                start + float(timeout_seconds) if timeout_seconds is not None else None
             )
+            last_heartbeat = time.monotonic()
             while True:
-                poll_timeout = heartbeat_interval_seconds
+                request = load_cancel_request(task_dir)
+                if request is not None:
+                    cancellation = request
+                    write_descriptor(
+                        {
+                            "status": "cancelling",
+                            "cancellation_request_path": str(
+                                cancel_request_path(task_dir)
+                            ),
+                        }
+                    )
+                    if request.get("mode") == "forced":
+                        termination = force_terminate_worker(
+                            process, process_group=worker_group
+                        )
+                    else:
+                        termination = terminate_worker(
+                            process,
+                            process_group=worker_group,
+                            reason="cancelled_graceful",
+                            grace_seconds=termination_grace_seconds,
+                        )
+                    terminal_status = "cancelled"
+                    failure_reason = str(request.get("reason") or "cancelled")
+                    exit_code = process.poll()
+                    break
+                poll_timeout = min(heartbeat_interval_seconds, CONTROL_POLL_SECONDS)
                 if deadline is not None:
                     poll_timeout = min(
                         poll_timeout,
@@ -509,23 +1806,41 @@ def supervise_worker(
                     break
                 except subprocess.TimeoutExpired:
                     if deadline is not None and time.monotonic() >= deadline:
-                        process.kill()
-                        process.wait()
-                        terminal_status = "timed_out"
-                        failure_reason = (
-                            f"worker exceeded {timeout_seconds} seconds"
+                        termination = terminate_worker(
+                            process,
+                            process_group=worker_group,
+                            reason="timeout",
+                            grace_seconds=termination_grace_seconds,
                         )
+                        terminal_status = "timed_out"
+                        failure_reason = f"worker exceeded {timeout_seconds} seconds"
                         break
-                    # No timeout configured means the worker may run for
-                    # hours; refresh the descriptor so it stays observable.
-                    touch_descriptor(
-                        task_dir,
-                        {
-                            "status": "running",
-                            "worker_pid": process.pid,
-                            "last_alive_at": core.utc_now(),
-                        },
-                    )
+                    if time.monotonic() - last_heartbeat >= heartbeat_interval_seconds:
+                        stdout_bytes = stdout_path.stat().st_size
+                        stderr_bytes = stderr_path.stat().st_size
+                        output_bytes = stdout_bytes + stderr_bytes
+                        if output_bytes > last_output_bytes:
+                            last_output_growth_at = core.utc_now()
+                        output_delta = max(output_bytes - last_output_bytes, 0)
+                        last_output_bytes = output_bytes
+                        heartbeat_count += 1
+                        write_descriptor(
+                            {
+                                "status": "running",
+                                "worker_pid": process.pid,
+                                "last_alive_at": core.utc_now(),
+                                "progress": {
+                                    "heartbeat_count": heartbeat_count,
+                                    "stdout_bytes": stdout_bytes,
+                                    "stderr_bytes": stderr_bytes,
+                                    "output_bytes_delta": output_delta,
+                                    "last_output_growth_at": last_output_growth_at,
+                                    "updated_at": core.utc_now(),
+                                },
+                            }
+                        )
+                        lease = worker_lease.renew_lease(lease, task_dir)
+                        last_heartbeat = time.monotonic()
     except OSError as error:
         terminal_status = "failed"
         failure_reason = str(error)
@@ -551,24 +1866,93 @@ def supervise_worker(
         "started_at": started_at,
         "finished_at": core.utc_now(),
     }
-    result_path = task_dir / "result.json"
-    core.atomic_json(result_path, result)
+    if termination is not None:
+        result["termination"] = termination
+    if cancellation is not None:
+        result["cancellation"] = cancellation
+    usage: dict[str, Any] | None = None
+    telemetry_error: str | None = None
+    usage_adapter = config.get("usage_adapter")
+    if isinstance(usage_adapter, str):
+        try:
+            usage = telemetry_adapters.collect(usage_adapter, stdout_path, stderr_path)
+            usage.update(
+                {
+                    "schema_version": core.SCHEMA_VERSION,
+                    "kind": "WORKER_USAGE",
+                    "task_id": task_id,
+                    "worker": worker,
+                    "captured_at": core.utc_now(),
+                }
+            )
+            usage_path = task_dir / "usage.json"
+            core.atomic_json(usage_path, usage)
+            result["usage_path"] = str(usage_path)
+            result["usage"] = usage
+        except (OSError, telemetry_adapters.TelemetryError) as error:
+            telemetry_error = str(error)
 
+    handoff: dict[str, Any] | None = None
+    handoff_error: str | None = None
+    handoff_path = task_dir / "worker-handoff.json"
+    if handoff_path.is_file():
+        try:
+            if handoff_path.stat().st_size > 64 * 1024:
+                raise WorkerError("worker handoff exceeds 65536 bytes")
+            handoff = core.load_object(handoff_path)
+            if handoff.get("kind") != "WORKER_HANDOFF":
+                raise WorkerError("worker handoff has unexpected kind")
+            if handoff.get("schema_version") != core.SCHEMA_VERSION:
+                raise WorkerError("worker handoff has unsupported schema_version")
+            summary = handoff.get("summary")
+            if not isinstance(summary, str) or len(summary) > 4096:
+                raise WorkerError("worker handoff summary is missing or too large")
+            result["handoff_path"] = str(handoff_path)
+            result["handoff_sha256"] = core.sha256_file(handoff_path)
+        except (OSError, core.OrchestratorError, WorkerError) as error:
+            handoff_error = str(error)
+
+    output_manifest: dict[str, Any] | None = None
+    output_collection_error: str | None = None
+    try:
+        output_manifest = collect_declared_outputs(declared_output_dir, task_dir)
+        output_manifest.update({"task_id": task_id, "worker": worker})
+        output_manifest_path = task_dir / "worker-outputs.json"
+        core.atomic_json(output_manifest_path, output_manifest)
+        result["output_manifest_path"] = str(output_manifest_path)
+        result["declared_outputs"] = {
+            "file_count": output_manifest["file_count"],
+            "total_bytes": output_manifest["total_bytes"],
+        }
+    except (OSError, WorkerError) as error:
+        output_collection_error = str(error)
     evidence = {
         "schema_version": core.SCHEMA_VERSION,
         "kind": "WORKER_EVIDENCE",
         "task_id": task_id,
         "worker": worker,
-        "command": command if config["prompt_via"] != "arg" else (
-            [*config["command"], "<prompt>"]
-        ),
+        "command": command
+        if config["prompt_via"] != "arg"
+        else ([*config["command"], "<prompt>"]),
         "prompt_file": str(prompt),
-        "prompt_sha256": core.sha256_file(prompt),
+        "prompt_sha256": source_prompt_hash,
+        "effective_prompt_file": str(effective_prompt),
+        "effective_prompt_sha256": core.sha256_file(effective_prompt),
         "worker_config": {
             "prompt_via": config["prompt_via"],
             "timeout_seconds": config["timeout_seconds"],
             "expect_long_running": config["expect_long_running"],
             "availability_probe_configured": config["availability_probe"] is not None,
+            "policy": (
+                policy_snapshot.get("name")
+                if isinstance(policy_snapshot, dict)
+                else None
+            ),
+            "usage_adapter": usage_adapter,
+            "soft_duration_seconds": config.get("soft_duration_seconds"),
+            "soft_output_bytes": config.get("soft_output_bytes"),
+            "soft_token_budget": config.get("soft_token_budget"),
+            "max_no_progress_seconds": config.get("max_no_progress_seconds"),
             "warnings": config["warnings"],
             **config["extras"],
         },
@@ -577,36 +1961,324 @@ def supervise_worker(
     }
     if wake_target is not None:
         evidence["wake_target"] = wake_target
-    evidence_path = task_dir / "evidence.json"
-    core.atomic_json(evidence_path, evidence)
-
-    emitted = core.write_terminal_event(
+    if policy_snapshot is not None:
+        evidence["worker_policy"] = policy_snapshot
+    if cancellation is not None:
+        evidence["cancellation"] = cancellation
+        ack = {
+            "schema_version": core.SCHEMA_VERSION,
+            "kind": "WORKER_CONTROL_ACK",
+            "task_id": task_id,
+            "control": "cancel",
+            "status": "applied",
+            "terminal_status": "cancelled",
+            "acknowledged_at": core.utc_now(),
+        }
+        core.atomic_json(task_dir / "control" / "cancel.ack.json", ack)
+    if usage is not None:
+        evidence["usage"] = usage
+    if telemetry_error is not None:
+        evidence["telemetry_error"] = telemetry_error
+    if handoff is not None:
+        evidence["worker_handoff"] = {
+            "path": str(handoff_path),
+            "sha256": core.sha256_file(handoff_path),
+            "bytes": handoff_path.stat().st_size,
+        }
+    if handoff_error is not None:
+        evidence["worker_handoff_error"] = handoff_error
+    if output_manifest is not None:
+        evidence["declared_outputs"] = output_manifest
+    if output_collection_error is not None:
+        evidence["output_collection_error"] = output_collection_error
+    finalized = finalize_terminal_task(
         project,
         task_id=task_id,
-        terminal_status=terminal_status,
-        result_path=result_path,
-        evidence_path=evidence_path,
+        task_dir=task_dir,
+        result=result,
+        evidence=evidence,
         state_dir=state_dir,
         wake_target=wake_target,
     )
-
-    descriptor = {
-        "schema_version": core.SCHEMA_VERSION,
-        "kind": TASK_KIND,
-        "task_id": task_id,
-        "worker": worker,
-        "prompt_file": str(prompt),
-        "task_dir": str(task_dir),
-        "created_at": started_at,
-    }
-    if descriptor_path.exists():
-        with contextlib.suppress(OSError, core.OrchestratorError):
-            descriptor.update(core.load_object(descriptor_path))
-    descriptor.update(
-        status=terminal_status,
-        finished_at=result["finished_at"],
-        event_path=emitted["event_path"],
-        signal_path=emitted["signal_path"],
+    final_result = finalized.get("result")
+    if isinstance(final_result, dict):
+        terminal_status = str(final_result.get("terminal_status", terminal_status))
+        result = final_result
+    worker_lease.release_lease(
+        lease,
+        task_dir,
+        released_by="supervisor",
+        terminal_status=terminal_status,
     )
-    core.atomic_json(descriptor_path, descriptor)
-    return {**descriptor, "descriptor_path": str(descriptor_path)}
+    if "event_path" not in finalized:
+        # Another terminal writer won. It owns evidence/event publication and
+        # descriptor completion; this supervisor must not overwrite its state.
+        with contextlib.suppress(OSError, core.OrchestratorError):
+            descriptor_snapshot = core.load_object(descriptor_path)
+        with contextlib.suppress(OSError, core.OrchestratorError, WorkerError):
+            queue_tick(project, state_dir=state_dir)
+        return {**descriptor_snapshot, "descriptor_path": str(descriptor_path)}
+
+    # Values already claimed on the descriptor win: these defaults only fill in
+    # what a directly supervised task (no dispatcher) never recorded.
+    for key, value in {
+        "prompt_sha256": source_prompt_hash,
+        "effective_prompt_file": str(effective_prompt),
+        "effective_prompt_sha256": core.sha256_file(effective_prompt),
+    }.items():
+        descriptor_snapshot.setdefault(key, value)
+    terminal_updates: dict[str, Any] = {
+        "status": terminal_status,
+        "finished_at": result["finished_at"],
+        "event_path": finalized["event_path"],
+        "signal_path": finalized["signal_path"],
+        "progress": {
+            "heartbeat_count": heartbeat_count,
+            "stdout_bytes": stdout_path.stat().st_size,
+            "stderr_bytes": stderr_path.stat().st_size,
+            "last_output_growth_at": last_output_growth_at,
+            "updated_at": core.utc_now(),
+        },
+    }
+    if usage is not None:
+        terminal_updates["usage"] = usage
+    if handoff is not None:
+        terminal_updates["worker_handoff"] = {
+            "path": str(handoff_path),
+            "sha256": core.sha256_file(handoff_path),
+            "bytes": handoff_path.stat().st_size,
+        }
+    if output_manifest is not None:
+        terminal_updates["declared_outputs"] = {
+            "manifest_path": str(task_dir / "worker-outputs.json"),
+            "file_count": output_manifest["file_count"],
+            "total_bytes": output_manifest["total_bytes"],
+        }
+    if output_collection_error is not None:
+        terminal_updates["output_collection_error"] = output_collection_error
+    write_descriptor(terminal_updates)
+    release_dispatch_claim(project, descriptor_snapshot, state_dir=state_dir)
+    lineage = descriptor_snapshot.get("retry_lineage")
+    if terminal_status == "completed" and isinstance(lineage, dict):
+        parent_task_id = lineage.get("parent_task_id")
+        if isinstance(parent_task_id, str):
+            with contextlib.suppress(
+                OSError,
+                core.OrchestratorError,
+                task_resolution.TaskResolutionError,
+            ):
+                task_resolution.write_resolution(
+                    project,
+                    task_id=parent_task_id,
+                    status="superseded",
+                    reason=f"retry completed as {task_id}",
+                    superseded_by_task_id=task_id,
+                    state_dir=state_dir,
+                )
+    with contextlib.suppress(OSError, core.OrchestratorError, WorkerError):
+        queue_tick(project, state_dir=state_dir)
+    return {**descriptor_snapshot, "descriptor_path": str(descriptor_path)}
+
+
+def reap_worker_tasks(
+    project_root: Path,
+    *,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Finalize tasks whose leased supervisor is proven gone.
+
+    Reaping is conservative: legacy tasks without a lease and live supervisors
+    are reported but never changed. Repeated calls are idempotent because the
+    terminal result and event use exclusive/deterministic identities.
+    """
+    project = project_root.expanduser().resolve()
+    current = now or datetime.now(UTC)
+    tasks_root = core.state_root(project, state_dir=state_dir) / "tasks"
+    outcomes: list[dict[str, Any]] = []
+    for descriptor_path in sorted(tasks_root.glob("*/task.json")):
+        try:
+            descriptor = core.load_object(descriptor_path)
+        except (OSError, core.OrchestratorError) as error:
+            outcomes.append(
+                {
+                    "task_id": descriptor_path.parent.name,
+                    "status": "invalid",
+                    "reason": str(error),
+                }
+            )
+            continue
+        task_id = descriptor.get("task_id")
+        status = descriptor.get("status")
+        if not isinstance(task_id, str) or status not in {
+            "starting",
+            "running",
+            "cancelling",
+        }:
+            continue
+        task_dir = descriptor_path.parent
+        try:
+            lease = worker_lease.load_lease(worker_lease.lease_path(task_dir))
+        except worker_lease.WorkerLeaseError as error:
+            outcomes.append(
+                {"task_id": task_id, "status": "invalid", "reason": str(error)}
+            )
+            continue
+        unclaimed = False
+        descriptor_age: float | None = None
+        if lease is None:
+            descriptor_age = worker_lease.lease_age_seconds(
+                {
+                    "acquired_at": descriptor.get("created_at"),
+                    "renewed_at": descriptor.get("created_at"),
+                },
+                now=current,
+            )
+            if (
+                descriptor.get("lease_required") is True
+                and status == "starting"
+                and descriptor_age is not None
+                and descriptor_age > worker_lease.DEFAULT_LEASE_EXPIRY_SECONDS
+            ):
+                unclaimed = True
+                lease = {"worker": descriptor.get("worker")}
+            else:
+                outcomes.append({"task_id": task_id, "status": "legacy_unleased"})
+                continue
+        if lease.get("status") == "released":
+            continue
+        age = (
+            descriptor_age
+            if unclaimed
+            else worker_lease.lease_age_seconds(lease, now=current)
+        )
+        expiry = lease.get("lease_expiry_seconds")
+        if not isinstance(expiry, (int, float)) or isinstance(expiry, bool):
+            expiry = worker_lease.DEFAULT_LEASE_EXPIRY_SECONDS
+        if age is None or age <= float(expiry):
+            continue
+        supervisor_state = (
+            {"state": "gone", "identity_verified": False, "observed": None}
+            if unclaimed
+            else worker_lease.identity_state(lease.get("supervisor_identity"))
+        )
+        if supervisor_state["state"] == "alive":
+            outcomes.append(
+                {
+                    "task_id": task_id,
+                    "status": "stale_supervisor_alive",
+                    "lease_age_seconds": age,
+                }
+            )
+            continue
+        if supervisor_state["state"] == "unknown":
+            outcomes.append(
+                {
+                    "task_id": task_id,
+                    "status": "unsafe_missing_identity",
+                    "lease_age_seconds": age,
+                }
+            )
+            continue
+
+        termination = worker_lease.stop_worker_tree(
+            worker_pid=lease.get("worker_pid"),
+            worker_pgid=lease.get("worker_pgid"),
+            worker_identity=lease.get("worker_identity"),
+            reason="supervisor_lost",
+        )
+        finished_at = core.utc_now()
+        worker = str(descriptor.get("worker") or lease.get("worker") or "unknown")
+        result = {
+            "schema_version": core.SCHEMA_VERSION,
+            "kind": "WORKER_RESULT",
+            "task_id": task_id,
+            "worker": worker,
+            "terminal_status": "failed",
+            "exit_code": None,
+            "failure_reason": "supervisor_lost",
+            "failure_class": "supervisor_lost",
+            "duration_seconds": 0.0,
+            "stdout_path": str(task_dir / "worker-stdout.log"),
+            "stderr_path": str(task_dir / "worker-stderr.log"),
+            "started_at": descriptor.get("created_at", finished_at),
+            "finished_at": finished_at,
+            "termination": termination,
+        }
+        evidence = {
+            "schema_version": core.SCHEMA_VERSION,
+            "kind": "WORKER_EVIDENCE",
+            "task_id": task_id,
+            "worker": worker,
+            "command": ["<unavailable: supervisor lost>"],
+            "prompt_file": str(descriptor.get("prompt_file", "")),
+            "prompt_sha256": descriptor.get("prompt_sha256"),
+            "worker_config": {"recovered_by": "worker reap"},
+            "started_at": descriptor.get("created_at", finished_at),
+            "finished_at": finished_at,
+            "recovery": {
+                "reason": "supervisor_lost",
+                "lease_path": str(worker_lease.lease_path(task_dir)),
+                "lease_age_seconds": age,
+                "supervisor_identity_state": supervisor_state,
+            },
+        }
+        for key in ("effective_prompt_file", "effective_prompt_sha256"):
+            value = descriptor.get(key)
+            if isinstance(value, str):
+                evidence[key] = value
+        wake_target = descriptor.get("wake_target")
+        if isinstance(wake_target, dict):
+            evidence["wake_target"] = wake_target
+        finalized = finalize_terminal_task(
+            project,
+            task_id=task_id,
+            task_dir=task_dir,
+            result=result,
+            evidence=evidence,
+            state_dir=state_dir,
+            wake_target=wake_target if isinstance(wake_target, dict) else None,
+            takeover=True,
+        )
+        final_result = finalized.get("result")
+        if not isinstance(final_result, dict):
+            outcomes.append(
+                {
+                    "task_id": task_id,
+                    "status": "conflict",
+                    "reason": finalized.get("conflict"),
+                }
+            )
+            continue
+        descriptor.update(
+            {
+                "status": final_result["terminal_status"],
+                "finished_at": final_result["finished_at"],
+                "event_path": finalized["event_path"],
+                "signal_path": finalized["signal_path"],
+                "reaped_at": core.utc_now(),
+            }
+        )
+        core.atomic_json(descriptor_path, descriptor)
+        release_dispatch_claim(project, descriptor, state_dir=state_dir)
+        if not unclaimed:
+            worker_lease.release_lease(
+                lease,
+                task_dir,
+                released_by="reaper",
+                terminal_status=str(final_result["terminal_status"]),
+            )
+        outcomes.append(
+            {
+                "task_id": task_id,
+                "status": "reaped",
+                "terminal_status": final_result["terminal_status"],
+            }
+        )
+    return {
+        "schema_version": core.SCHEMA_VERSION,
+        "kind": "WORKER_REAP_REPORT",
+        "project_root": str(project),
+        "reaped_count": sum(item.get("status") == "reaped" for item in outcomes),
+        "outcomes": outcomes,
+    }

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_WORKER_POLICY_SNAPSHOT",
+  "name": "quality-efficient",
+  "files": [
+    {
+      "path": ".orchestrator/policies/quality-efficient.md",
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "bytes": 1234
+    }
+  ],
+  "metadata": {
+    "quality_priority": "correctness-first"
+  },
+  "total_bytes": 1234,
+  "captured_at": "2026-07-12T00:00:00Z"
+}

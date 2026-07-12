@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +34,7 @@ def run_status(
     minimum_severity: str = "warning",
     stale_after_seconds: float = task_diagnostics.DEFAULT_STALE_AFTER_SECONDS,
     large_log_bytes: int = task_diagnostics.DEFAULT_LARGE_LOG_BYTES,
+    since_cursor: str | None = None,
 ) -> dict[str, Any]:
     project = project_root.expanduser().resolve()
     doctor = diagnostics.run_doctor(project, state_dir=state_dir, host=host)
@@ -62,7 +67,7 @@ def run_status(
         wake_channel=wake_channel,
     )
     worst = worst_component_severity(components.values())
-    return {
+    report = {
         "schema_version": core.SCHEMA_VERSION,
         "kind": STATUS_KIND,
         "project_root": str(project),
@@ -81,6 +86,41 @@ def run_status(
         "issue_count": len(issues),
         "issues": issues,
     }
+    hashes = {
+        name: hashlib.sha256(
+            json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        for name, value in components.items()
+    }
+    report["cursor"] = encode_cursor(hashes)
+    if since_cursor is not None:
+        previous = decode_cursor(since_cursor)
+        report["components"] = {
+            name: value if previous.get(name) != hashes[name] else {"unchanged": True}
+            for name, value in components.items()
+        }
+        report["changed_component_count"] = sum(
+            previous.get(name) != digest for name, digest in hashes.items()
+        )
+    return report
+
+
+def encode_cursor(hashes: dict[str, str]) -> str:
+    payload = json.dumps(hashes, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def decode_cursor(cursor: str) -> dict[str, str]:
+    try:
+        padding = "=" * (-len(cursor) % 4)
+        value = json.loads(base64.urlsafe_b64decode(cursor + padding))
+    except (ValueError, binascii.Error, json.JSONDecodeError) as error:
+        raise StatusError("invalid status cursor") from error
+    if not isinstance(value, dict) or not all(
+        isinstance(key, str) and isinstance(item, str) for key, item in value.items()
+    ):
+        raise StatusError("invalid status cursor")
+    return value
 
 
 def summarize_doctor(report: dict[str, Any]) -> dict[str, Any]:
@@ -236,11 +276,19 @@ def task_large_log_summaries(
             if isinstance(size, int) and size > large_log_bytes
         }
         if large_logs:
+            artifacts = task.get("artifacts")
+            if not isinstance(artifacts, dict):
+                artifacts = {}
             summaries[str(task_id)] = {
                 "task_id": task.get("task_id") or task_id,
                 "worker": task.get("worker"),
                 "status": task.get("status"),
                 "large_logs": large_logs,
+                "large_log_paths": {
+                    name: artifacts.get(name)
+                    for name in large_logs
+                    if isinstance(artifacts.get(name), str)
+                },
             }
     return summaries
 
@@ -297,12 +345,40 @@ def check_large_log_summaries(
             if isinstance(size, int) and size > large_log_bytes
         }
         if large_logs:
+            artifacts = check.get("artifacts")
+            if not isinstance(artifacts, dict):
+                artifacts = {}
+            large_log_paths = {}
+            for name in large_logs:
+                path = check_log_path(name, check, artifacts)
+                if path is not None:
+                    large_log_paths[name] = path
             summaries[str(check_id)] = {
                 "check_id": check.get("check_id") or check_id,
                 "status": check.get("status"),
                 "large_logs": large_logs,
+                "large_log_paths": large_log_paths,
             }
     return summaries
+
+
+def check_log_path(
+    name: str,
+    check: dict[str, Any],
+    artifacts: dict[str, Any],
+) -> str | None:
+    if name.startswith("command:"):
+        label = name.removeprefix("command:")
+        for command in check.get("commands", []):
+            if (
+                isinstance(command, dict)
+                and command.get("label") == label
+                and isinstance(command.get("log_path"), str)
+            ):
+                return command["log_path"]
+        return None
+    value = artifacts.get(name)
+    return value if isinstance(value, str) else None
 
 
 def collect_issues(
@@ -475,8 +551,7 @@ def report_draft(
         for index, issue in enumerate(issues, start=1):
             if not isinstance(issue, dict):
                 continue
-            lines.append(f"{index}. `{issue.get('source')}` "
-                         f"`{issue.get('severity')}`")
+            lines.append(f"{index}. `{issue.get('source')}` `{issue.get('severity')}`")
             if issue.get("name"):
                 lines.append(f"   - name: `{issue['name']}`")
             if issue.get("task_id"):
@@ -494,9 +569,7 @@ def report_draft(
                     issue["suggested_action"],
                     report["project_root"],
                 )
-                lines.append(
-                    f"   - suggested action: {suggested_action}"
-                )
+                lines.append(f"   - suggested action: {suggested_action}")
     else:
         lines.append("No issues at the selected severity.")
     append_large_log_task_details(lines, report)
@@ -627,8 +700,7 @@ def append_large_log_task_details(lines: list[str], report: dict[str, Any]) -> N
         log_text = ""
         if isinstance(logs, dict):
             log_text = ", ".join(
-                f"{name}={size} bytes"
-                for name, size in sorted(logs.items())
+                f"{name}={size} bytes" for name, size in sorted(logs.items())
             )
         lines.append(
             f"{index}. task_id=`{task_id}`, "
@@ -657,8 +729,7 @@ def append_large_log_check_details(lines: list[str], report: dict[str, Any]) -> 
         log_text = ""
         if isinstance(logs, dict):
             log_text = ", ".join(
-                f"{name}={size} bytes"
-                for name, size in sorted(logs.items())
+                f"{name}={size} bytes" for name, size in sorted(logs.items())
             )
         lines.append(
             f"{index}. check_id=`{check_id}`, "

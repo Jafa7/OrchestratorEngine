@@ -8,8 +8,14 @@ Output policy:
 - Summarize changed files and behavior, not every edit.
 - Run only the checks requested by the task or clearly needed for the touched
   surface. Prefer project check runners that write compact artifacts.
-- Do not repeat a passing full gate. Run focused checks while editing and one
-  full gate only when the task explicitly requires it.
+- Classify verification before running it: structural docs/metadata work gets
+  structural validation and no test suite; isolated behavior gets focused
+  owning-module checks; shared contracts, packaging, cross-module changes and
+  release candidates get one full gate after implementation is complete.
+- Use focused checks while editing. If the final full gate fails, fix through
+  focused checks and rerun full only for the new final candidate.
+- Do not repeat a passing full gate after a later prose-only edit, or rerun it
+  merely to produce a different summary.
 - If a check succeeds, report command + `passed`.
 - If a check fails, report command + `failed`, the smallest useful excerpt and
   the log path.

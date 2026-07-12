@@ -65,7 +65,7 @@ For a reproducible install outside a source checkout, install the release tag:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.1.1"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.2.0"
 ```
 
 GitHub Release archives and wheel/sdist assets are published with the tag;
@@ -93,16 +93,29 @@ orchestrator-engine --project-root /path/to/project adopt --host codex
 
 Use `--host claude` or `--host vscode` when that is the user's host chat. The
 command is idempotent: it creates missing `.orchestrator/` directories and a
-disabled `workers.toml` template, but it does not write `binding.json`, enable
-workers, overwrite existing files or touch durable events/signals.
+disabled `workers.toml` template plus a provider-neutral worker policy, but it
+does not write `binding.json`, enable workers, overwrite existing files or
+touch durable events/signals.
+
+Before dispatching real work, confirm the adopting project's public Git policy
+for local runtime state. Effective prompts contain the task text and are stored
+durably under `.orchestrator/tasks/`; worker logs and evidence may also contain
+private data. Normally the whole `.orchestrator/` runtime directory is ignored
+and only a sanitized example config is committed elsewhere. If the project
+intentionally versions part of the directory, add precise ignore rules for
+`tasks/`, `events/`, `inbox/`, `checks/`, `prompts/` and private policy files.
+Do not invent a backup or retention destination; follow the adopting project's
+explicit local-state policy.
 
 **Check:**
 
 ```bash
 orchestrator-engine --project-root /path/to/project doctor
+git -C /path/to/project status --short -- .orchestrator
 ```
 
 Expect warnings until binding, workers and the delivery channel are configured.
+The Git command must not show runtime artifacts that would enter public Git.
 
 ## Step 2 — Bind the host chat
 
@@ -173,11 +186,19 @@ profiles per CLI so the agent can match worker cost and permissions to task
 complexity at dispatch time:
 
 ```toml
+[policies.quality-efficient]
+files = ["policies/quality-efficient.md"]
+quality_priority = "correctness-first"
+context_strategy = "progressive"
+verification_strategy = "risk-based-final-gate"
+output_strategy = "compact-evidence"
+
 [workers.claude-fast]                      # trivial checks, small edits
 enabled = true
 command = ["claude", "-p", "--model", "haiku",
            "--permission-mode", "dontAsk"]
 prompt_via = "stdin"
+policy = "quality-efficient"
 expect_long_running = true
 capability = "code-edit"
 permission_profile = "restricted"
@@ -188,6 +209,7 @@ enabled = true
 command = ["claude", "-p", "--model", "opus", "--effort", "xhigh",
            "--dangerously-skip-permissions"]
 prompt_via = "stdin"
+policy = "quality-efficient"
 expect_long_running = true
 capability = "code-edit"
 permission_profile = "full"
@@ -200,6 +222,7 @@ command = ["codex", "exec", "--json", "-m", "gpt-5.6-terra",
            "-c", "approval_policy=\"never\"",
            "-c", "sandbox_mode=\"danger-full-access\""]
 prompt_via = "arg"
+policy = "quality-efficient"
 expect_long_running = true
 capability = "code-edit"
 permission_profile = "full"
@@ -210,6 +233,7 @@ enabled = true
 command = ["copilot", "--model", "auto", "--effort", "high",
            "--allow-all", "--no-ask-user", "--prompt"]
 prompt_via = "arg"
+policy = "quality-efficient"
 expect_long_running = true
 capability = "code-edit"
 permission_profile = "full"
@@ -219,6 +243,17 @@ cost = "medium"
 Ask the user which profiles they want (model tiers, effort levels, timeouts)
 instead of inventing them.
 
+`adopt` creates `policies/quality-efficient.md` next to `workers.toml`. Assign
+it explicitly to AI profiles with `policy = "quality-efficient"`. If adopting
+an existing layout or copying `examples/workers.toml`, also copy
+[`examples/policies/quality-efficient.md`](../examples/policies/quality-efficient.md)
+to `.orchestrator/policies/quality-efficient.md`. The policy is
+correctness-first: it reduces repeated reads, broad exploration, intermediate
+full suites and oversized handoffs, while requiring deeper investigation for
+high-risk or uncertain work.
+See [worker behavior policies](worker-policies.md) before adding project- or
+role-specific overlays.
+
 Notes:
 
 - Current Codex GPT-5.6 roles are Sol for quality-first complex work, Terra for
@@ -227,6 +262,10 @@ Notes:
   profile before enabling it.
 - `prompt_via = "arg"` appends the prompt text as the final argument;
   `"stdin"` pipes it.
+- `policy` selects a `[policies.*]` bundle. The engine snapshots the selected
+  files and the task prompt before supervisor spawn and records both hashes in
+  task/evidence. Do not point policy bundles at private planning documents or
+  use them as a substitute for project-specific `AGENTS.md` instructions.
 - `codex exec` refuses untrusted directories. Either the user marks the
   project trusted in `~/.codex/config.toml`, or add
   `--skip-git-repo-check` to the command after confirming with the user.
@@ -267,6 +306,13 @@ without a probe remain dispatchable and report `not_configured`.
 
 ## Step 4 — Configure verification workers
 
+Adopt the [risk-based verification policy](verification-policy.md) before
+configuring suites. Each project should define structural, focused and full
+checks using its native tools, and place the reusable instruction snippet from
+that policy in its `AGENTS.md`, `CLAUDE.md` or equivalent. A `fast` suite is
+not automatically a focused suite: it is focused only when it covers the
+touched behavior without running unrelated tests.
+
 For long test suites, do not keep the host chat open while tests stream
 output. Run checks as detached workers that write a compact verification
 result, then let the configured host channel deliver the follow-up.
@@ -277,6 +323,11 @@ directly in the host chat unless the user explicitly asked for an immediate
 foreground run. The `worker run` descriptor snapshots this chat as
 `wake_target`, so the completion is routed to the host target that launched the
 check even when several chats share the same project.
+
+Use focused checks while implementation is still changing. Dispatch the full
+suite only after the work is otherwise complete and needs final verification.
+If it fails, use the failed-command evidence and focused checks while fixing,
+then dispatch full again only for the new final candidate.
 
 The repository includes `examples/check_runner.py` as a portable reference
 runner. Copy it into the adopted project (for example
@@ -356,8 +407,10 @@ the JSON result.
 
 Use the prompt templates in [`examples/prompts`](../examples/prompts) for
 review, implementation, verification and adopter-report workers. They encode
-the same output-economy rule: compact summaries first, durable artifact paths
-instead of full logs, and tiny excerpts only when needed to identify a failure.
+the same risk and output-economy rules: select structural/focused/full before
+running checks, keep compact summaries first, use durable artifact paths
+instead of full logs, and include tiny excerpts only when needed to identify a
+failure.
 
 ## Step 5 — Start the delivery channel
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from . import binding, core, workers
+from . import binding, core, worker_policy, workers
 
 ADOPTION_KIND = "ORCHESTRATOR_ADOPTION"
 
@@ -15,11 +15,19 @@ WORKERS_TEMPLATE = """# OrchestratorEngine worker profiles.
 # executes command arrays exactly as data; model names and permission flags are
 # provider-specific and belong in this adopting project file.
 
+[policies.quality-efficient]
+files = ["policies/quality-efficient.md"]
+quality_priority = "correctness-first"
+context_strategy = "progressive"
+verification_strategy = "risk-based-final-gate"
+output_strategy = "compact-evidence"
+
 [workers.example]
 enabled = false
 command = ["python", "-c", "import sys; sys.stdin.read(); print('ok')"]
 prompt_via = "stdin"
 timeout_seconds = 300
+policy = "quality-efficient"
 """
 
 
@@ -53,8 +61,14 @@ def adopt_project(
         core.inbox_root(project, state_dir=state_dir) / "thread-wakeups",
         workers.tasks_root(project, state_dir=state_dir),
         core.state_root(project, state_dir=state_dir) / "prompts",
+        core.state_root(project, state_dir=state_dir) / "policies",
     ]
     workers_config = workers.workers_config_path(project, state_dir=state_dir)
+    policy_file = (
+        core.state_root(project, state_dir=state_dir)
+        / "policies"
+        / "quality-efficient.md"
+    )
     created: list[str] = []
     skipped: list[str] = []
 
@@ -73,6 +87,17 @@ def adopt_project(
         if not dry_run:
             workers_config.parent.mkdir(parents=True, exist_ok=True)
             workers_config.write_text(WORKERS_TEMPLATE, encoding="utf-8")
+
+    if policy_file.exists():
+        skipped.append(state_relative(project, policy_file))
+    else:
+        created.append(state_relative(project, policy_file))
+        if not dry_run:
+            policy_file.parent.mkdir(parents=True, exist_ok=True)
+            policy_file.write_text(
+                worker_policy.QUALITY_EFFICIENT_POLICY,
+                encoding="utf-8",
+            )
 
     return {
         "schema_version": core.SCHEMA_VERSION,
@@ -109,9 +134,7 @@ def next_steps(project: Path, *, host: str | None) -> list[str]:
         f"orchestrator-engine --project-root {root} worker diagnose --enabled-only",
     ]
     if host == "claude":
-        steps.append(
-            f"orchestrator-engine --project-root {root} watcher stream"
-        )
+        steps.append(f"orchestrator-engine --project-root {root} watcher stream")
     elif host == "vscode":
         steps.append(
             f"orchestrator-engine --project-root {root} watcher "

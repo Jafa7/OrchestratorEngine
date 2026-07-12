@@ -1,15 +1,29 @@
 from __future__ import annotations
 
+import errno
 import os
 import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 from orchestrator_engine import core
 
 
 class CoreTests(unittest.TestCase):
+    def test_load_object_retries_transient_enodata(self) -> None:
+        transient = OSError(errno.ENODATA, "No data available")
+        with mock.patch.object(
+            Path,
+            "read_text",
+            side_effect=[transient, '{"ok": true}'],
+        ) as read_text:
+            value = core.load_object(Path("state.json"))
+
+        self.assertEqual(value, {"ok": True})
+        self.assertEqual(read_text.call_count, 2)
+
     def test_emit_writes_terminal_event_and_signal(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

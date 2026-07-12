@@ -91,6 +91,26 @@ class SchemaContractTests(unittest.TestCase):
         event["wake_target"].pop("captured_at")
         self.assertTrue(list(self.validators["terminal-event"].iter_errors(event)))
 
+    def test_worker_policy_ref_uses_the_packaged_registry(self) -> None:
+        root = Path(__file__).parent / "fixtures" / "schemas" / "valid"
+        policy = json.loads(
+            (root / "worker-policy-snapshot.json").read_text(encoding="utf-8")
+        )
+        for name in ("worker-task", "worker-evidence"):
+            with self.subTest(schema=name):
+                artifact = json.loads(
+                    (root / f"{name}.json").read_text(encoding="utf-8")
+                )
+                artifact["worker_policy"] = copy.deepcopy(policy)
+                self.assertEqual(
+                    list(self.validators[name].iter_errors(artifact)),
+                    [],
+                )
+                artifact["worker_policy"]["files"][0]["sha256"] = "invalid"
+                self.assertTrue(
+                    list(self.validators[name].iter_errors(artifact))
+                )
+
     def test_cli_lists_and_prints_schema(self) -> None:
         command = [sys.executable, "-m", "orchestrator_engine.cli", "schemas"]
         listed = json.loads(subprocess.check_output(command, text=True))

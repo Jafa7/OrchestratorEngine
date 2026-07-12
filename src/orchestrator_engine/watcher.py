@@ -553,16 +553,11 @@ def build_deferred_record(
 ) -> dict[str, Any]:
     attempts = int(previous.get("attempts", 0)) + 1
     reason_code = defer_reason_code(reason)
-    manual_required = (
-        reason_code == "quota_or_usage_limit"
-        or (
-            reason_code not in RETRYABLE_GUARD_REASON_CODES
-            and attempts >= DEFER_MAX_ATTEMPTS
-        )
+    manual_required = reason_code == "quota_or_usage_limit" or (
+        reason_code not in RETRYABLE_GUARD_REASON_CODES
+        and attempts >= DEFER_MAX_ATTEMPTS
     )
-    status = (
-        DEFER_STATUS_MANUAL_REQUIRED if manual_required else DEFER_STATUS_RETRYABLE
-    )
+    status = DEFER_STATUS_MANUAL_REQUIRED if manual_required else DEFER_STATUS_RETRYABLE
     record: dict[str, Any] = {
         "status": status,
         "attempts": attempts,
@@ -800,8 +795,7 @@ def acknowledge_signal(
             "kind": ACKNOWLEDGEMENT_KIND,
             "event_id": event_id,
             "host": host,
-            "task_id": (previous or {}).get("task_id")
-            or (signal or {}).get("task_id"),
+            "task_id": (previous or {}).get("task_id") or (signal or {}).get("task_id"),
             "status": ACKNOWLEDGED_STATUS,
             "reason": reason.strip(),
             "acknowledged_at": acknowledged_at,

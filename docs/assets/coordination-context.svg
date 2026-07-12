@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img" aria-labelledby="title description">
+  <title id="title">Context read while checking background work</title>
+  <desc id="description">Three comparisons show naive cumulative-log polling at 100 percent and compact OrchestratorEngine status reads for a long test, one AI worker, and three parallel workers. Lower is better.</desc>
+  <rect width="1200" height="760" fill="#ffffff"/>
+  <text x="600" y="54" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="30" font-weight="700" fill="#0f172a">Context read while checking background work</text>
+  <text x="600" y="84" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="16" fill="#475569">Four polling checks as logs grow | measured UTF-8 bytes | lower is better</text>
+  <rect x="330" y="108" width="18" height="18" rx="2" fill="#64748b"/>
+  <text x="358" y="122" font-family="Inter, Arial, sans-serif" font-size="15" fill="#334155">Read cumulative logs every time</text>
+  <rect x="690" y="108" width="18" height="18" rx="2" fill="#16a34a"/>
+  <text x="718" y="122" font-family="Inter, Arial, sans-serif" font-size="15" fill="#334155">Read OrchestratorEngine status</text>
+  <line x1="110" y1="570" x2="1120" y2="570" stroke="#94a3b8" stroke-width="1.5"/>
+  <line x1="110" y1="470" x2="1120" y2="470" stroke="#e2e8f0"/>
+  <line x1="110" y1="370" x2="1120" y2="370" stroke="#e2e8f0"/>
+  <line x1="110" y1="270" x2="1120" y2="270" stroke="#e2e8f0"/>
+  <line x1="110" y1="170" x2="1120" y2="170" stroke="#e2e8f0"/>
+  <text x="96" y="575" text-anchor="end" font-family="Inter, Arial, sans-serif" font-size="14" fill="#64748b">0%</text>
+  <text x="96" y="475" text-anchor="end" font-family="Inter, Arial, sans-serif" font-size="14" fill="#64748b">25%</text>
+  <text x="96" y="375" text-anchor="end" font-family="Inter, Arial, sans-serif" font-size="14" fill="#64748b">50%</text>
+  <text x="96" y="275" text-anchor="end" font-family="Inter, Arial, sans-serif" font-size="14" fill="#64748b">75%</text>
+  <text x="96" y="175" text-anchor="end" font-family="Inter, Arial, sans-serif" font-size="14" fill="#64748b">100%</text>
+
+  <rect x="190" y="170" width="105" height="400" rx="5" fill="#64748b"/>
+  <rect x="305" y="561.00" width="105" height="9.00" rx="3" fill="#16a34a"/>
+  <text x="242.5" y="156" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#334155">100%</text>
+  <text x="357.5" y="549.00" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700" fill="#15803d">2.25%</text>
+  <text x="300" y="610" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="700" fill="#0f172a">Long test</text>
+  <text x="300" y="636" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#15803d">97.75% less context</text>
+  <text x="300" y="658" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#64748b">1 task | 256 KB log | 4 checks</text>
+
+  <rect x="500" y="170" width="105" height="400" rx="5" fill="#64748b"/>
+  <rect x="615" y="566.00" width="105" height="4.00" rx="3" fill="#16a34a"/>
+  <text x="552.5" y="156" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#334155">100%</text>
+  <text x="667.5" y="554.00" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700" fill="#15803d">0.56%</text>
+  <text x="610" y="610" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="700" fill="#0f172a">AI worker</text>
+  <text x="610" y="636" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#15803d">99.44% less context</text>
+  <text x="610" y="658" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#64748b">1 task | 1 MB log | 4 checks</text>
+
+  <rect x="810" y="170" width="105" height="400" rx="5" fill="#64748b"/>
+  <rect x="925" y="566.00" width="105" height="4.00" rx="3" fill="#16a34a"/>
+  <text x="862.5" y="156" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#334155">100%</text>
+  <text x="977.5" y="554.00" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700" fill="#15803d">0.44%</text>
+  <text x="920" y="610" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="700" fill="#0f172a">Parallel workers</text>
+  <text x="920" y="636" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#15803d">99.56% less context</text>
+  <text x="920" y="658" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#64748b">3 tasks | 512 KB logs | 4 checks</text>
+  <rect x="110" y="682" width="1010" height="58" rx="8" fill="#f0fdf4" stroke="#bbf7d0"/>
+  <text x="615" y="704" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700" fill="#166534">Every task state remains visible | full result, evidence and logs stay available by path</text>
+  <text x="615" y="724" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="12" fill="#166534">Selective inspection, not output truncation; open complete artifacts whenever a status requires drill-down</text>
+  <text x="615" y="739" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="11" fill="#475569">Synthetic deterministic fixture | context-volume proxy, not a promise about total tokens, latency or engineering productivity</text>
+</svg>

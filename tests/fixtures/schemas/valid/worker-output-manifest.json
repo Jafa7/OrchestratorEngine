@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "kind": "WORKER_OUTPUT_MANIFEST",
+  "task_id": "TASK-1",
+  "worker": "claude-readonly",
+  "file_count": 1,
+  "total_bytes": 12,
+  "files": [
+    {
+      "path": "outputs/plan.md",
+      "bytes": 12,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "captured_at": "2026-07-12T12:00:00+00:00"
+}

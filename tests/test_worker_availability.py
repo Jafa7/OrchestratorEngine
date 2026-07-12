@@ -52,6 +52,8 @@ class WorkerAvailabilityTests(unittest.TestCase):
             stdout.write_text("You've hit your session limit", encoding="utf-8")
             stderr.write_text("", encoding="utf-8")
             self.assertTrue(worker_diagnostics.classify_rate_limit(stdout, stderr))
+            stdout.write_text("You've hit your usage limit", encoding="utf-8")
+            self.assertTrue(worker_diagnostics.classify_rate_limit(stdout, stderr))
             stdout.write_text("ordinary command failure", encoding="utf-8")
             self.assertFalse(worker_diagnostics.classify_rate_limit(stdout, stderr))
             stdout.write_text("rate limit is configured", encoding="utf-8")

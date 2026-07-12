@@ -4,10 +4,19 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from orchestrator_engine import adoption, binding, core, workers
+from orchestrator_engine import adoption, binding, core, worker_policy, workers
 
 
 class AdoptionTests(unittest.TestCase):
+    def test_packaged_and_example_quality_policy_match(self) -> None:
+        example = (
+            Path(__file__).resolve().parents[1]
+            / "examples"
+            / "policies"
+            / "quality-efficient.md"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(example, worker_policy.QUALITY_EFFICIENT_POLICY)
+
     def test_adopt_creates_state_layout_when_absent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -15,11 +24,18 @@ class AdoptionTests(unittest.TestCase):
             events_exists = core.events_root(root).is_dir()
             signals_exists = (core.inbox_root(root) / "signals").is_dir()
             config_exists = workers.workers_config_path(root).is_file()
+            policy_file = (
+                core.state_root(root) / "policies" / "quality-efficient.md"
+            )
+            policy_exists = policy_file.is_file()
+            policy_content = policy_file.read_text(encoding="utf-8")
 
         self.assertEqual(result["status"], "created")
         self.assertTrue(events_exists)
         self.assertTrue(signals_exists)
         self.assertTrue(config_exists)
+        self.assertTrue(policy_exists)
+        self.assertEqual(policy_content, worker_policy.QUALITY_EFFICIENT_POLICY)
         self.assertIn("worker list", " ".join(result["next_steps"]))
 
     def test_adopt_is_idempotent_on_second_run(self) -> None:

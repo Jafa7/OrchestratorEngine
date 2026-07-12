@@ -13,6 +13,7 @@ SEVERITY_RANK = {severity: index for index, severity in enumerate(SEVERITIES)}
 RATE_LIMIT_SCAN_BYTES = 32 * 1024
 RATE_LIMIT_PATTERNS = (
     re.compile(r"you(?:'|\u2019)ve hit your session limit", re.IGNORECASE),
+    re.compile(r"you(?:'|\u2019)ve hit your usage limit", re.IGNORECASE),
     re.compile(r"\brate[ _-]limit(?:ed|[ _-]exceeded)\b", re.IGNORECASE),
     re.compile(r"\busage[ _-]limit(?:ed|[ _-]exceeded)\b", re.IGNORECASE),
     re.compile(r"too many requests", re.IGNORECASE),
@@ -56,11 +57,14 @@ def evaluate_profile(
 
     diagnostics: list[dict[str, str]] = []
     if availability_probe is not None and availability_timeout_seconds is None:
-        diagnostics.append(diagnostic(
-            code="availability_probe_timeout_absent", severity="error",
-            message=f"worker {name} availability probe has no timeout",
-            suggested_action="Set a finite availability_timeout_seconds.",
-        ))
+        diagnostics.append(
+            diagnostic(
+                code="availability_probe_timeout_absent",
+                severity="error",
+                message=f"worker {name} availability probe has no timeout",
+                suggested_action="Set a finite availability_timeout_seconds.",
+            )
+        )
     if command:
         executable = executable_name(command[0])
         flags = set(command[1:])
@@ -109,7 +113,9 @@ def run_availability_probe(config: dict[str, Any]) -> dict[str, Any]:
         return {"status": "not_configured"}
     try:
         completed = subprocess.run(
-            command, capture_output=True, check=False,
+            command,
+            capture_output=True,
+            check=False,
             timeout=float(config["availability_timeout_seconds"]),
             stdin=subprocess.DEVNULL,
         )
@@ -192,11 +198,11 @@ def provider_diagnostics(
                     severity="warning",
                     message=(
                         f"worker {name} runs codex exec detached but does not "
-                        "set approval_policy=\"never\" in the command or "
+                        'set approval_policy="never" in the command or '
                         "otherwise declare a non-interactive approval policy"
                     ),
                     suggested_action=(
-                        "Add `-c approval_policy=\"never\"` or another "
+                        'Add `-c approval_policy="never"` or another '
                         "documented non-interactive approval policy."
                     ),
                 )
@@ -216,7 +222,7 @@ def provider_diagnostics(
                     ),
                     suggested_action=(
                         "Set `--sandbox ...` or an explicit "
-                        "`-c sandbox_mode=\"...\"` appropriate for this "
+                        '`-c sandbox_mode="..."` appropriate for this '
                         "detached worker profile."
                     ),
                 )
@@ -244,6 +250,27 @@ def provider_diagnostics(
                 ),
             )
         )
+    if (
+        executable in {"claude", "claude.exe"}
+        and "-p" in flags
+        and "--permission-mode plan" in command_text.lower()
+    ):
+        diagnostics.append(
+            diagnostic(
+                code="claude_plan_output_may_be_external",
+                severity="warning",
+                message=(
+                    f"worker {name} uses Claude plan permission mode, which may "
+                    "store the full plan in provider-owned state and return only "
+                    "a summary on stdout"
+                ),
+                suggested_action=(
+                    "Require the complete deliverable on stdout or below "
+                    "ORCHESTRATOR_DECLARED_OUTPUT_DIR; do not accept only a "
+                    "pointer to ~/.claude/plans."
+                ),
+            )
+        )
     return diagnostics
 
 
@@ -266,9 +293,7 @@ def filter_diagnostics(
 
 def severity_counts(diagnostics: list[dict[str, str]]) -> dict[str, int]:
     return {
-        severity: sum(
-            1 for item in diagnostics if item.get("severity") == severity
-        )
+        severity: sum(1 for item in diagnostics if item.get("severity") == severity)
         for severity in SEVERITIES
     }
 
@@ -305,6 +330,17 @@ def profile_summary(
         "prompt_via": config["prompt_via"],
         "timeout_seconds": config["timeout_seconds"],
         "expect_long_running": config["expect_long_running"],
+        "policy": config.get("policy"),
+        "policy_files": (
+            [str(path) for path in config["policy_config"]["files"]]
+            if config.get("policy_config") is not None
+            else []
+        ),
+        "policy_metadata": (
+            config["policy_config"]["metadata"]
+            if config.get("policy_config") is not None
+            else {}
+        ),
         "metadata": config["extras"],
         "diagnostic_count": len(diagnostics),
         "severity_counts": severity_counts(diagnostics),

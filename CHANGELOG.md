@@ -4,6 +4,49 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-12
+
+### Added
+
+- Reproducible coordination-context benchmark and README chart compare compact
+  status polling with repeated cumulative-log reads, including an explicit
+  Codex Desktop interpretation and quality guard.
+- Portable risk-based verification policy defines structural, focused and full
+  gates for host agents, detached workers and adopting projects.
+- Provider-neutral worker behavior policies can be selected per profile,
+  composed into immutable dispatch-time prompts and audited through packaged
+  policy snapshot schemas and prompt/file hashes.
+
+### Changed
+
+- Task descriptors have a single writer: `worker run` writes `task.json` before
+  the spawn and hands it over, and the supervisor claims it with its own
+  `supervisor_pid` as its first action. A dispatched task therefore reports
+  `starting` until its supervisor claims it, and a fast worker's terminal
+  descriptor can no longer be overwritten by the dispatcher.
+- Workers run in their own process group (`worker_pgid` on the descriptor), and
+  a timed-out worker is stopped group-wide — `SIGTERM`, bounded grace, then
+  `SIGKILL` — so its subprocesses cannot outlive the task. `result.json` records
+  the signal ledger in an optional `termination` object.
+- Supervisors now hold a durable Linux process-identity lease. `worker reap`
+  safely finalizes tasks whose supervisor is proven gone, emitting one
+  deterministic terminal event without signaling reused PIDs or deleting
+  audit artifacts.
+- Added bounded global/per-profile admission, a durable FIFO queue, graceful or
+  forced task cancellation, exact active-dispatch duplicate protection,
+  structured task intent and bounded retry lineage.
+- Added opaque delta-status cursors, mechanical progress diagnostics, optional
+  JSON-lines usage telemetry, advisory soft budgets and bounded structured
+  worker handoff evidence.
+- Added provider-neutral task-local declared outputs with bounded hashing and a
+  Claude plan-mode diagnostic, preventing a provider-owned plan file from being
+  mistaken for the durable primary result.
+- Aggregate status large-log summaries now expose the corresponding artifact
+  paths so agents can drill down without loading full logs by default.
+- README badges, package metadata and repository positioning now describe
+  host-specific delivery without promising universal live wakeup or zero
+  polling.
+
 ## [0.1.1] - 2026-07-11
 
 ### Added

@@ -62,9 +62,7 @@ def wake_chat(
                 "receipt": str(receipt_path),
             }
 
-    event = core.verify_terminal_event(
-        Path(event_path_value).expanduser().resolve()
-    )
+    event = core.verify_terminal_event(Path(event_path_value).expanduser().resolve())
     message = wakeup.build_wakeup_message(project, signal, event)
     try:
         completed = runner(

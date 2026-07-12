@@ -1,0 +1,1 @@
+{"schema_version":1,"kind":"WORKER_CANCEL_REQUEST","task_id":"TASK-1","mode":"graceful","reason":"superseded","requested_at":"2026-07-12T12:00:00+00:00"}

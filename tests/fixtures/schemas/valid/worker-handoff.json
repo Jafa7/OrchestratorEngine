@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "kind": "WORKER_HANDOFF",
+  "summary": "Implemented the requested focused change.",
+  "evidence": ["focused tests passed"],
+  "risks": []
+}

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-engine://schemas/worker-policy-snapshot",
+  "title": "Worker policy snapshot",
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_WORKER_POLICY_SNAPSHOT",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "kind",
+    "name",
+    "files",
+    "metadata",
+    "total_bytes",
+    "captured_at"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "ORCHESTRATOR_WORKER_POLICY_SNAPSHOT"},
+    "name": {"type": "string", "minLength": 1},
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["path", "sha256", "bytes"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "bytes": {"type": "integer", "minimum": 1}
+        },
+        "additionalProperties": false
+      }
+    },
+    "metadata": {"type": "object"},
+    "total_bytes": {"type": "integer", "minimum": 1},
+    "captured_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": false
+}

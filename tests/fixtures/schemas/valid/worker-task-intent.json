@@ -1,0 +1,1 @@
+{"schema_version":1,"kind":"WORKER_TASK_INTENT","role":"review","risk":"high","verification":"full","permissions":"readonly","authorizations":{"commit":false,"push":false,"network":false}}

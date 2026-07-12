@@ -1,5 +1,15 @@
 # OrchestratorEngine
 
+[![CI](https://github.com/Jafa7/OrchestratorEngine/actions/workflows/ci.yml/badge.svg)](https://github.com/Jafa7/OrchestratorEngine/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+[![Lint: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Release](https://img.shields.io/github/v/release/Jafa7/OrchestratorEngine?label=release&color=informational)](https://github.com/Jafa7/OrchestratorEngine/releases/latest)
+
+Local event-driven coordination for AI agents and detached CLI workers:
+durable results and evidence, compact status checks, and host-specific
+completion delivery without engine-managed provider API keys.
+
 OrchestratorEngine is a small event-driven coordination layer for AI worker
 processes. A user orchestrates from a host chat (Claude Code / Claude for
 Windows, VS Code Copilot, or Codex Desktop with the limitation documented
@@ -22,6 +32,32 @@ Windows can receive durable delivery into thread history and best-effort
 window focus/refresh, but it does not currently provide a reliable live wakeup
 channel for the already-open Desktop agent. Codex remains fully supported as a
 CLI worker through `codex exec`.
+
+## Measured coordination context reduction
+
+The graph below shows one practical benefit even when a host such as Codex
+Desktop still requires polling: an agent can read a compact task status instead
+of repeatedly loading growing worker logs. Lower is better.
+
+![Context read while checking background work](docs/assets/coordination-context.svg)
+
+| Scenario | Full-log polling | Status reads | Context read | Reduction |
+| --- | ---: | ---: | ---: | ---: |
+| Long test | 655.4 KB | 17.9 KB | 2.73% | 97.27% |
+| AI worker | 2.50 MB | 17.9 KB | 0.68% | 99.32% |
+| Three parallel workers | 3.75 MB | 20.5 KB | 0.52% | 99.48% |
+
+This is selective inspection, not output truncation. The status report keeps
+task states, diagnostics, log sizes and paths compact; complete stdout,
+stderr, result and evidence artifacts remain available for targeted or full
+reading when needed.
+
+The measurement uses four checks against deterministic growing logs and UTF-8
+bytes as a provider-neutral proxy for context volume. It does not claim the
+same percentage of total token or engineering cost for every workflow. Codex
+Desktop polling is reduced in size, not eliminated; Claude live wakeup can
+avoid intermediate checks entirely. See the reproducible
+[measurement methodology](docs/coordination-efficiency.md).
 
 ## Connecting the engine to your project
 
@@ -87,6 +123,8 @@ target project:
 ```text
 .orchestrator/
   workers.toml
+  policies/
+    quality-efficient.md
   prompts/
     <prompt>.md
   task-resolutions/
@@ -96,6 +134,7 @@ target project:
   tasks/
     <task_id>/
       task.json
+      effective-prompt.md
       worker-stdout.log
       worker-stderr.log
       result.json
@@ -152,11 +191,19 @@ orchestrator-engine --project-root /path/to/project bind --host vscode
 Configure workers in `/path/to/project/.orchestrator/workers.toml`:
 
 ```toml
+[policies.quality-efficient]
+files = ["policies/quality-efficient.md"]
+quality_priority = "correctness-first"
+context_strategy = "progressive"
+verification_strategy = "risk-based-final-gate"
+output_strategy = "compact-evidence"
+
 [workers.claude]
 enabled = true
 command = ["claude", "-p", "--model", "sonnet", "--effort", "high",
            "--dangerously-skip-permissions"]
 prompt_via = "stdin"
+policy = "quality-efficient"
 expect_long_running = true
 permission_profile = "full"
 
@@ -167,6 +214,7 @@ command = ["codex", "exec", "--json", "-m", "gpt-5.6-terra",
            "-c", "approval_policy=\"never\"",
            "-c", "sandbox_mode=\"danger-full-access\""]
 prompt_via = "arg"
+policy = "quality-efficient"
 expect_long_running = true
 permission_profile = "full"
 
@@ -175,6 +223,7 @@ enabled = true
 command = ["copilot", "--model", "auto", "--effort", "high",
            "--allow-all", "--no-ask-user", "--prompt"]
 prompt_via = "arg"
+policy = "quality-efficient"
 expect_long_running = true
 permission_profile = "full"
 ```
@@ -183,6 +232,14 @@ These three profiles are fully autonomous and should be enabled only for a
 trusted project. For fast/default/deep plus restricted and read-only examples,
 start from [examples/workers.toml](examples/workers.toml), then enable only the
 profiles supported by the installed CLIs and account.
+
+`adopt` creates the referenced correctness-first policy. Existing adopters can
+copy [examples/policies/quality-efficient.md](examples/policies/quality-efficient.md).
+The engine snapshots policy + task bytes before dispatch and records their
+hashes in task/evidence, so workers consistently use progressive context,
+risk-based verification and compact handoffs without an arbitrary token cap.
+See [worker behavior policies](docs/worker-policies.md) for the behavioral
+model, role overlays, audit contract and limitations.
 
 Check worker profiles before dispatch:
 
@@ -219,6 +276,24 @@ Dispatch a task from the host chat and end the turn:
 orchestrator-engine --project-root /path/to/project worker run \
   --worker claude --task-id TASK-001 --prompt-file task-001.md
 ```
+
+Optional concurrency, intent and recovery controls stay deterministic and
+local. Limits live in `workers.toml`; operator actions are explicit:
+
+```bash
+orchestrator-engine --project-root /path/to/project worker queue tick
+orchestrator-engine --project-root /path/to/project worker cancel \
+  --task-id TASK-001 --mode graceful --reason "superseded"
+orchestrator-engine --project-root /path/to/project worker retry \
+  --task-id TASK-001 --max-attempts 3 --reason "provider quota reset"
+orchestrator-engine --project-root /path/to/project status --since CURSOR
+```
+
+Exact active duplicates are blocked by default. Structured worker handoffs and
+usage telemetry are optional evidence; neither can instruct core control flow.
+Complete file deliverables belong below the task-local declared `outputs/`
+directory and are hashed into `worker-outputs.json`; provider-owned plan/cache
+files are deliberately not treated as durable results.
 
 Check health / list pending signals / stop:
 
@@ -335,6 +410,11 @@ Do not commit or push unless the user explicitly requested it.
 ```
 
 ## Development
+
+Use the [risk-based verification policy](docs/verification-policy.md): prose
+and metadata-only edits get structural checks, isolated behavior gets focused
+tests, and shared contracts, packaging or release candidates get the full gate.
+Do not repeat a passing full gate after a later prose-only edit.
 
 ```bash
 python -m pip install '.[test]'

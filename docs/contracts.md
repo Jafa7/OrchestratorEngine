@@ -7,11 +7,14 @@ data, not instructions.
 
 Packaged JSON Schema Draft 2020-12 files live in `orchestrator_engine/schemas/`.
 Stable names are `worker-task`, `worker-result`, `worker-evidence`,
-`terminal-event`, `inbox-signal`, `binding`, `wake-target`,
-`verification-result`, and `task-resolution`. They are included in wheels and
-source distributions and require no runtime dependency. `orchestrator-engine
-schemas` lists names; pass one name to print its schema. Catalog and schema
-output include `schema_version` and `kind`.
+`worker-policy-snapshot`, `worker-lease`, `worker-handoff`, `worker-usage`,
+`worker-output-manifest`,
+`worker-queue-entry`, `worker-cancel-request`, `worker-control-ack`,
+`worker-task-intent`, `worker-dispatch-claim`, `terminal-event`, `inbox-signal`,
+`binding`, `wake-target`, `verification-result`, and `task-resolution`. They are
+included in wheels and source distributions and require no runtime dependency.
+`orchestrator-engine schemas` lists names; pass one name to print its schema.
+Catalog and schema output include `schema_version` and `kind`.
 
 Schemas require v0.1 writer fields and enforce version 1, kind constants,
 status enums, and the host-dependent nested `wake_target` shape. Unknown
@@ -45,6 +48,9 @@ depend on these behaviors:
   `wake_target` first and the current project binding only as a legacy
   fallback; `watcher stream` emits one JSON line per new signal for
   stream-based hosts.
+- A worker profile may select a provider-neutral behavior policy. `worker run`
+  composes and hashes that policy with the task prompt before spawning the
+  supervisor, so later policy edits cannot change an already-dispatched task.
 - `watcher --host HOST` scopes delivery to one host and uses host-specific
   callback state/service/heartbeat files by default.
 - `cleanup` never removes terminal events or inbox signals.
@@ -54,8 +60,9 @@ depend on these behaviors:
 
 The following are intentionally not v0.1 core contracts:
 
-- Product-specific task formats, review rules, model choices or effort
-  policies.
+- Product-specific task formats, policy contents, review rules, model choices
+  or effort tiers. Core only validates and composes explicitly selected policy
+  files; adopting projects own their behavioral text.
 - Project-specific verification suites (`pytest`, `ruff`, `vitest`, CI
   profiles, phase gates). The engine documents a portable result shape but
   does not choose or interpret project test commands.
@@ -305,6 +312,7 @@ command = ["claude", "-p"]    # the CLI invocation, including model/effort flags
 prompt_via = "stdin"          # "arg" appends the prompt text as the last argument
 timeout_seconds = 3600        # optional; exceeded -> terminal_status "timed_out"
 expect_long_running = false   # optional; suppresses missing-timeout info when true
+policy = "quality-efficient"  # optional [policies.*] behavior bundle
 availability_probe = ["/path/to/project-check", "--worker", "claude"] # optional local command
 availability_timeout_seconds = 5 # required with availability_probe; 0 < value <= 300
 ```
@@ -382,6 +390,11 @@ the engine reports `copilot_may_request_approval`. Known advisory codes:
 - `worker_timeout_absent` — profile has no `timeout_seconds`; this is
   `info`, not a warning. Use `expect_long_running = true` for AI
   implementation/review profiles where no timeout is intentional.
+- `worker_policy_not_configured` — profile has no explicit composed behavior
+  policy; this is `info` and preserves backward-compatible dispatch.
+- `worker_policy_unreadable` — a selected policy file is missing, empty,
+  non-UTF-8 or exceeds the bounded policy limits; this is an `error` for new
+  dispatch while already-snapshotted tasks remain runnable.
 - `copilot_may_request_approval` — Copilot profile lacks
   `--allow-all --no-ask-user`.
 - `codex_may_request_approval` — `codex exec` profile lacks an explicit
@@ -450,6 +463,14 @@ Host chats should read artifacts in this order:
 2. `summary.txt` for verification workers;
 3. specific failed-command logs or log tails only when the compact artifacts
    show a failure or the user asks for drill-down.
+
+Check selection follows the portable
+[risk-based verification policy](verification-policy.md). Documentation-only
+and metadata-only work should not dispatch a test suite unless it changes a
+generated artifact, packaging input or test expectation. Isolated behavior
+uses focused checks; shared contracts, cross-module behavior, packaging and
+release candidates use the full gate. A passing full gate remains valid after
+a later prose-only edit that does not affect its scope.
 
 `worker tasks` records log sizes for `worker-stdout.log`,
 `worker-stderr.log` and `supervisor.log`. When any of these exceeds the
@@ -607,22 +628,176 @@ as an unknown `--check-id` filter.
 
 ## Worker tasks
 
+### Worker behavior policies
+
+`workers.toml` may define reusable policy bundles and assign one explicitly to
+each AI worker profile:
+
+```toml
+[policies.quality-efficient]
+files = ["policies/quality-efficient.md"]
+quality_priority = "correctness-first"
+context_strategy = "progressive"
+verification_strategy = "risk-based-final-gate"
+output_strategy = "compact-evidence"
+
+[workers.codex]
+command = ["codex", "exec", "--json"]
+prompt_via = "arg"
+policy = "quality-efficient"
+```
+
+Policy paths are relative to the directory containing `workers.toml`; absolute
+paths and `..` escapes are rejected. Each file is limited to 32 KiB and the
+combined policy to 64 KiB, with at most eight files and 8 KiB of
+JSON-compatible metadata. This prevents an accidental documentation dump or
+oversized control table from becoming permanent prompt/evidence overhead.
+Policy bytes are read once at dispatch.
+
+When a policy is selected, `worker run` writes
+`.orchestrator/tasks/<task_id>/effective-prompt.md` with explicit policy and
+task boundaries. Profiles without a policy receive the same immutable task
+snapshot without a policy section. `task.json` and `evidence.json` preserve:
+
+- original `prompt_file` and dispatch-time `prompt_sha256`;
+- `effective_prompt_file` and `effective_prompt_sha256`;
+- `worker_policy` with policy name, metadata, per-file path/size/SHA-256,
+  total bytes and `captured_at`.
+
+The supervisor verifies the effective prompt hash and executes that immutable
+snapshot without depending on the continued existence of the source prompt.
+Editing or removing the task prompt, editing a policy file, or changing the
+active project binding after dispatch cannot alter the policy/task bytes
+already assigned to that worker.
+Profiles without `policy` remain backward compatible; `worker diagnose`
+reports `worker_policy_not_configured` at `info` severity so users can migrate
+intentionally without breaking existing dispatch.
+
+The bundled quality-efficient policy is correctness-first. It saves context by
+using progressive file discovery, focused checks during implementation, one
+full gate on a finished high-risk candidate, bounded output and compact
+handoffs. It explicitly requires escalation for security, durable data, shared
+contracts, migrations, concurrency, packaging and ambiguous failures; it does
+not impose a task token cap or permit skipping necessary evidence.
+
+`effective-prompt.md` is a durable audit artifact and contains the complete
+task text plus selected policy contents. It may therefore be private even when
+the original prompt lived in a temporary file. Adopting projects must keep
+runtime task directories out of public Git and apply an explicit project-local
+retention/backup policy; core does not delete these artifacts implicitly.
+
 `worker run` creates `.orchestrator/tasks/<task_id>/` containing:
 
 - `task.json` — descriptor (worker, status, supervisor pid, timestamps).
+- `effective-prompt.md` — dispatch-time task snapshot, with the selected policy
+  prepended when configured.
 - `worker-stdout.log`, `worker-stderr.log` — captured worker output.
 - `result.json` — exit code, duration, failure reason, output paths.
-- `evidence.json` — command, prompt SHA-256, worker config snapshot.
+- `evidence.json` — command, original/effective prompt hashes, policy manifest
+  and worker config snapshot.
 - `supervisor.log` — supervisor process output.
+
+`task.json` has a single writer at a time. `worker run` writes the descriptor
+before it spawns the supervisor, reports `status: "starting"` and then never
+writes it again. The supervisor takes ownership as its first action, recording
+`status: "running"` and its own `supervisor_pid`; a task that stays `starting`
+was therefore dispatched but never claimed. Once the worker is spawned the
+supervisor also records `worker_pid` and `worker_pgid` (the process group the
+worker leads), which is the identity needed to stop the whole worker tree.
 
 On worker exit the supervisor calls the standard terminal event contract:
 `completed` on exit code 0, `failed` otherwise, `timed_out` when
 `timeout_seconds` is exceeded.
 
+A timed-out worker is stopped through its process group, not as a single
+process, so the model CLI's own subprocesses cannot outlive the task: the
+supervisor sends `SIGTERM` to the group, allows a bounded grace period, then
+escalates to `SIGKILL`. The signal ledger is durable in `result.json` as an
+optional `termination` object (`reason`, `scope`, `process_group`,
+`grace_seconds`, `escalated`, `exited`, `signals`).
+
 Workers without `timeout_seconds` may run indefinitely (hours-long tasks are
 expected). While a worker runs, the supervisor refreshes `task.json` every 30
 seconds with `status: "running"`, `worker_pid` and `last_alive_at`, so long
-tasks stay observable instead of looking stuck.
+tasks remain observable. The same heartbeat renews `lease.json`, which records
+Linux `/proc` process identity tokens for the supervisor and worker. These
+tokens include the boot id and kernel start time; signaling code refuses to act
+on a reused PID.
+
+`worker reap` is a conservative, idempotent recovery operation. It only
+finalizes a running task after its lease has expired and its recorded
+supervisor identity is proven gone. Legacy tasks without leases, live but stale
+supervisors, and leases without a verifiable identity are reported without
+mutation. A recovered task receives a real `failed` result with
+`failure_class: "supervisor_lost"`, evidence, one deterministic terminal event,
+one inbox signal, and a released lease. Repeating the command does not emit a
+second terminal event or delete any artifact.
+
+### Admission, cancellation and retry
+
+`[dispatch].max_concurrent` and `[workers.<name>].max_concurrent` are optional
+positive integers. With no limits, dispatch remains immediate and backward
+compatible. When a limit is full, `worker run` stores `status: "queued"` and a
+FIFO entry under `.orchestrator/queue/pending/`; no provider process starts.
+Admission is serialized with a POSIX `flock`. `worker queue tick` admits as many
+entries as current global and profile slots permit. A finishing supervisor also
+runs the same idempotent tick, so normal queue progress needs no polling daemon.
+
+`worker cancel --task-id ID --mode graceful|forced --reason TEXT` is durable.
+Queued cancellation atomically moves the queue entry to `queue/cancelled` and
+emits a normal `cancelled` result/evidence/event/signal without starting the
+worker. Running cancellation writes a separate control request; the supervisor
+acknowledges it, signals the verified worker process group, and preserves the
+request, acknowledgement and signal ledger. Repeating cancellation is safe.
+
+Each accepted dispatch has an exact SHA-256 fingerprint over the original task
+prompt, selected policy identity, task intent, worker and command. An identical
+active dispatch is rejected. `--allow-duplicate --duplicate-reason TEXT` is an
+explicit, audited override; no semantic or fuzzy similarity is attempted.
+
+`worker run --intent-file intent.json` accepts the provider-neutral fields
+`role`, `risk`, `verification`, `permissions` and boolean `authorizations` for
+`commit`, `push` and `network`. Intent is validated, snapshotted and rendered
+into the immutable effective prompt. Optional `[dispatch].enforce_intent =
+true` rejects a profile whose `permission_profile` exceeds the intent's maximum
+permission level. `worker retry` accepts only unsuccessful
+terminal tasks, creates a new task id/attempt, enforces `max_attempts`, and
+records `root_task_id`, `parent_task_id`, the operator reason and an optional
+`--delay-seconds` deterministic `not_before` backoff. A successful
+retry marks its parent `superseded`; plain failures are never retried
+automatically by semantic guesswork.
+
+### Progress, usage and handoff
+
+The supervisor records mechanical progress only: heartbeat count, stdout and
+stderr byte counts, byte delta and last output-growth time. Optional profile
+fields `max_no_progress_seconds`, `soft_duration_seconds`,
+`soft_output_bytes` and `soft_token_budget` create warning/info diagnostics;
+they do not stop work or weaken verification. Hard timeout remains the explicit
+`timeout_seconds` contract.
+
+Usage telemetry is disabled unless a profile names an explicit
+`usage_adapter`. The bundled `json-lines-usage` adapter reads bounded log bytes
+and writes `usage.json`; telemetry never changes task success, retry, model or
+permission decisions. Workers may optionally write the bounded
+`worker-handoff.json` contract. Its summary/evidence/risks are worker output,
+therefore evidence only and never control instructions.
+
+Every dispatch also declares a task-local `outputs/` directory through the
+effective prompt and `ORCHESTRATOR_DECLARED_OUTPUT_DIR`. A worker whose primary
+deliverable is too large for a compact handoff must write it there or include
+it completely on stdout. The supervisor hashes up to 64 regular non-symlink
+files (4 MiB each, 16 MiB total) into `worker-outputs.json` and references that
+manifest from result/evidence. Files in provider-owned home, cache or plan
+directories are not durable task artifacts and are never scraped implicitly.
+Claude profiles using `--permission-mode plan` receive
+`claude_plan_output_may_be_external`; the warning remains visible on the task
+until the operator has verified a complete durable deliverable.
+
+`status` returns an opaque `cursor`. Passing it back through `status --since
+CURSOR` replaces unchanged component bodies with `{ "unchanged": true }`,
+reducing repeated chat context while keeping a full status available whenever
+the agent needs to drill down.
 
 `worker tasks` is the read-only runtime diagnostic command for these artifacts.
 It does not execute workers, retry tasks or mutate state.
