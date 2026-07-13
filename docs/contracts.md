@@ -408,13 +408,14 @@ operator action is required and `124` when only the local wait times out. The
 default stale threshold is three worker heartbeat intervals (90 seconds) and
 can be changed with positive `--stale-after-seconds`.
 
-`--json` suppresses the live display and emits one bounded
-`WORKER_WAIT_STATUS` object. It contains task/worker/status, bounded heartbeat
-metadata and terminal artifact paths, but never worker stdout or stderr. The
-single-task JSON contract is unchanged when exactly one `--task-id` is given.
-Multiple task ids produce `WORKER_WAIT_GROUP_STATUS` with `mode`, aggregate
-counts, ordered task ids, terminal/action-required task ids, and the same
-bounded per-task snapshots under `tasks`. It never embeds worker logs.
+`--json` suppresses the live display and emits one bounded wait-status object.
+With exactly one `--task-id`, the existing `WORKER_WAIT_STATUS` contract
+contains task/worker/status, bounded heartbeat metadata and terminal artifact
+paths, but never worker stdout or stderr. Multiple task ids produce
+`WORKER_WAIT_GROUP_STATUS` with `mode`, aggregate counts, ordered task ids,
+terminal/action-required task ids, and the same bounded per-task snapshots
+under `tasks`. It never embeds worker logs. `active_count` includes only
+non-terminal tasks that do not currently require operator action.
 
 The command performs deterministic filesystem reads and sleeps; it does not
 invoke an AI model or wait for tasks sequentially. Agents ending a Codex

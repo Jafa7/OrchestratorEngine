@@ -4,6 +4,16 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-13
+
+### Fixed
+
+- Aggregate worker wait excludes unhealthy/action-required tasks from
+  `active_count` and validates direct group snapshot calls consistently.
+- CI no longer repeats the complete branch gate when a release tag is pushed.
+- The wait JSON documentation distinguishes single-task and group status
+  objects without an ambiguous lead sentence.
+
 ## [0.4.0] - 2026-07-13
 
 ### Added

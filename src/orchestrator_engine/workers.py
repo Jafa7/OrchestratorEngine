@@ -1969,6 +1969,7 @@ def worker_wait_group_snapshot(
     stale_after_seconds: float = TASK_HEARTBEAT_INTERVAL_SECONDS * 3,
 ) -> dict[str, Any]:
     """Return one bounded aggregate snapshot for a declared task set."""
+    validate_worker_wait_group(task_ids, mode=mode)
     snapshots = [
         worker_wait_snapshot(
             project_root,
@@ -2017,7 +2018,10 @@ def worker_wait_group_snapshot(
         ),
         "unsuccessful_count": len(unsuccessful),
         "action_required_count": len(action_required),
-        "active_count": len(snapshots) - len(terminal),
+        "active_count": sum(
+            not snapshot["terminal"] and snapshot.get("health") is None
+            for snapshot in snapshots
+        ),
         "task_ids": task_ids,
         "terminal_task_ids": [snapshot["task_id"] for snapshot in terminal],
         "action_required_task_ids": [
@@ -2042,14 +2046,7 @@ def wait_for_worker_tasks(
     sleeper: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     """Block on a bounded task set without AI or sequential task polling."""
-    if not task_ids:
-        raise WorkerError("wait requires at least one task id")
-    if len(task_ids) > MAX_WAIT_TASKS:
-        raise WorkerError(f"wait supports at most {MAX_WAIT_TASKS} task ids")
-    if len(set(task_ids)) != len(task_ids):
-        raise WorkerError("wait task ids must be unique")
-    if mode not in WAIT_MODES:
-        raise WorkerError(f"wait mode must be one of: {', '.join(sorted(WAIT_MODES))}")
+    validate_worker_wait_group(task_ids, mode=mode)
     if not math.isfinite(interval_seconds) or interval_seconds <= 0:
         raise WorkerError("wait interval must be finite and positive")
     if timeout_seconds is not None and (
@@ -2088,6 +2085,18 @@ def wait_for_worker_tasks(
         if deadline is not None:
             sleep_seconds = min(sleep_seconds, max(deadline - now, 0.0))
         sleeper(sleep_seconds)
+
+
+def validate_worker_wait_group(task_ids: list[str], *, mode: str) -> None:
+    """Validate the bounded task set shared by snapshots and blocking waits."""
+    if not task_ids:
+        raise WorkerError("wait requires at least one task id")
+    if len(task_ids) > MAX_WAIT_TASKS:
+        raise WorkerError(f"wait supports at most {MAX_WAIT_TASKS} task ids")
+    if len(set(task_ids)) != len(task_ids):
+        raise WorkerError("wait task ids must be unique")
+    if mode not in WAIT_MODES:
+        raise WorkerError(f"wait mode must be one of: {', '.join(sorted(WAIT_MODES))}")
 
 
 def finalize_terminal_task(

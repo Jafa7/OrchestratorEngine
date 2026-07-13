@@ -770,6 +770,7 @@ class WorkerWaitTests(unittest.TestCase):
 
         self.assertEqual(result["wait_status"], "action_required")
         self.assertEqual(result["action_required_task_ids"], ["T-DEAD"])
+        self.assertEqual(result["active_count"], 1)
 
     def test_group_wait_action_required_has_priority_over_any_completion(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -820,6 +821,29 @@ class WorkerWaitTests(unittest.TestCase):
                         f"T-{index}" for index in range(workers.MAX_WAIT_TASKS + 1)
                     ],
                 )
+
+    def test_group_snapshot_rejects_empty_task_set_and_unknown_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with self.assertRaisesRegex(workers.WorkerError, "at least one"):
+                workers.worker_wait_group_snapshot(root, task_ids=[], mode="all")
+            with self.assertRaisesRegex(workers.WorkerError, "mode must be"):
+                workers.worker_wait_group_snapshot(
+                    root, task_ids=["T-1"], mode="first"
+                )
+
+    def test_group_active_count_excludes_unreadable_terminal_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            self.write_wait_task(root, "T-TORN", status="completed")
+            self.write_wait_task(root, "T-QUEUED", status="queued")
+            result = workers.wait_for_worker_tasks(
+                root, task_ids=["T-TORN", "T-QUEUED"], mode="all"
+            )
+
+        self.assertEqual(result["wait_status"], "action_required")
+        self.assertEqual(result["action_required_task_ids"], ["T-TORN"])
+        self.assertEqual(result["active_count"], 1)
 
 
 class WorkerCancelTests(unittest.TestCase):
