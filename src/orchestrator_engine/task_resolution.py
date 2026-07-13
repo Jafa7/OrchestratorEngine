@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,7 @@ from . import core, workers
 
 TASK_RESOLUTION_KIND = "WORKER_TASK_RESOLUTION"
 RESOLUTION_STATUSES = {"acknowledged", "superseded"}
+DIAGNOSTIC_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
 
 
 class TaskResolutionError(RuntimeError):
@@ -45,6 +47,7 @@ def write_resolution(
     status: str,
     reason: str,
     superseded_by_task_id: str | None = None,
+    diagnostic_codes: list[str] | None = None,
     state_dir: str = core.DEFAULT_STATE_DIR,
     replace: bool = False,
 ) -> dict[str, Any]:
@@ -54,6 +57,20 @@ def write_resolution(
         raise TaskResolutionError(f"unsupported task resolution status: {status}")
     if not reason.strip():
         raise TaskResolutionError("reason is required")
+    codes = list(diagnostic_codes or [])
+    if (
+        len(codes) > 64
+        or not all(isinstance(code, str) for code in codes)
+        or len(set(codes)) != len(codes)
+        or any(not DIAGNOSTIC_CODE_PATTERN.fullmatch(code) for code in codes)
+    ):
+        raise TaskResolutionError(
+            "diagnostic_codes must be up to 64 unique machine-readable codes"
+        )
+    if status != "acknowledged" and codes:
+        raise TaskResolutionError(
+            "diagnostic_codes are only valid for acknowledged resolutions"
+        )
     if status == "superseded":
         if not superseded_by_task_id:
             raise TaskResolutionError(
@@ -77,9 +94,16 @@ def write_resolution(
         )
     task = load_task_descriptor(project, task_id, state_dir=state_dir)
     previous_status = task.get("status")
-    if previous_status not in (core.TERMINAL_STATUSES - {"completed"}):
+    unsuccessful = core.TERMINAL_STATUSES - {"completed"}
+    if status == "superseded" and previous_status not in unsuccessful:
         raise TaskResolutionError(
             "task resolution requires an unsuccessful terminal task status"
+        )
+    if status == "acknowledged" and previous_status not in core.TERMINAL_STATUSES:
+        raise TaskResolutionError("task acknowledgement requires a terminal task")
+    if status == "acknowledged" and previous_status == "completed" and not codes:
+        raise TaskResolutionError(
+            "completed task acknowledgement requires at least one diagnostic_code"
         )
 
     path = resolution_path_for(project, task_id, state_dir=state_dir)
@@ -101,6 +125,8 @@ def write_resolution(
     }
     if superseded_by_task_id is not None:
         resolution["superseded_by_task_id"] = superseded_by_task_id
+    if codes:
+        resolution["diagnostic_codes"] = codes
     if previous_resolution is not None:
         resolution["previous_resolution"] = {
             key: value
@@ -170,7 +196,7 @@ def validate_resolution(resolution: dict[str, Any], *, path: Path) -> None:
         raise TaskResolutionError(f"task resolution has invalid status: {path}")
     if not isinstance(reason, str) or not reason.strip():
         raise TaskResolutionError(f"task resolution has invalid reason: {path}")
-    if previous_task_status not in (core.TERMINAL_STATUSES - {"completed"}):
+    if previous_task_status not in core.TERMINAL_STATUSES:
         raise TaskResolutionError(
             f"task resolution has invalid previous_task_status: {path}"
         )
@@ -186,6 +212,30 @@ def validate_resolution(resolution: dict[str, Any], *, path: Path) -> None:
     elif superseded_by is not None:
         raise TaskResolutionError(
             f"non-superseded task resolution has superseded_by_task_id: {path}"
+        )
+    codes = resolution.get("diagnostic_codes", [])
+    if (
+        not isinstance(codes, list)
+        or len(codes) > 64
+        or not all(isinstance(code, str) for code in codes)
+        or len(set(codes)) != len(codes)
+        or any(
+            not isinstance(code, str) or not DIAGNOSTIC_CODE_PATTERN.fullmatch(code)
+            for code in codes
+        )
+    ):
+        raise TaskResolutionError(
+            f"task resolution has invalid diagnostic_codes: {path}"
+        )
+    if status != "acknowledged" and codes:
+        raise TaskResolutionError(
+            f"non-acknowledged task resolution has diagnostic_codes: {path}"
+        )
+    if status == "superseded" and previous_task_status == "completed":
+        raise TaskResolutionError(f"completed task cannot be superseded: {path}")
+    if status == "acknowledged" and previous_task_status == "completed" and not codes:
+        raise TaskResolutionError(
+            f"completed task resolution is missing diagnostic_codes: {path}"
         )
 
 

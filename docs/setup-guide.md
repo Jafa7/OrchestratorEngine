@@ -65,7 +65,7 @@ For a reproducible install outside a source checkout, install the release tag:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.3.1"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.3.2"
 ```
 
 GitHub Release archives and wheel/sdist assets are published with the tag;
@@ -606,6 +606,8 @@ hosts, or by ending the armed stream command for Claude).
 | `code chat` exits non-zero | The reached `code` CLI may lack the documented `chat` subcommand, WSL interop may resolve the wrong wrapper, the chat provider may not be signed in, or no usable window may be active. Check `code --version`, the resolved executable and the host's official chat CLI behavior; delivery stays retryable. |
 | `worker run` → `task already exists` | Task ids are one-shot by design; pick a new id. |
 | Historical failed task keeps `status` or `worker tasks` noisy after a successful rerun | Preserve the task artifacts and write an operator resolution: `orchestrator-engine --project-root <root> worker resolve --task-id <old-task> --status superseded --superseded-by-task-id <new-task> --reason "successful rerun"`. Use `--status acknowledged` for a manually reviewed task that was not superseded by another task. |
+| Completed Claude plan-mode task keeps `claude_plan_output_may_be_external` after its durable output was verified | Preserve the task and record a scoped acknowledgement: `orchestrator-engine --project-root <root> worker resolve --task-id <task-id> --status acknowledged --diagnostic-code claude_plan_output_may_be_external --reason "complete durable output inspected"`. This retains the diagnostic as `info`; it does not hide errors. |
+| Historical worker handoff reports an invalid kind, version or array field | Keep the historical task artifacts. New dispatch prompts include a schema-valid `WORKER_HANDOFF` example with `schema_version: 1` and array-valued `evidence`, `risks` and `next_actions`; rerun only when the handoff itself is required. |
 | Verification worker passed but logs are huge | Read `.orchestrator/checks/<check_id>/summary.txt`; full logs are durable artifacts and do not need to be pasted into chat. |
 | Verification worker failed | Read `verification-result.json`, then only the command logs referenced by failed command entries. |
 | `worker tasks` reports `task_large_worker_log` | The task may still be successful, but its stdout/stderr/supervisor logs are too large for chat. Read `result.json` and `evidence.json` first, then targeted log tails only. Tune the threshold with `--large-log-bytes`. |

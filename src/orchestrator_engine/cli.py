@@ -341,6 +341,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Successful or newer task id that supersedes this task.",
     )
     worker_resolve.add_argument(
+        "--diagnostic-code",
+        action="append",
+        default=[],
+        help=(
+            "A non-error diagnostic acknowledged for a completed task; "
+            "repeat for multiple codes."
+        ),
+    )
+    worker_resolve.add_argument(
         "--replace",
         action="store_true",
         help="Replace an existing resolution file for this task.",
@@ -797,6 +806,7 @@ def run_worker_cli_command(args: argparse.Namespace, root: Path) -> object:
             status=args.status,
             reason=args.reason,
             superseded_by_task_id=args.superseded_by_task_id,
+            diagnostic_codes=args.diagnostic_code,
             state_dir=args.state_dir,
             replace=args.replace,
         )

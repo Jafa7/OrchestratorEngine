@@ -344,6 +344,19 @@ The resolution lives in `.orchestrator/task-resolutions/`. It stops normal
 warning-level status reports from reopening the handled failure, while
 `worker tasks --severity info` still shows the historical outcome.
 
+A completed task can acknowledge one verified non-error diagnostic without
+hiding the task or its evidence. Pass the exact diagnostic code, for example:
+
+```bash
+orchestrator-engine --project-root /path/to/project worker resolve \
+  --task-id TASK-PLAN --status acknowledged \
+  --diagnostic-code claude_plan_output_may_be_external \
+  --reason "Complete durable output inspected."
+```
+
+The diagnostic remains visible as `info`; error diagnostics cannot be
+downgraded by an acknowledgement.
+
 When an adopter project finds an orchestration issue, draft a structured report
 instead of pasting huge logs:
 

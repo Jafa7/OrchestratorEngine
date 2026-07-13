@@ -8,7 +8,15 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from orchestrator_engine import core, task_diagnostics, telemetry_adapters, workers
+from jsonschema import Draft202012Validator
+
+from orchestrator_engine import (
+    core,
+    schemas,
+    task_diagnostics,
+    telemetry_adapters,
+    workers,
+)
 
 
 class WorkerTelemetryTests(unittest.TestCase):
@@ -93,6 +101,66 @@ soft_token_budget = 5
         self.assertEqual(output_manifest["files"][0]["path"], "outputs/full-plan.md")
         codes = {item["code"] for item in report["tasks"]["T-USAGE"]["diagnostics"]}
         self.assertIn("task_soft_token_budget_exceeded", codes)
+
+    def test_worker_can_copy_generated_handoff_example_verbatim(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            script = root / "worker.py"
+            script.write_text(
+                """
+import json, os, pathlib, sys
+prompt = sys.stdin.read()
+example = prompt.split("BEGIN_HANDOFF_EXAMPLE\\n", 1)[1].split(
+    "\\nEND_HANDOFF_EXAMPLE", 1
+)[0]
+pathlib.Path(os.environ["ORCHESTRATOR_HANDOFF_PATH"]).write_text(example)
+print("done")
+""",
+                encoding="utf-8",
+            )
+            config = workers.workers_config_path(root)
+            config.parent.mkdir(parents=True)
+            config.write_text(
+                f'[workers.capture]\ncommand = ["{sys.executable}", "{script}"]\n'
+                'prompt_via = "stdin"\n',
+                encoding="utf-8",
+            )
+            prompt = root / "prompt.md"
+            prompt.write_text("work", encoding="utf-8")
+            dispatched = workers.run_worker(
+                root,
+                worker="capture",
+                task_id="T-HANDOFF-CONTRACT",
+                prompt_file=prompt,
+            )
+            task_dir = Path(dispatched["task_dir"])
+            deadline = datetime.now(UTC) + timedelta(seconds=8)
+            while True:
+                descriptor = core.load_object(task_dir / "task.json")
+                if descriptor.get("status") in core.TERMINAL_STATUSES:
+                    break
+                if datetime.now(UTC) >= deadline:
+                    self.fail("worker did not finish")
+                time.sleep(0.05)
+            handoff = core.load_object(task_dir / "worker-handoff.json")
+            evidence = core.load_object(task_dir / "evidence.json")
+
+        validator = Draft202012Validator(schemas.load("worker-handoff"))
+        self.assertEqual(list(validator.iter_errors(handoff)), [])
+        self.assertEqual(handoff["schema_version"], 1)
+        self.assertIsInstance(handoff["evidence"], list)
+        self.assertNotIn("worker_handoff_error", evidence)
+
+    def test_runtime_rejects_handoff_mapping_where_schema_requires_array(self) -> None:
+        handoff = {
+            "schema_version": 1,
+            "kind": "WORKER_HANDOFF",
+            "summary": "done",
+            "evidence": {"focused": "passed"},
+        }
+
+        with self.assertRaisesRegex(workers.WorkerError, "evidence must be an array"):
+            workers.validate_worker_handoff(handoff)
 
 
 if __name__ == "__main__":

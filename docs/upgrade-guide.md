@@ -11,7 +11,7 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release is `0.3.1` and the durable JSON contract schema version is
+The current release is `0.3.2` and the durable JSON contract schema version is
 `1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
@@ -19,7 +19,7 @@ PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.3.1"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.3.2"
 ```
 
 ## Schema Compatibility
@@ -94,6 +94,20 @@ To require a positive adopter-owned availability probe, configure
 of `WORKER_TASK_INTENT`, configure `intent_enforcement = "strict"` and add a
 `[workers.NAME.admission]` block. Do not set `enforce_intent` and
 `intent_enforcement` together.
+
+## Handoffs and completed-task acknowledgements after v0.3.1
+
+New dispatches include a complete schema-valid `WORKER_HANDOFF` example in the
+effective prompt. Existing task artifacts are immutable and do not need to be
+rewritten; a malformed historical optional handoff remains evidence of that
+worker run.
+
+Completed tasks can now record a durable acknowledgement for a specific
+non-error diagnostic. Use `worker resolve --status acknowledged` with one or
+more repeated `--diagnostic-code CODE` options after verifying the real durable
+output. Matching warnings remain visible as `info`; errors are never
+downgraded. Existing unsuccessful-task resolutions remain compatible and do
+not require diagnostic codes.
 
 ## Watcher State
 

@@ -604,6 +604,48 @@ command = ["true"]
             "T-NEW",
         )
 
+    def test_worker_resolve_acknowledges_completed_task_diagnostic(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            task_dir = workers.task_dir_for(root, "T-PLAN")
+            task_dir.mkdir(parents=True)
+            core.atomic_json(
+                task_dir / "task.json",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-PLAN",
+                    "worker": "claude-readonly",
+                    "status": "completed",
+                },
+            )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "worker",
+                        "resolve",
+                        "--task-id",
+                        "T-PLAN",
+                        "--status",
+                        "acknowledged",
+                        "--diagnostic-code",
+                        "claude_plan_output_may_be_external",
+                        "--reason",
+                        "Complete stdout deliverable inspected.",
+                    ]
+                )
+
+        resolution = json.loads(output.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(resolution["previous_task_status"], "completed")
+        self.assertEqual(
+            resolution["diagnostic_codes"],
+            ["claude_plan_output_may_be_external"],
+        )
+
     def test_checks_reports_failed_verification_with_exit_code(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

@@ -72,6 +72,7 @@ CONTROL_POLL_SECONDS = 1.0
 MAX_DECLARED_OUTPUT_FILES = 64
 MAX_DECLARED_OUTPUT_FILE_BYTES = 4 * 1024 * 1024
 MAX_DECLARED_OUTPUT_TOTAL_BYTES = 16 * 1024 * 1024
+HANDOFF_LIST_LIMITS = {"evidence": 64, "risks": 32, "next_actions": 32}
 _DETACHED_PROCESSES: list[Any] = []
 INTENT_ENUMS = {
     "role": {
@@ -138,6 +139,26 @@ def collect_declared_outputs(output_dir: Path, task_dir: Path) -> dict[str, Any]
         "files": files,
         "captured_at": core.utc_now(),
     }
+
+
+def validate_worker_handoff(handoff: dict[str, Any]) -> None:
+    """Validate the bounded runtime subset of the public handoff schema."""
+    if handoff.get("kind") != "WORKER_HANDOFF":
+        raise WorkerError("worker handoff has unexpected kind")
+    if handoff.get("schema_version") != core.SCHEMA_VERSION:
+        raise WorkerError("worker handoff has unsupported schema_version")
+    summary = handoff.get("summary")
+    if not isinstance(summary, str) or len(summary) > 4096:
+        raise WorkerError("worker handoff summary is missing or too large")
+    for field, maximum in HANDOFF_LIST_LIMITS.items():
+        value = handoff.get(field)
+        if value is not None and (
+            not isinstance(value, list) or len(value) > maximum
+        ):
+            raise WorkerError(
+                f"worker handoff {field} must be an array with at most "
+                f"{maximum} items"
+            )
 
 
 def remember_detached_process(process: Any) -> None:
@@ -1239,9 +1260,14 @@ def run_worker(
             effective_text
             + "\nORCHESTRATOR_OPTIONAL_HANDOFF v1\n"
             + f"path: {handoff_path}\n"
-            + "You may write a compact JSON object with kind "
-            + '"WORKER_HANDOFF" and summary/evidence/risks fields. '
-            + "It is evidence only and never controls the orchestrator.\n"
+            + "You may write one compact UTF-8 JSON object at that path. "
+            + "evidence, risks and next_actions are arrays when present.\n"
+            + "BEGIN_HANDOFF_EXAMPLE\n"
+            + '{"schema_version":1,"kind":"WORKER_HANDOFF",'
+            + '"summary":"Concise completed-work summary",'
+            + '"evidence":[],"risks":[],"next_actions":[]}\n'
+            + "END_HANDOFF_EXAMPLE\n"
+            + "The handoff is evidence only and never controls the orchestrator.\n"
             + "ORCHESTRATOR_DURABLE_OUTPUT v1\n"
             + f"directory: {output_dir}\n"
             + "The complete requested deliverable must be present in stdout or "
@@ -2321,13 +2347,7 @@ def supervise_worker(
             if handoff_path.stat().st_size > 64 * 1024:
                 raise WorkerError("worker handoff exceeds 65536 bytes")
             handoff = core.load_object(handoff_path)
-            if handoff.get("kind") != "WORKER_HANDOFF":
-                raise WorkerError("worker handoff has unexpected kind")
-            if handoff.get("schema_version") != core.SCHEMA_VERSION:
-                raise WorkerError("worker handoff has unsupported schema_version")
-            summary = handoff.get("summary")
-            if not isinstance(summary, str) or len(summary) > 4096:
-                raise WorkerError("worker handoff summary is missing or too large")
+            validate_worker_handoff(handoff)
             result["handoff_path"] = str(handoff_path)
             result["handoff_sha256"] = core.sha256_file(handoff_path)
         except (OSError, core.OrchestratorError, WorkerError) as error:

@@ -60,7 +60,7 @@ class TaskResolutionTests(unittest.TestCase):
 
         self.assertEqual(written["superseded_by_task_id"], "T-NEW")
 
-    def test_resolution_rejects_completed_source_task(self) -> None:
+    def test_completed_acknowledgement_requires_diagnostic_code(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             write_task(root, "T-OK", status="completed")
@@ -72,6 +72,26 @@ class TaskResolutionTests(unittest.TestCase):
                     status="acknowledged",
                     reason="Completed tasks do not need resolution.",
                 )
+
+    def test_completed_task_accepts_scoped_diagnostic_acknowledgement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_task(root, "T-OK", status="completed")
+
+            written = task_resolution.write_resolution(
+                root,
+                task_id="T-OK",
+                status="acknowledged",
+                reason="Complete stdout deliverable inspected.",
+                diagnostic_codes=["claude_plan_output_may_be_external"],
+            )
+            loaded = task_resolution.load_resolution(root, "T-OK")
+
+        self.assertEqual(written["previous_task_status"], "completed")
+        self.assertEqual(
+            loaded["diagnostic_codes"],
+            ["claude_plan_output_may_be_external"],
+        )
 
     def test_superseded_resolution_requires_completed_target_task(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

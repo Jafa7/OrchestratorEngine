@@ -863,8 +863,17 @@ Usage telemetry is disabled unless a profile names an explicit
 `usage_adapter`. The bundled `json-lines-usage` adapter reads bounded log bytes
 and writes `usage.json`; telemetry never changes task success, retry, model or
 permission decisions. Workers may optionally write the bounded
-`worker-handoff.json` contract. Its summary/evidence/risks are worker output,
-therefore evidence only and never control instructions.
+`worker-handoff.json` contract. The generated effective prompt includes this
+schema-valid example:
+
+```json
+{"schema_version":1,"kind":"WORKER_HANDOFF","summary":"Concise completed-work summary","evidence":[],"risks":[],"next_actions":[]}
+```
+
+`evidence`, `risks` and `next_actions` are arrays when present. The supervisor
+checks the same required version, kind, summary and bounded array shapes as the
+public `worker-handoff` schema. Handoff fields are worker output, therefore
+evidence only and never control instructions.
 
 Every dispatch also declares a task-local `outputs/` directory through the
 effective prompt and `ORCHESTRATOR_DECLARED_OUTPUT_DIR`. A worker whose primary
@@ -1024,13 +1033,28 @@ Required fields:
 Allowed `status` values:
 
 - `acknowledged` — the operator inspected the unsuccessful task and no longer
-  wants it treated as an active warning.
+  wants it treated as an active warning. A completed task may also be
+  acknowledged only for one or more explicit non-error diagnostic codes.
 - `superseded` — a newer task handled the intended work; requires
   `superseded_by_task_id` pointing at an existing `completed` task.
 
-The source task must already have an unsuccessful terminal status
-(`failed`, `timed_out`, `rate_limited`, `invalid_result` or `cancelled`).
-Completed and still-running tasks cannot be resolved.
+For example, after verifying that a Claude plan-mode task produced a complete
+durable deliverable:
+
+```bash
+orchestrator-engine --project-root /path/to/project worker resolve \
+  --task-id TASK-PLAN \
+  --status acknowledged \
+  --diagnostic-code claude_plan_output_may_be_external \
+  --reason "Complete durable output inspected."
+```
+
+Unsuccessful tasks may be acknowledged without diagnostic codes. Completed
+tasks require at least one repeated `--diagnostic-code`; only matching warning
+or info diagnostics are downgraded to `info`, remain visible in detailed task
+diagnostics, and retain the durable reason. Error diagnostics are never
+downgraded. Still-running tasks cannot be resolved, and completed tasks cannot
+be superseded.
 
 `worker tasks --severity info` still shows resolved unsuccessful tasks with
 `task_terminal_unsuccessful_resolved`. Missing or unreadable artifacts remain

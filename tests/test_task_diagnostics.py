@@ -63,6 +63,80 @@ class TaskDiagnosticTests(unittest.TestCase):
             "claude_plan_output_may_be_external",
         )
 
+    def test_completed_plan_warning_can_be_durably_acknowledged(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            task_dir = workers.task_dir_for(root, "T-PLAN")
+            task_dir.mkdir(parents=True, exist_ok=True)
+            core.atomic_json(task_dir / "result.json", {"terminal_status": "completed"})
+            core.atomic_json(
+                task_dir / "evidence.json",
+                {
+                    "worker": "claude-readonly",
+                    "command": ["claude", "-p", "--permission-mode", "plan"],
+                    "worker_config": {"prompt_via": "stdin"},
+                },
+            )
+            write_task(
+                root,
+                "T-PLAN",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-PLAN",
+                    "worker": "claude-readonly",
+                    "status": "completed",
+                },
+            )
+            task_resolution.write_resolution(
+                root,
+                task_id="T-PLAN",
+                status="acknowledged",
+                reason="Complete stdout deliverable inspected.",
+                diagnostic_codes=["claude_plan_output_may_be_external"],
+            )
+            report = task_diagnostics.diagnose_tasks(root)
+
+        task = report["tasks"]["T-PLAN"]
+        self.assertEqual(report["worst_severity"], "info")
+        self.assertEqual(task["diagnostics"][0]["severity"], "info")
+        self.assertEqual(
+            task["diagnostics"][0]["code"],
+            "claude_plan_output_may_be_external",
+        )
+        self.assertEqual(task["resolution"]["status"], "acknowledged")
+
+    def test_completed_acknowledgement_does_not_hide_error_diagnostic(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            task_dir = workers.task_dir_for(root, "T-BROKEN")
+            task_dir.mkdir(parents=True, exist_ok=True)
+            core.atomic_json(task_dir / "evidence.json", {"ok": True})
+            write_task(
+                root,
+                "T-BROKEN",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-BROKEN",
+                    "worker": "echo",
+                    "status": "completed",
+                },
+            )
+            task_resolution.write_resolution(
+                root,
+                task_id="T-BROKEN",
+                status="acknowledged",
+                reason="Operator attempted to acknowledge the missing result.",
+                diagnostic_codes=["task_missing_result"],
+            )
+            report = task_diagnostics.diagnose_tasks(root)
+
+        diagnostic = report["tasks"]["T-BROKEN"]["diagnostics"][0]
+        self.assertEqual(report["worst_severity"], "error")
+        self.assertEqual(diagnostic["code"], "task_missing_result")
+        self.assertEqual(diagnostic["severity"], "error")
+
     def test_completed_task_with_artifacts_is_clean(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

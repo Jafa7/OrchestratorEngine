@@ -4,6 +4,17 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-07-13
+
+### Fixed
+
+- Generated worker prompts now include a complete schema-valid optional
+  `WORKER_HANDOFF` example, and runtime validation enforces its bounded array
+  shapes consistently with the public schema.
+- Completed tasks can durably acknowledge specific non-error diagnostics after
+  operator verification. Matching warnings remain visible as information,
+  while error diagnostics can never be downgraded.
+
 ## [0.3.1] - 2026-07-13
 
 ### Added
