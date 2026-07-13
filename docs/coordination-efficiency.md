@@ -46,8 +46,8 @@ The OrchestratorEngine path reads the complete pretty-printed JSON output of
 `orchestrator-engine status` at the same four checkpoints. The status report
 is not stripped down for the benchmark: it includes doctor, host capability,
 worker profile, task and check summaries produced by the public command.
-The harness pins the package-install health check to a healthy installed
-v0.2.0 engine, replaces the temporary project root with
+The harness pins the package-install health check to a stable synthetic
+`benchmark` identity, replaces the temporary project root with
 `/benchmark/project`, and fixes generated timestamps before counting bytes so
 the result does not depend on checkout location or installation style.
 
@@ -81,9 +81,9 @@ The generated JSON is the machine-readable result behind the checked-in SVG.
 
 | Scenario | Naive polling | Status reads | Context share | Reduction |
 | --- | ---: | ---: | ---: | ---: |
-| Long test | 655,360 B | 17,911 B | 2.73% | 97.27% |
-| AI worker | 2,621,440 B | 17,913 B | 0.68% | 99.32% |
-| Parallel workers | 3,932,160 B | 20,500 B | 0.52% | 99.48% |
+| Long test | 655,360 B | 14,877 B | 2.27% | 97.73% |
+| AI worker | 2,621,440 B | 14,879 B | 0.57% | 99.43% |
+| Parallel workers | 3,932,160 B | 17,466 B | 0.44% | 99.56% |
 
 Every scenario passed the selective-inspection quality guard. The smaller
 status reads come from carrying task state, diagnostics, sizes and artifact

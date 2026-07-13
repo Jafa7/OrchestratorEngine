@@ -14,11 +14,12 @@ from typing import Any
 from unittest import mock
 from xml.sax.saxutils import escape
 
-from orchestrator_engine import __version__, binding, core, diagnostics, status, workers
+from orchestrator_engine import binding, core, diagnostics, status, workers
 
 POLL_COUNT = 4
 LARGE_LOG_BYTES = 32 * 1024
 FIXED_TIME = "2026-01-01T00:00:00.000+00:00"
+FIXED_ENGINE_VERSION = "benchmark"
 
 
 @dataclass(frozen=True)
@@ -113,6 +114,8 @@ def normalized_status(report: dict[str, Any], project: Path) -> dict[str, Any]:
             return [normalize(item) for item in value]
         if key == "generated_at" and isinstance(value, str):
             return FIXED_TIME
+        if key == "engine_version" and isinstance(value, str):
+            return FIXED_ENGINE_VERSION
         if isinstance(value, str):
             return value.replace(root, "/benchmark/project")
         return value
@@ -141,8 +144,8 @@ def installed_engine_check() -> dict[str, Any]:
         "engine_import",
         "Engine package is installed for re-exec",
         "ok",
-        f"installed package version {__version__}",
-        data={"installed_version": __version__},
+        f"installed package version {FIXED_ENGINE_VERSION}",
+        data={"installed_version": FIXED_ENGINE_VERSION},
     )
 
 

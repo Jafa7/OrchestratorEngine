@@ -28,6 +28,7 @@ SCHEMA_NAMES = (
     "wake-target",
     "verification-result",
     "task-resolution",
+    "artifact-resolution",
 )
 KIND = "ORCHESTRATOR_SCHEMA_CATALOG"
 

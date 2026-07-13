@@ -60,6 +60,28 @@ class TaskResolutionTests(unittest.TestCase):
 
         self.assertEqual(written["superseded_by_task_id"], "T-NEW")
 
+    def test_superseded_resolution_preserves_scoped_diagnostic_codes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_task(root, "T-OLD")
+            write_task(root, "T-NEW", status="completed")
+
+            written = task_resolution.write_resolution(
+                root,
+                task_id="T-OLD",
+                status="superseded",
+                reason="Successful rerun used corrected worker settings.",
+                superseded_by_task_id="T-NEW",
+                diagnostic_codes=["copilot_may_request_approval"],
+            )
+
+        self.assertEqual(written["status"], "superseded")
+        self.assertEqual(written["superseded_by_task_id"], "T-NEW")
+        self.assertEqual(
+            written["diagnostic_codes"],
+            ["copilot_may_request_approval"],
+        )
+
     def test_completed_acknowledgement_requires_diagnostic_code(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

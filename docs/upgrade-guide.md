@@ -11,7 +11,7 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release is `0.3.2` and the durable JSON contract schema version is
+The current release is `0.3.3` and the durable JSON contract schema version is
 `1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
@@ -19,7 +19,7 @@ PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.3.2"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.3.3"
 ```
 
 ## Schema Compatibility
@@ -108,6 +108,24 @@ more repeated `--diagnostic-code CODE` options after verifying the real durable
 output. Matching warnings remain visible as `info`; errors are never
 downgraded. Existing unsuccessful-task resolutions remain compatible and do
 not require diagnostic codes.
+
+## Historical artifact lifecycle after v0.3.2
+
+If a pre-v0.3.2 worker followed the old generated handoff prompt and omitted
+`schema_version`, inspect the original and run `artifact resolve --path PATH
+--reason TEXT`. The engine writes an immutable companion record bound to both
+the state-relative path and exact SHA-256. It never edits the handoff. The
+acknowledgement stops applying if the bytes change and cannot acknowledge
+unreadable JSON or integer unsupported schema versions.
+
+Existing `superseded` task resolutions may add `diagnostic_codes` while keeping
+the same top-level status and `superseded_by_task_id`. Repeat those fields with
+`worker resolve --replace`; matching historical warning/info diagnostics no
+longer affect normal aggregate health, but remain available at info severity.
+After writing such a resolution, do not roll that state directory back to
+v0.3.2: its Python validator rejected `diagnostic_codes` on `superseded`
+records even though the packaged schema allowed the field. Upgrade forward or
+remove the added codes explicitly before running the older engine.
 
 ## Watcher State
 

@@ -646,6 +646,70 @@ command = ["true"]
             ["claude_plan_output_may_be_external"],
         )
 
+    def test_artifact_resolve_preserves_malformed_source_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            handoff = (
+                core.state_root(root)
+                / "tasks"
+                / "T-OLD"
+                / "worker-handoff.json"
+            )
+            core.atomic_json(
+                handoff,
+                {"kind": "WORKER_HANDOFF", "summary": "Historical output."},
+            )
+            original = handoff.read_bytes()
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "artifact",
+                        "resolve",
+                        "--path",
+                        str(handoff),
+                        "--reason",
+                        "Known malformed prompt output reviewed.",
+                    ]
+                )
+            resolution = json.loads(output.getvalue())
+            listed_output = io.StringIO()
+            with contextlib.redirect_stdout(listed_output):
+                listed_code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "artifact",
+                        "resolutions",
+                    ]
+                )
+            listed = json.loads(listed_output.getvalue())
+            repeated_output = io.StringIO()
+            with contextlib.redirect_stdout(repeated_output):
+                repeated_code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "artifact",
+                        "resolve",
+                        "--path",
+                        listed["resolutions"][0]["artifact_path"],
+                        "--reason",
+                        "Known malformed prompt output reviewed.",
+                    ]
+                )
+            repeated = json.loads(repeated_output.getvalue())
+            preserved = handoff.read_bytes()
+
+        self.assertEqual(code, 0)
+        self.assertEqual(listed_code, 0)
+        self.assertEqual(repeated_code, 0)
+        self.assertEqual(resolution["diagnostic_code"], "schema_metadata_malformed")
+        self.assertTrue(repeated["idempotent"])
+        self.assertEqual(preserved, original)
+
     def test_checks_reports_failed_verification_with_exit_code(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

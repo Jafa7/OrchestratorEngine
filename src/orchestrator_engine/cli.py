@@ -11,6 +11,7 @@ from pathlib import Path
 from . import (
     __version__,
     adoption,
+    artifact_resolution,
     binding,
     claude_stream,
     codex_app,
@@ -86,6 +87,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--strict",
         action="store_true",
         help="Return a non-zero exit code for warnings as well as errors.",
+    )
+
+    artifact = subparsers.add_parser(
+        "artifact",
+        help="Resolve or list hash-bound durable artifact findings.",
+    )
+    artifact_subparsers = artifact.add_subparsers(
+        dest="artifact_command", required=True
+    )
+    artifact_resolve = artifact_subparsers.add_parser(
+        "resolve",
+        help="Acknowledge malformed schema metadata without changing the artifact.",
+    )
+    artifact_resolve.add_argument("--path", required=True)
+    artifact_resolve.add_argument("--reason", required=True)
+    artifact_subparsers.add_parser(
+        "resolutions",
+        help="List hash-bound artifact resolution records.",
     )
 
     status = subparsers.add_parser(
@@ -345,7 +364,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help=(
-            "A non-error diagnostic acknowledged for a completed task; "
+            "A non-error diagnostic resolved for this terminal task; "
             "repeat for multiple codes."
         ),
     )
@@ -645,6 +664,24 @@ def main(argv: list[str] | None = None) -> int:
             )
             print_json(output)
             return diagnostics.doctor_exit_code(output, strict=args.strict)
+        elif args.command == "artifact":
+            if len(roots) != 1:
+                raise core.OrchestratorError(
+                    "artifact requires exactly one project root"
+                )
+            if args.artifact_command == "resolve":
+                output = artifact_resolution.write_resolution(
+                    roots[0],
+                    artifact_path=args.path,
+                    reason=args.reason,
+                    state_dir=args.state_dir,
+                )
+            else:
+                output = artifact_resolution.list_resolutions(
+                    roots[0],
+                    state_dir=args.state_dir,
+                )
+            print_json(output)
         elif args.command == "status":
             if len(roots) != 1:
                 raise core.OrchestratorError("status requires exactly one project root")

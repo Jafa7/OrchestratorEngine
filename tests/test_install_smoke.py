@@ -188,6 +188,13 @@ class InstallSmokeTests(unittest.TestCase):
                 text=True,
                 env=clean_env(),
             ).stdout
+            artifact_resolve_help = subprocess.run(
+                [str(cli), "artifact", "resolve", "--help"],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=clean_env(),
+            ).stdout
             dispatched = self.run_cli(
                 cli,
                 project,
@@ -370,6 +377,8 @@ class InstallSmokeTests(unittest.TestCase):
         self.assertEqual(worker_diagnostics["kind"], "WORKER_DIAGNOSTICS")
         self.assertEqual(worker_diagnostics["diagnostic_count"], 0)
         self.assertIn("--availability-mode", worker_run_help)
+        self.assertIn("--path", artifact_resolve_help)
+        self.assertIn("--reason", artifact_resolve_help)
         # Dispatch hands the descriptor to the supervisor, which claims it and
         # records `running` itself; the dispatcher never writes it again.
         self.assertEqual(dispatched["status"], "starting")

@@ -316,11 +316,15 @@ def survey_schema_versions(
     candidates.extend(
         sorted((state_root(project, state_dir=state_dir) / "tasks").glob("*/*.json"))
     )
-
     supported: list[dict[str, Any]] = []
     unsupported: list[dict[str, Any]] = []
     unreadable: list[dict[str, Any]] = []
     for path in candidates:
+        if path.is_symlink():
+            unreadable.append(
+                {"path": str(path), "error": "durable artifact must not be a symlink"}
+            )
+            continue
         try:
             value = load_object(path)
         except (OSError, OrchestratorError) as error:

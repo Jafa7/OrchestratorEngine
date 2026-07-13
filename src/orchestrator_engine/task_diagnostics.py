@@ -312,7 +312,7 @@ def summarize_task(
             now=now,
         )
     )
-    diagnostics = apply_diagnostic_acknowledgements(diagnostics, resolution)
+    diagnostics = apply_diagnostic_resolutions(diagnostics, resolution)
 
     summary = base_summary(
         task_id=task_id,
@@ -345,33 +345,33 @@ def summarize_task(
     return summary
 
 
-def apply_diagnostic_acknowledgements(
+def apply_diagnostic_resolutions(
     diagnostics: list[dict[str, str]],
     resolution: dict[str, Any] | None,
 ) -> list[dict[str, str]]:
-    """Downgrade explicitly acknowledged non-error diagnostics to info."""
-    if not isinstance(resolution, dict) or resolution.get("status") != "acknowledged":
+    """Downgrade explicitly resolved non-error diagnostics to info."""
+    if not isinstance(resolution, dict):
         return diagnostics
     raw_codes = resolution.get("diagnostic_codes")
     if not isinstance(raw_codes, list):
         return diagnostics
     codes = {code for code in raw_codes if isinstance(code, str)}
-    acknowledged: list[dict[str, str]] = []
+    resolved: list[dict[str, str]] = []
     for item in diagnostics:
         if item.get("code") not in codes or item.get("severity") == "error":
-            acknowledged.append(item)
+            resolved.append(item)
             continue
-        acknowledged.append(
+        resolved.append(
             {
                 **item,
                 "severity": "info",
                 "suggested_action": (
-                    "Operator acknowledged this diagnostic in the durable task "
+                    "Operator resolved this diagnostic in the durable task "
                     "resolution; inspect that resolution for the recorded reason."
                 ),
             }
         )
-    return acknowledged
+    return resolved
 
 
 def runtime_policy_diagnostics(

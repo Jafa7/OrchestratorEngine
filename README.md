@@ -43,9 +43,9 @@ repeatedly loading growing worker logs. Lower is better.
 
 | Scenario | Full-log polling | Status reads | Context read | Reduction |
 | --- | ---: | ---: | ---: | ---: |
-| Long test | 655.4 KB | 17.9 KB | 2.73% | 97.27% |
-| AI worker | 2.50 MB | 17.9 KB | 0.68% | 99.32% |
-| Three parallel workers | 3.75 MB | 20.5 KB | 0.52% | 99.48% |
+| Long test | 655.4 KB | 14.9 KB | 2.27% | 97.73% |
+| AI worker | 2.50 MB | 14.9 KB | 0.57% | 99.43% |
+| Three parallel workers | 3.75 MB | 17.5 KB | 0.44% | 99.56% |
 
 This is selective inspection, not output truncation. The status report keeps
 task states, diagnostics, log sizes and paths compact; complete stdout,
@@ -130,6 +130,8 @@ target project:
     <prompt>.md
   task-resolutions/
     <task_id>.json
+  artifact-resolutions/
+    <path-and-content-identity>.json
   events/
     <event_id>.json
   tasks/
@@ -356,6 +358,11 @@ orchestrator-engine --project-root /path/to/project worker resolve \
 
 The diagnostic remains visible as `info`; error diagnostics cannot be
 downgraded by an acknowledgement.
+
+Historical malformed schema metadata can be acknowledged without editing the
+artifact. `artifact resolve --path PATH --reason TEXT` writes an immutable
+companion record bound to the exact path and SHA-256. Changed bytes, unreadable
+JSON and real unsupported schema versions remain visible to `doctor`.
 
 When an adopter project finds an orchestration issue, draft a structured report
 instead of pasting huge logs:

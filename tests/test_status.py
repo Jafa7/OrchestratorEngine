@@ -185,6 +185,71 @@ class StatusTests(unittest.TestCase):
             )
         )
 
+    def test_superseded_task_profile_warning_does_not_affect_aggregate_health(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            create_layout(root)
+            write_worker_config(root)
+            binding.write_binding(root, host="codex", target_thread_id="thread-1")
+            old_dir = workers.task_dir_for(root, "T-OLD")
+            old_dir.mkdir(parents=True)
+            core.atomic_json(old_dir / "result.json", {"terminal_status": "failed"})
+            core.atomic_json(
+                old_dir / "evidence.json",
+                {
+                    "worker": "copilot-deep",
+                    "command": ["copilot", "--prompt"],
+                    "worker_config": {"prompt_via": "arg"},
+                },
+            )
+            core.atomic_json(
+                old_dir / "task.json",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-OLD",
+                    "worker": "copilot-deep",
+                    "status": "failed",
+                },
+            )
+            new_dir = workers.task_dir_for(root, "T-NEW")
+            new_dir.mkdir(parents=True)
+            core.atomic_json(new_dir / "result.json", {"terminal_status": "completed"})
+            core.atomic_json(new_dir / "evidence.json", {"ok": True})
+            core.atomic_json(
+                new_dir / "task.json",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-NEW",
+                    "worker": "copilot-deep",
+                    "status": "completed",
+                },
+            )
+            task_resolution.write_resolution(
+                root,
+                task_id="T-OLD",
+                status="superseded",
+                reason="Successful rerun used corrected worker settings.",
+                superseded_by_task_id="T-NEW",
+                diagnostic_codes=["copilot_may_request_approval"],
+            )
+
+            report = status.run_status(root)
+
+        tasks = report["components"]["worker_tasks"]
+        self.assertEqual(tasks["resolution_counts"]["superseded"], 1)
+        self.assertNotIn("T-OLD", tasks["problem_tasks"])
+        self.assertFalse(
+            any(
+                issue.get("task_id") == "T-OLD"
+                for issue in report["issues"]
+                if isinstance(issue, dict)
+            )
+        )
+
     def test_status_surfaces_large_logs_without_warning(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

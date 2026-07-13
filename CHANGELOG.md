@@ -4,6 +4,27 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-07-13
+
+### Added
+
+- Hash-bound artifact resolutions provide a non-destructive lifecycle for
+  reviewed historical malformed schema metadata while preserving every
+  original byte and all prior companion records.
+
+### Fixed
+
+- Superseded tasks can retain diagnostic-scoped resolutions, so stale
+  historical profile warnings no longer affect aggregate health without
+  discarding the successful replacement relationship.
+- The coordination benchmark now pins a synthetic engine identity and keeps
+  its machine-readable result, SVG and documentation tables synchronized.
+- Artifact resolution reads reject symlink swaps and concurrent file changes;
+  immutable companions use exclusive creation, and list paths round-trip into
+  the resolve command without path rewriting.
+- Schema diagnostics no longer double-report invalid resolution companions or
+  expose a nonzero actionable unsupported count after a finding is resolved.
+
 ## [0.3.2] - 2026-07-13
 
 ### Fixed

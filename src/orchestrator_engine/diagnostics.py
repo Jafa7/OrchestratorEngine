@@ -9,6 +9,7 @@ from typing import Any
 
 from . import (
     __version__,
+    artifact_resolution,
     binding,
     claude_stream,
     core,
@@ -131,7 +132,29 @@ def check_schema_compatibility(project: Path, *, state_dir: str) -> dict[str, An
         for item in survey["unsupported"]
         if type(item.get("schema_version")) is int
     ]
-    malformed = [item for item in survey["unsupported"] if item not in incompatible]
+    malformed_findings = [
+        item for item in survey["unsupported"] if item not in incompatible
+    ]
+    (
+        malformed,
+        resolved_malformed,
+        invalid_artifact_resolutions,
+    ) = artifact_resolution.partition_malformed(
+        project,
+        malformed_findings,
+        state_dir=state_dir,
+    )
+    schema_data = {
+        **survey,
+        "unsupported": [*incompatible, *malformed],
+        "unsupported_count": len(incompatible) + len(malformed),
+        "incompatible": incompatible,
+        "malformed": malformed,
+        "resolved_malformed": resolved_malformed,
+        "resolved_malformed_count": len(resolved_malformed),
+        "invalid_artifact_resolutions": invalid_artifact_resolutions,
+        "invalid_artifact_resolution_count": len(invalid_artifact_resolutions),
+    }
     if incompatible:
         return check(
             "schema_compatibility",
@@ -139,23 +162,37 @@ def check_schema_compatibility(project: Path, *, state_dir: str) -> dict[str, An
             "error",
             "unsupported schema_version found in durable artifacts",
             hint="Install an OrchestratorEngine version that supports these schemas.",
-            data={**survey, "incompatible": incompatible, "malformed": malformed},
+            data=schema_data,
         )
-    if malformed or survey["unreadable_count"]:
+    if malformed or survey["unreadable_count"] or invalid_artifact_resolutions:
         return check(
             "schema_compatibility",
             "Durable artifacts use supported schemas",
             "warn",
-            "some durable artifacts have malformed or unreadable schema metadata",
-            hint="Inspect reported files manually; doctor does not delete them.",
-            data={**survey, "incompatible": incompatible, "malformed": malformed},
+            (
+                "some durable artifacts have malformed or unreadable schema "
+                "metadata, or an artifact resolution is invalid"
+            ),
+            hint=(
+                "Inspect reported files and resolution companions manually; "
+                "doctor does not delete them."
+            ),
+            data=schema_data,
         )
     return check(
         "schema_compatibility",
         "Durable artifacts use supported schemas",
         "ok",
-        f"{survey['supported_count']} durable document(s) at supported schemas",
-        data=survey,
+        (
+            f"{survey['supported_count']} durable document(s) at supported schemas"
+            + (
+                f"; {len(resolved_malformed)} malformed historical artifact(s) "
+                "operator-resolved"
+                if resolved_malformed
+                else ""
+            )
+        ),
+        data=schema_data,
     )
 
 

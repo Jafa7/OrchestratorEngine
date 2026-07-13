@@ -67,10 +67,6 @@ def write_resolution(
         raise TaskResolutionError(
             "diagnostic_codes must be up to 64 unique machine-readable codes"
         )
-    if status != "acknowledged" and codes:
-        raise TaskResolutionError(
-            "diagnostic_codes are only valid for acknowledged resolutions"
-        )
     if status == "superseded":
         if not superseded_by_task_id:
             raise TaskResolutionError(
@@ -226,10 +222,6 @@ def validate_resolution(resolution: dict[str, Any], *, path: Path) -> None:
     ):
         raise TaskResolutionError(
             f"task resolution has invalid diagnostic_codes: {path}"
-        )
-    if status != "acknowledged" and codes:
-        raise TaskResolutionError(
-            f"non-acknowledged task resolution has diagnostic_codes: {path}"
         )
     if status == "superseded" and previous_task_status == "completed":
         raise TaskResolutionError(f"completed task cannot be superseded: {path}")

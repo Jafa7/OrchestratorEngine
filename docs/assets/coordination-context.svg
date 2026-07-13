@@ -20,19 +20,19 @@
   <text x="96" y="175" text-anchor="end" font-family="Inter, Arial, sans-serif" font-size="14" fill="#64748b">100%</text>
 
   <rect x="190" y="170" width="105" height="400" rx="5" fill="#64748b"/>
-  <rect x="305" y="561.00" width="105" height="9.00" rx="3" fill="#16a34a"/>
+  <rect x="305" y="560.92" width="105" height="9.08" rx="3" fill="#16a34a"/>
   <text x="242.5" y="156" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#334155">100%</text>
-  <text x="357.5" y="549.00" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700" fill="#15803d">2.25%</text>
+  <text x="357.5" y="548.92" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700" fill="#15803d">2.27%</text>
   <text x="300" y="610" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="700" fill="#0f172a">Long test</text>
-  <text x="300" y="636" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#15803d">97.75% less context</text>
+  <text x="300" y="636" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#15803d">97.73% less context</text>
   <text x="300" y="658" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#64748b">1 task | 256 KB log | 4 checks</text>
 
   <rect x="500" y="170" width="105" height="400" rx="5" fill="#64748b"/>
   <rect x="615" y="566.00" width="105" height="4.00" rx="3" fill="#16a34a"/>
   <text x="552.5" y="156" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#334155">100%</text>
-  <text x="667.5" y="554.00" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700" fill="#15803d">0.56%</text>
+  <text x="667.5" y="554.00" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700" fill="#15803d">0.57%</text>
   <text x="610" y="610" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="700" fill="#0f172a">AI worker</text>
-  <text x="610" y="636" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#15803d">99.44% less context</text>
+  <text x="610" y="636" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#15803d">99.43% less context</text>
   <text x="610" y="658" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#64748b">1 task | 1 MB log | 4 checks</text>
 
   <rect x="810" y="170" width="105" height="400" rx="5" fill="#64748b"/>

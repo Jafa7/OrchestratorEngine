@@ -11,8 +11,9 @@ Stable names are `worker-task`, `worker-result`, `worker-evidence`,
 `worker-output-manifest`,
 `worker-queue-entry`, `worker-cancel-request`, `worker-control-ack`,
 `worker-task-intent`, `worker-dispatch-claim`, `terminal-event`, `inbox-signal`,
-`binding`, `wake-target`, `verification-result`, and `task-resolution`. They are
-included in wheels and source distributions and require no runtime dependency.
+`binding`, `wake-target`, `verification-result`, `task-resolution`, and
+`artifact-resolution`. They are included in wheels and source distributions
+and require no runtime dependency.
 `orchestrator-engine schemas` lists names; pass one name to print its schema.
 Catalog and schema output include `schema_version` and `kind`.
 
@@ -57,6 +58,9 @@ depend on these behaviors:
 - Task outcome resolutions are separate operator files under
   `.orchestrator/task-resolutions/`; they do not rewrite worker
   `task.json`, `result.json`, `evidence.json`, events or signals.
+- Malformed-schema acknowledgements are hash-bound companion files under
+  `.orchestrator/artifact-resolutions/`; they never rewrite the historical
+  artifact and stop applying if its bytes change.
 
 The following are intentionally not v0.1 core contracts:
 
@@ -111,7 +115,9 @@ orchestrator-engine --project-root /path/to/project doctor
 It returns `ORCHESTRATOR_DOCTOR_REPORT` with `checks[]` entries:
 
 - `state_layout` — required local directories exist and are writable.
-- `schema_compatibility` — durable JSON documents use supported schemas.
+- `schema_compatibility` — durable JSON documents use supported schemas;
+  hash-bound operator-resolved malformed metadata is reported separately and
+  does not keep aggregate health at warning.
 - `binding` — `binding.json` is present and valid.
 - `workers` — `.orchestrator/workers.toml` is parseable and dispatchable.
 - `watcher_channel` — callback service or stream state matches the host.
@@ -1056,9 +1062,54 @@ diagnostics, and retain the durable reason. Error diagnostics are never
 downgraded. Still-running tasks cannot be resolved, and completed tasks cannot
 be superseded.
 
+A `superseded` resolution may also carry `diagnostic_codes`. This preserves the
+top-level `superseded_by_task_id` relationship while removing stale historical
+profile warnings from normal aggregate health. To add a code to an existing
+resolution, repeat its status and target with `--replace`:
+
+```bash
+orchestrator-engine --project-root /path/to/project worker resolve \
+  --task-id TASK-OLD --status superseded \
+  --superseded-by-task-id TASK-NEW \
+  --diagnostic-code copilot_may_request_approval \
+  --reason "Successful rerun used corrected worker settings." --replace
+```
+
 `worker tasks --severity info` still shows resolved unsuccessful tasks with
 `task_terminal_unsuccessful_resolved`. Missing or unreadable artifacts remain
 `error` diagnostics even when a task has a resolution file.
+
+## Artifact resolutions
+
+Path:
+
+- `.orchestrator/artifact-resolutions/<path-and-content-identity>.json`
+
+An artifact resolution acknowledges one durable JSON artifact currently
+reported by `doctor` with malformed schema metadata. It records the path
+relative to the state root, exact SHA-256, observed metadata, diagnostic code,
+reason and timestamp. The original bytes are never changed or deleted.
+
+```bash
+orchestrator-engine --project-root /path/to/project artifact resolve \
+  --path .orchestrator/tasks/TASK-OLD/worker-handoff.json \
+  --reason "Known historical handoff prompt defect reviewed after upgrade."
+
+orchestrator-engine --project-root /path/to/project artifact resolutions
+```
+
+The command rejects paths outside the state root, symlinks, unreadable JSON,
+supported artifacts and integer unsupported schema versions. If artifact bytes
+change, the old resolution becomes inactive and the warning returns. Resolving
+the changed bytes creates another immutable companion record; it never
+overwrites the earlier resolution. Repeating the command with the same path,
+bytes and reason is idempotent; a different reason for that immutable identity
+is rejected. State-relative paths printed by `artifact resolutions` can be
+passed directly back to `artifact resolve`. `doctor` exposes acknowledged
+findings as `resolved_malformed` while keeping unreadable and incompatible
+artifacts at their original severity. Invalid companion records are reported
+separately and also keep schema health at warning; stale but valid records
+remain ordinary audit history.
 
 ## Watcher state
 
