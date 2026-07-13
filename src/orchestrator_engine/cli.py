@@ -302,9 +302,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     worker_wait = worker_subparsers.add_parser(
         "wait",
-        help="Show a compact live status until one worker task finishes.",
+        help="Show compact live status until worker tasks satisfy any/all mode.",
     )
-    worker_wait.add_argument("--task-id", required=True)
+    worker_wait.add_argument(
+        "--task-id",
+        action="append",
+        required=True,
+        help="Task id to wait for; repeat to wait for multiple tasks.",
+    )
+    worker_wait.add_argument(
+        "--mode",
+        choices=sorted(workers.WAIT_MODES),
+        default="all",
+        help="Wait for all tasks (default) or return when any task is terminal.",
+    )
     worker_wait.add_argument(
         "--interval-seconds",
         type=float,
@@ -724,11 +735,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.worker_command != "wait" or args.json:
                 print_json(output)
             if args.worker_command == "wait":
-                if output.get("wait_status") == "timed_out":
-                    return 124
-                if output.get("wait_status") == "action_required":
-                    return 3
-                return 0 if output.get("status") == "completed" else 2
+                return worker_wait_exit_code(output)
             if args.worker_command in {"diagnose", "tasks"}:
                 return worker_diagnostics.exit_code_for_worst(
                     output.get("worst_severity") if isinstance(output, dict) else None
@@ -926,20 +933,40 @@ def run_worker_wait_command(args: argparse.Namespace, root: Path) -> dict[str, o
         if final and use_bell:
             print("\a", end="", flush=True)
 
-    return workers.wait_for_worker_task(
+    wait_options = {
+        "state_dir": args.state_dir,
+        "interval_seconds": args.interval_seconds,
+        "timeout_seconds": args.timeout_seconds,
+        "stale_after_seconds": args.stale_after_seconds,
+        "on_update": None if args.json else render,
+    }
+    if len(args.task_id) == 1:
+        return workers.wait_for_worker_task(
+            root,
+            task_id=args.task_id[0],
+            **wait_options,
+        )
+    return workers.wait_for_worker_tasks(
         root,
-        task_id=args.task_id,
-        state_dir=args.state_dir,
-        interval_seconds=args.interval_seconds,
-        timeout_seconds=args.timeout_seconds,
-        stale_after_seconds=args.stale_after_seconds,
-        on_update=None if args.json else render,
+        task_ids=args.task_id,
+        mode=args.mode,
+        **wait_options,
     )
+
+
+def worker_wait_exit_code(snapshot: dict[str, object]) -> int:
+    if snapshot.get("wait_status") == "timed_out":
+        return 124
+    if snapshot.get("wait_status") == "action_required":
+        return 3
+    return 0 if snapshot.get("status") == "completed" else 2
 
 
 def format_worker_wait_line(
     snapshot: dict[str, object], *, use_color: bool
 ) -> str:
+    if snapshot.get("kind") == "WORKER_WAIT_GROUP_STATUS":
+        return format_worker_wait_group_line(snapshot, use_color=use_color)
     status = str(snapshot.get("status") or "unknown")
     task_id = str(snapshot.get("task_id") or "unknown")
     worker = str(snapshot.get("worker") or "unknown")
@@ -967,6 +994,39 @@ def format_worker_wait_line(
     if use_color:
         prefix = f"\x1b[{color};1m{prefix}\x1b[0m"
     return f"{prefix} {task_id} | {worker} | {status} | {detail}"
+
+
+def format_worker_wait_group_line(
+    snapshot: dict[str, object], *, use_color: bool
+) -> str:
+    status = str(snapshot.get("status") or "unknown")
+    mode = str(snapshot.get("mode") or "all")
+    terminal_count = int(snapshot.get("terminal_count") or 0)
+    task_count = int(snapshot.get("task_count") or 0)
+    waited = float(snapshot.get("waited_seconds") or 0.0)
+    if snapshot.get("wait_status") == "action_required":
+        label, color = "ACTION", "31"
+        count = int(snapshot.get("action_required_count") or 0)
+        detail = f"{count} task(s) need review; return to the chat"
+    elif snapshot.get("wait_status") == "timed_out":
+        label, color = "WAIT", "33"
+        detail = "task set still active; re-run this command later"
+    elif snapshot.get("condition_met") and status == "completed":
+        label, color = "DONE", "32"
+        detail = "return to the chat to review results"
+    elif snapshot.get("condition_met"):
+        label, color = "ACTION", "31"
+        detail = "return to the chat to review unsuccessful results"
+    else:
+        label, color = "WORKING", "36"
+        detail = f"waiting {waited:.0f}s"
+    prefix = f"[{label}]"
+    if use_color:
+        prefix = f"\x1b[{color};1m{prefix}\x1b[0m"
+    return (
+        f"{prefix} {terminal_count}/{task_count} tasks | {mode} | "
+        f"{status} | {detail}"
+    )
 
 
 def visible_text_length(value: str) -> int:

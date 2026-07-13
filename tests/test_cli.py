@@ -549,6 +549,88 @@ command = ["true"]
         self.assertIn("[ACTION]", output.getvalue())
         self.assertIn("supervisor_dead", output.getvalue())
 
+    def test_worker_wait_accepts_repeated_task_ids_and_any_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            for task_id, status, terminal_status in (
+                ("T-DONE", "completed", "completed"),
+                ("T-RUNNING", "running", None),
+            ):
+                task_dir = workers.task_dir_for(root, task_id)
+                task_dir.mkdir(parents=True)
+                core.atomic_json(
+                    task_dir / "task.json",
+                    {
+                        "schema_version": 1,
+                        "kind": workers.TASK_KIND,
+                        "task_id": task_id,
+                        "worker": "cheap",
+                        "status": status,
+                    },
+                )
+                if terminal_status is not None:
+                    core.atomic_json(
+                        task_dir / "result.json",
+                        {
+                            "schema_version": 1,
+                            "kind": "WORKER_RESULT",
+                            "task_id": task_id,
+                            "worker": "cheap",
+                            "terminal_status": terminal_status,
+                            "exit_code": 0,
+                            "failure_reason": None,
+                            "duration_seconds": 1.0,
+                            "finished_at": core.utc_now(),
+                        },
+                    )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "worker",
+                        "wait",
+                        "--task-id",
+                        "T-DONE",
+                        "--task-id",
+                        "T-RUNNING",
+                        "--mode",
+                        "any",
+                        "--json",
+                    ]
+                )
+
+        report = json.loads(output.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(report["kind"], "WORKER_WAIT_GROUP_STATUS")
+        self.assertEqual(report["terminal_task_ids"], ["T-DONE"])
+        self.assertEqual(report["mode"], "any")
+
+    def test_worker_wait_group_unsuccessful_exit_code(self) -> None:
+        snapshot = {
+            "kind": "WORKER_WAIT_GROUP_STATUS",
+            "status": "unsuccessful",
+            "wait_status": "condition_met",
+        }
+        self.assertEqual(cli.worker_wait_exit_code(snapshot), 2)
+
+    def test_worker_wait_formats_compact_group_terminal_line(self) -> None:
+        line = cli.format_worker_wait_line(
+            {
+                "kind": "WORKER_WAIT_GROUP_STATUS",
+                "status": "completed",
+                "wait_status": "condition_met",
+                "condition_met": True,
+                "mode": "all",
+                "terminal_count": 2,
+                "task_count": 2,
+            },
+            use_color=True,
+        )
+        self.assertIn("\x1b[32;1m[DONE]\x1b[0m", line)
+        self.assertIn("2/2 tasks | all | completed", line)
+
     def test_worker_resolve_and_resolutions_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

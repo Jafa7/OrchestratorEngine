@@ -65,7 +65,7 @@ For a reproducible install outside a source checkout, install the release tag:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.3.3"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.4.0"
 ```
 
 GitHub Release archives and wheel/sdist assets are published with the tag;
@@ -561,6 +561,14 @@ To delegate a task to a CLI worker:
    UI delivery; neither needs this manual fallback.
    For diagnostics after an unsuccessful result, run `worker tasks --task-id
    <TASK-ID> --severity warning` and read only the reported artifacts.
+
+   If the Codex turn should remain active for bounded work, prefer one direct
+   `worker wait --json`. Use a low-cost relay subagent only when native agent
+   waiting offers a materially better blocking window, and keep the parent in
+   one native wait until the relay returns. A relay must not edit, test, review
+   or poll repeatedly. See [Codex in-turn continuation](codex-in-turn-continuation.md).
+   For parallel workers, repeat `--task-id` and use `--mode all` to wait for the
+   full set or `--mode any` to return on the first terminal result.
 
 If setup or runtime diagnostics still look wrong, create a structured report
 for OrchestratorEngine instead of pasting full logs:

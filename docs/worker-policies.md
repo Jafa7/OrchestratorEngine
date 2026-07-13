@@ -4,6 +4,12 @@ Worker policies make efficient behavior explicit and auditable without moving
 provider or product logic into OrchestratorEngine core. They guide AI workers;
 deterministic check runners normally do not need them.
 
+Host-side waiting is separate from worker policy. A host may block directly on
+`worker wait` or use a narrowly scoped relay subagent to bridge a native wait,
+but that relay does not inherit implementation, review or verification work.
+The CLI worker remains responsible for its assigned outcome and risk-selected
+verification. See [Codex in-turn continuation](codex-in-turn-continuation.md).
+
 ## Design goal
 
 The objective is longer useful operation per provider allowance without lower

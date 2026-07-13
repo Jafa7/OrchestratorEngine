@@ -4,6 +4,20 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-13
+
+### Added
+
+- `worker wait` accepts repeated task ids with deterministic `any` and `all`
+  aggregate modes, bounded group JSON, compact TTY status and preserved
+  single-task compatibility.
+
+### Documentation
+
+- Documented the verified Codex in-turn continuation path, including direct
+  deterministic waits, the limited relay-subagent role, token tradeoffs,
+  failure recovery and the boundary from detached live wakeup.
+
 ## [0.3.3] - 2026-07-13
 
 ### Added

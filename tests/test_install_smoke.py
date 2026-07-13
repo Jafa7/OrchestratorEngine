@@ -188,6 +188,13 @@ class InstallSmokeTests(unittest.TestCase):
                 text=True,
                 env=clean_env(),
             ).stdout
+            worker_wait_help = subprocess.run(
+                [str(cli), "worker", "wait", "--help"],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=clean_env(),
+            ).stdout
             artifact_resolve_help = subprocess.run(
                 [str(cli), "artifact", "resolve", "--help"],
                 check=True,
@@ -245,6 +252,19 @@ class InstallSmokeTests(unittest.TestCase):
                 "wait",
                 "--task-id",
                 "SMOKE-1",
+                "--json",
+            )
+            group_wait_status = self.run_cli(
+                cli,
+                project,
+                "worker",
+                "wait",
+                "--task-id",
+                "SMOKE-1",
+                "--task-id",
+                "SMOKE-CHECK",
+                "--mode",
+                "all",
                 "--json",
             )
             smoke_evidence = json.loads(
@@ -377,6 +397,7 @@ class InstallSmokeTests(unittest.TestCase):
         self.assertEqual(worker_diagnostics["kind"], "WORKER_DIAGNOSTICS")
         self.assertEqual(worker_diagnostics["diagnostic_count"], 0)
         self.assertIn("--availability-mode", worker_run_help)
+        self.assertIn("--mode", worker_wait_help)
         self.assertIn("--path", artifact_resolve_help)
         self.assertIn("--reason", artifact_resolve_help)
         # Dispatch hands the descriptor to the supervisor, which claims it and
@@ -385,6 +406,8 @@ class InstallSmokeTests(unittest.TestCase):
         self.assertEqual(result["terminal_status"], "completed")
         self.assertEqual(wait_status["kind"], "WORKER_WAIT_STATUS")
         self.assertEqual(wait_status["status"], "completed")
+        self.assertEqual(group_wait_status["kind"], "WORKER_WAIT_GROUP_STATUS")
+        self.assertEqual(group_wait_status["terminal_count"], 2)
         self.assertEqual(
             smoke_evidence["worker_policy"]["name"],
             "quality-efficient",

@@ -77,17 +77,20 @@ Notes:
   Desktop remains useful for dispatching work when delayed/history visibility
   is acceptable.
 
-Recommended Codex waiting policy (heuristic, not core dispatch logic):
+Codex can also continue the original turn by blocking on deterministic worker
+state. Prefer a direct `worker wait --json` call. A low-cost relay subagent is
+useful only when native agent waiting provides a materially longer or more
+reliable blocking window than the parent's command tool; the parent must still
+remain active in one native wait. This is in-turn continuation, not detached
+live wakeup. For unknown or long work, end the turn and show `worker wait` to
+the user instead of occupying the chat indefinitely.
 
-- expected under 2 minutes: keep the turn active with one blocking `worker
-  wait`; the model does not run while the command is blocked;
-- expected 2–10 minutes: use the same blocking wait, or an optional cheap
-  internal sentinel subagent when the host supports completion notifications;
-- expected over 10 minutes: end the turn and show `worker wait` to the user.
+See [Codex in-turn continuation](codex-in-turn-continuation.md) for the verified
+behavior, role boundaries, token tradeoffs and recovery rules. Do not repeatedly
+ask either the parent model or a relay model for task status.
 
-Do not repeatedly ask a model for task status. Duration estimates are advisory:
-the host agent may choose the safer longer-task path whenever the current chat
-must remain usable or the worker duration is uncertain.
+For parallel tasks, repeat `--task-id` and select `--mode all` or `--mode any`.
+One aggregate wait is cheaper and easier to deduplicate than one relay per task.
 
 ## Claude Code / Claude for Windows
 

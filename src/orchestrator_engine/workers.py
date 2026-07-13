@@ -72,6 +72,8 @@ CONTROL_POLL_SECONDS = 1.0
 MAX_DECLARED_OUTPUT_FILES = 64
 MAX_DECLARED_OUTPUT_FILE_BYTES = 4 * 1024 * 1024
 MAX_DECLARED_OUTPUT_TOTAL_BYTES = 16 * 1024 * 1024
+MAX_WAIT_TASKS = 64
+WAIT_MODES = {"all", "any"}
 HANDOFF_LIST_LIMITS = {"evidence": 64, "risks": 32, "next_actions": 32}
 _DETACHED_PROCESSES: list[Any] = []
 INTENT_ENUMS = {
@@ -1948,6 +1950,136 @@ def wait_for_worker_task(
             snapshot["wait_status"] = "timed_out"
             snapshot["suggested_action"] = (
                 "The worker is still active; re-run this command later."
+            )
+            if on_update is not None:
+                on_update(snapshot)
+            return snapshot
+        sleep_seconds = interval_seconds
+        if deadline is not None:
+            sleep_seconds = min(sleep_seconds, max(deadline - now, 0.0))
+        sleeper(sleep_seconds)
+
+
+def worker_wait_group_snapshot(
+    project_root: Path,
+    *,
+    task_ids: list[str],
+    mode: str,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    stale_after_seconds: float = TASK_HEARTBEAT_INTERVAL_SECONDS * 3,
+) -> dict[str, Any]:
+    """Return one bounded aggregate snapshot for a declared task set."""
+    snapshots = [
+        worker_wait_snapshot(
+            project_root,
+            task_id=task_id,
+            state_dir=state_dir,
+            stale_after_seconds=stale_after_seconds,
+        )
+        for task_id in task_ids
+    ]
+    terminal = [snapshot for snapshot in snapshots if snapshot["terminal"]]
+    unsuccessful = [
+        snapshot for snapshot in terminal if snapshot["status"] != "completed"
+    ]
+    action_required = [
+        snapshot for snapshot in snapshots if snapshot.get("health") is not None
+    ]
+    condition_met = bool(terminal) if mode == "any" else len(terminal) == len(snapshots)
+    if action_required:
+        status = "action_required"
+        wait_status = "action_required"
+        suggested_action = (
+            "Return to the orchestrating chat and inspect unhealthy task diagnostics."
+        )
+    elif condition_met:
+        status = "unsuccessful" if unsuccessful else "completed"
+        wait_status = "condition_met"
+        suggested_action = (
+            "Return to the orchestrating chat to review the completed task set."
+        )
+    else:
+        status = "waiting"
+        wait_status = "waiting"
+        suggested_action = "Keep this command open; it will update when ready."
+    return {
+        "schema_version": core.SCHEMA_VERSION,
+        "kind": "WORKER_WAIT_GROUP_STATUS",
+        "mode": mode,
+        "status": status,
+        "wait_status": wait_status,
+        "condition_met": condition_met,
+        "terminal": condition_met,
+        "task_count": len(snapshots),
+        "terminal_count": len(terminal),
+        "completed_count": sum(
+            snapshot["status"] == "completed" for snapshot in terminal
+        ),
+        "unsuccessful_count": len(unsuccessful),
+        "action_required_count": len(action_required),
+        "active_count": len(snapshots) - len(terminal),
+        "task_ids": task_ids,
+        "terminal_task_ids": [snapshot["task_id"] for snapshot in terminal],
+        "action_required_task_ids": [
+            snapshot["task_id"] for snapshot in action_required
+        ],
+        "tasks": snapshots,
+        "suggested_action": suggested_action,
+    }
+
+
+def wait_for_worker_tasks(
+    project_root: Path,
+    *,
+    task_ids: list[str],
+    mode: str = "all",
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    interval_seconds: float = 2.0,
+    timeout_seconds: float | None = None,
+    stale_after_seconds: float = TASK_HEARTBEAT_INTERVAL_SECONDS * 3,
+    on_update: Callable[[dict[str, Any]], None] | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    """Block on a bounded task set without AI or sequential task polling."""
+    if not task_ids:
+        raise WorkerError("wait requires at least one task id")
+    if len(task_ids) > MAX_WAIT_TASKS:
+        raise WorkerError(f"wait supports at most {MAX_WAIT_TASKS} task ids")
+    if len(set(task_ids)) != len(task_ids):
+        raise WorkerError("wait task ids must be unique")
+    if mode not in WAIT_MODES:
+        raise WorkerError(f"wait mode must be one of: {', '.join(sorted(WAIT_MODES))}")
+    if not math.isfinite(interval_seconds) or interval_seconds <= 0:
+        raise WorkerError("wait interval must be finite and positive")
+    if timeout_seconds is not None and (
+        not math.isfinite(timeout_seconds) or timeout_seconds <= 0
+    ):
+        raise WorkerError("wait timeout must be finite and positive")
+    if not math.isfinite(stale_after_seconds) or stale_after_seconds <= 0:
+        raise WorkerError("wait stale threshold must be finite and positive")
+
+    started = monotonic()
+    deadline = started + timeout_seconds if timeout_seconds is not None else None
+    while True:
+        snapshot = worker_wait_group_snapshot(
+            project_root,
+            task_ids=task_ids,
+            mode=mode,
+            state_dir=state_dir,
+            stale_after_seconds=stale_after_seconds,
+        )
+        now = monotonic()
+        snapshot["waited_seconds"] = round(max(now - started, 0.0), 3)
+        if on_update is not None:
+            on_update(snapshot)
+        if snapshot["condition_met"] or snapshot["wait_status"] == "action_required":
+            return snapshot
+        if deadline is not None and now >= deadline:
+            snapshot["status"] = "waiting"
+            snapshot["wait_status"] = "timed_out"
+            snapshot["suggested_action"] = (
+                "The task set is still active; re-run this command later."
             )
             if on_update is not None:
                 on_update(snapshot)

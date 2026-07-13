@@ -393,23 +393,48 @@ later edits to `workers.toml` do not change the recorded dispatch decision.
 `worker wait --task-id TASK-ID` is the human-facing fallback for hosts that
 cannot refresh an already-open chat. It reads only the task descriptor and
 terminal result, refreshes one compact TTY line, and exits when the task is
-terminal. Color and the terminal bell default to `auto`; `--color` and
-`--bell` accept `auto`, `always` or `never`. An optional positive
-`--timeout-seconds` bounds the local wait. Exit status is `0` for a completed
-worker, `2` for another terminal worker status, `3` when operator action is
-required and `124` when only the local wait times out. The default stale
-threshold is three worker heartbeat intervals (90 seconds) and can be changed
-with positive `--stale-after-seconds`.
+terminal. Repeat `--task-id` to wait for a bounded set of up to 64 unique
+tasks. `--mode all` (the default) returns when every task is terminal;
+`--mode any` returns when at least one task is terminal. An unhealthy task
+ends either mode with `action_required` instead of being hidden by another
+task's success.
+
+Color and the terminal bell default to `auto`; `--color` and `--bell` accept
+`auto`, `always` or `never`. An optional positive `--timeout-seconds` bounds
+the complete local wait, not each task separately. Exit status is `0` when the
+selected condition is met and all terminal tasks in the snapshot completed,
+`2` when the condition is met with an unsuccessful terminal task, `3` when
+operator action is required and `124` when only the local wait times out. The
+default stale threshold is three worker heartbeat intervals (90 seconds) and
+can be changed with positive `--stale-after-seconds`.
 
 `--json` suppresses the live display and emits one bounded
 `WORKER_WAIT_STATUS` object. It contains task/worker/status, bounded heartbeat
 metadata and terminal artifact paths, but never worker stdout or stderr. The
-command performs deterministic filesystem reads and sleeps; it does not invoke
-an AI model. Agents ending a Codex orchestration turn should show this command
-to the user instead of repeatedly checking task state themselves. A dead
-supervisor, stale heartbeat, unreadable lease or terminal descriptor without a
-readable result produces bounded `health` metadata and `wait_status:
-"action_required"`; the wait never reaps, kills or rewrites the task itself.
+single-task JSON contract is unchanged when exactly one `--task-id` is given.
+Multiple task ids produce `WORKER_WAIT_GROUP_STATUS` with `mode`, aggregate
+counts, ordered task ids, terminal/action-required task ids, and the same
+bounded per-task snapshots under `tasks`. It never embeds worker logs.
+
+The command performs deterministic filesystem reads and sleeps; it does not
+invoke an AI model or wait for tasks sequentially. Agents ending a Codex
+orchestration turn should show this command to the user instead of repeatedly
+checking task state themselves. A dead supervisor, stale heartbeat, unreadable
+lease or terminal descriptor without a readable result produces bounded
+`health` metadata and `wait_status: "action_required"`; the wait never reaps,
+kills or rewrites the task itself.
+
+```bash
+orchestrator-engine --project-root /path/to/project worker wait \
+  --task-id TASK-A --task-id TASK-B --mode all --json
+```
+
+Host runtimes may wrap this deterministic command in one blocking tool call.
+Codex may optionally use a low-cost relay subagent when its native child wait
+offers a materially better blocking window, but relay behavior is a host
+adapter concern rather than part of this core contract. The parent must remain
+active for automatic continuation; this does not provide detached live wakeup.
+See [Codex in-turn continuation](codex-in-turn-continuation.md).
 
 **Model and effort selection happens inside `command`.** The engine does not
 interpret keys like `model` or `effort` — free-form keys are recorded in each

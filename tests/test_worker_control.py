@@ -453,6 +453,43 @@ authorizations = { commit = false, push = false, network = false }
 
 
 class WorkerWaitTests(unittest.TestCase):
+    def write_wait_task(
+        self,
+        root: Path,
+        task_id: str,
+        *,
+        status: str,
+        terminal_status: str | None = None,
+    ) -> Path:
+        task_dir = workers.task_dir_for(root, task_id)
+        task_dir.mkdir(parents=True)
+        core.atomic_json(
+            task_dir / "task.json",
+            {
+                "schema_version": 1,
+                "kind": workers.TASK_KIND,
+                "task_id": task_id,
+                "worker": "slow",
+                "status": status,
+            },
+        )
+        if terminal_status is not None:
+            core.atomic_json(
+                task_dir / "result.json",
+                {
+                    "schema_version": 1,
+                    "kind": "WORKER_RESULT",
+                    "task_id": task_id,
+                    "worker": "slow",
+                    "terminal_status": terminal_status,
+                    "exit_code": 0 if terminal_status == "completed" else 1,
+                    "failure_reason": None,
+                    "duration_seconds": 1.0,
+                    "finished_at": core.utc_now(),
+                },
+            )
+        return task_dir
+
     def test_wait_transitions_without_reading_logs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -625,6 +662,164 @@ class WorkerWaitTests(unittest.TestCase):
         self.assertEqual(
             result["health"]["status"], "terminal_result_unreadable"
         )
+
+    def test_group_wait_all_returns_after_every_task_is_terminal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            self.write_wait_task(
+                root, "T-FIRST", status="completed", terminal_status="completed"
+            )
+            second_dir = self.write_wait_task(root, "T-SECOND", status="running")
+            clock = [0.0]
+
+            def finish_second(seconds: float) -> None:
+                clock[0] += seconds
+                core.atomic_json(
+                    second_dir / "result.json",
+                    {
+                        "schema_version": 1,
+                        "kind": "WORKER_RESULT",
+                        "task_id": "T-SECOND",
+                        "worker": "slow",
+                        "terminal_status": "completed",
+                        "exit_code": 0,
+                        "failure_reason": None,
+                        "duration_seconds": 2.0,
+                        "finished_at": core.utc_now(),
+                    },
+                )
+                descriptor = core.load_object(second_dir / "task.json")
+                descriptor["status"] = "completed"
+                core.atomic_json(second_dir / "task.json", descriptor)
+
+            result = workers.wait_for_worker_tasks(
+                root,
+                task_ids=["T-FIRST", "T-SECOND"],
+                mode="all",
+                interval_seconds=0.1,
+                monotonic=lambda: clock[0],
+                sleeper=finish_second,
+            )
+
+        self.assertEqual(result["kind"], "WORKER_WAIT_GROUP_STATUS")
+        self.assertEqual(result["status"], "completed")
+        self.assertTrue(result["condition_met"])
+        self.assertEqual(result["terminal_count"], 2)
+        self.assertEqual(result["completed_count"], 2)
+
+    def test_group_wait_any_returns_on_first_terminal_task(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            self.write_wait_task(
+                root, "T-FIRST", status="completed", terminal_status="completed"
+            )
+            self.write_wait_task(root, "T-SECOND", status="running")
+            result = workers.wait_for_worker_tasks(
+                root,
+                task_ids=["T-FIRST", "T-SECOND"],
+                mode="any",
+                sleeper=lambda _seconds: self.fail("any mode should not sleep"),
+            )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["terminal_task_ids"], ["T-FIRST"])
+        self.assertEqual(result["active_count"], 1)
+
+    def test_group_wait_any_preserves_failed_first_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            self.write_wait_task(
+                root, "T-FAIL", status="failed", terminal_status="failed"
+            )
+            self.write_wait_task(root, "T-RUNNING", status="running")
+            result = workers.wait_for_worker_tasks(
+                root, task_ids=["T-FAIL", "T-RUNNING"], mode="any"
+            )
+
+        self.assertEqual(result["status"], "unsuccessful")
+        self.assertEqual(result["unsuccessful_count"], 1)
+
+    def test_group_wait_preserves_unsuccessful_terminal_outcome(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            self.write_wait_task(
+                root, "T-OK", status="completed", terminal_status="completed"
+            )
+            self.write_wait_task(
+                root, "T-FAIL", status="failed", terminal_status="failed"
+            )
+            result = workers.wait_for_worker_tasks(
+                root, task_ids=["T-OK", "T-FAIL"], mode="all"
+            )
+
+        self.assertEqual(result["status"], "unsuccessful")
+        self.assertEqual(result["unsuccessful_count"], 1)
+        self.assertNotIn("stdout", json.dumps(result))
+
+    def test_group_wait_stops_when_one_task_requires_action(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            self.write_wait_task(root, "T-RUNNING", status="running")
+            dead_dir = self.write_wait_task(root, "T-DEAD", status="running")
+            descriptor = core.load_object(dead_dir / "task.json")
+            descriptor["supervisor_pid"] = 999_999_999
+            core.atomic_json(dead_dir / "task.json", descriptor)
+            result = workers.wait_for_worker_tasks(
+                root, task_ids=["T-RUNNING", "T-DEAD"], mode="all"
+            )
+
+        self.assertEqual(result["wait_status"], "action_required")
+        self.assertEqual(result["action_required_task_ids"], ["T-DEAD"])
+
+    def test_group_wait_action_required_has_priority_over_any_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            self.write_wait_task(
+                root, "T-DONE", status="completed", terminal_status="completed"
+            )
+            dead_dir = self.write_wait_task(root, "T-DEAD", status="running")
+            descriptor = core.load_object(dead_dir / "task.json")
+            descriptor["supervisor_pid"] = 999_999_999
+            core.atomic_json(dead_dir / "task.json", descriptor)
+            result = workers.wait_for_worker_tasks(
+                root, task_ids=["T-DONE", "T-DEAD"], mode="any"
+            )
+
+        self.assertTrue(result["condition_met"])
+        self.assertEqual(result["wait_status"], "action_required")
+
+    def test_group_wait_timeout_keeps_aggregate_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            self.write_wait_task(root, "T-ONE", status="running")
+            self.write_wait_task(root, "T-TWO", status="running")
+            clock = [0.0]
+            result = workers.wait_for_worker_tasks(
+                root,
+                task_ids=["T-ONE", "T-TWO"],
+                mode="all",
+                interval_seconds=0.1,
+                timeout_seconds=0.2,
+                monotonic=lambda: clock[0],
+                sleeper=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+            )
+
+        self.assertEqual(result["wait_status"], "timed_out")
+        self.assertEqual(result["active_count"], 2)
+        self.assertFalse(result["condition_met"])
+
+    def test_group_wait_rejects_duplicate_and_unbounded_task_sets(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with self.assertRaisesRegex(workers.WorkerError, "must be unique"):
+                workers.wait_for_worker_tasks(root, task_ids=["T-1", "T-1"])
+            with self.assertRaisesRegex(workers.WorkerError, "at most"):
+                workers.wait_for_worker_tasks(
+                    root,
+                    task_ids=[
+                        f"T-{index}" for index in range(workers.MAX_WAIT_TASKS + 1)
+                    ],
+                )
 
 
 class WorkerCancelTests(unittest.TestCase):

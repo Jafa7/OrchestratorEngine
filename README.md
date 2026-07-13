@@ -33,6 +33,15 @@ window focus/refresh, but it does not currently provide a reliable live wakeup
 channel for the already-open Desktop agent. Codex remains fully supported as a
 CLI worker through `codex exec`.
 
+Codex can still resume automatically **within an already-active turn** by
+blocking once on deterministic worker state. The cheapest path is a direct
+`worker wait --json`; an optional low-cost relay subagent is only a host-control
+bridge when native agent waiting is more reliable than a direct command wait.
+This does not turn Codex Desktop history delivery into live wakeup. See
+[Codex in-turn continuation](docs/codex-in-turn-continuation.md).
+Parallel workers can share the same deterministic wait by repeating
+`--task-id` and selecting `--mode all` or `--mode any`.
+
 ## Measured coordination context reduction
 
 The graph below shows one practical benefit even when a host such as Codex
@@ -56,7 +65,8 @@ The measurement uses four checks against deterministic growing logs and UTF-8
 bytes as a provider-neutral proxy for context volume. It does not claim the
 same percentage of total token or engineering cost for every workflow. Codex
 agents can avoid those intermediate model calls by handing `worker wait` to
-the user's terminal; Claude live wakeup avoids the manual return step as well.
+the user's terminal or by using one bounded in-turn wait when the task is short
+enough; Claude live wakeup avoids the manual return step as well.
 See the reproducible
 [measurement methodology](docs/coordination-efficiency.md).
 
@@ -472,6 +482,8 @@ Additional documentation:
 - [Setup guide (start here)](docs/setup-guide.md)
 - [Contracts](docs/contracts.md)
 - [Host setup](docs/hosts.md)
+- [Codex in-turn continuation](docs/codex-in-turn-continuation.md)
+- [Worker behavior policies](docs/worker-policies.md)
 - [Project integration and legacy adoption](docs/project-adoption.md)
 
 ## License
