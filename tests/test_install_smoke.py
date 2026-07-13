@@ -79,13 +79,29 @@ class InstallSmokeTests(unittest.TestCase):
                         'files = ["policies/quality-efficient.md"]',
                         'quality_priority = "correctness-first"',
                         "",
+                        "[dispatch]",
+                        'intent_enforcement = "strict"',
+                        "",
                         "[workers.smoke]",
                         "enabled = true",
                         f"command = [{json.dumps(str(python))}, "
                         f"\"-c\", {json.dumps(worker_script)}]",
                         'prompt_via = "stdin"',
                         'policy = "quality-efficient"',
+                        'permission_profile = "full"',
+                        f"availability_probe = [{json.dumps(str(python))}, "
+                        '"-c", "raise SystemExit(0)"]',
+                        "availability_timeout_seconds = 5",
                         "timeout_seconds = 10",
+                        "",
+                        "[workers.smoke.admission]",
+                        'roles = ["implementation"]',
+                        'max_risk = "high"',
+                        'verification = ["full"]',
+                        (
+                            "authorizations = { commit = false, push = false, "
+                            "network = false }"
+                        ),
                         "",
                         "[workers.failing]",
                         "enabled = true",
@@ -114,6 +130,23 @@ class InstallSmokeTests(unittest.TestCase):
             )
             prompt = root / "smoke-prompt.md"
             prompt.write_text("smoke task\n", encoding="utf-8")
+            intent = root / "smoke-intent.json"
+            intent.write_text(
+                json.dumps(
+                    {
+                        "role": "implementation",
+                        "risk": "low",
+                        "verification": "full",
+                        "permissions": "full",
+                        "authorizations": {
+                            "commit": False,
+                            "push": False,
+                            "network": False,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             def wait_result(task_id: str) -> dict:
                 path = (
@@ -145,6 +178,13 @@ class InstallSmokeTests(unittest.TestCase):
                 "diagnose",
                 "--enabled-only",
             )
+            worker_run_help = subprocess.run(
+                [str(cli), "worker", "run", "--help"],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=clean_env(),
+            ).stdout
             dispatched = self.run_cli(
                 cli,
                 project,
@@ -156,6 +196,10 @@ class InstallSmokeTests(unittest.TestCase):
                 "SMOKE-1",
                 "--prompt-file",
                 str(prompt),
+                "--availability-mode",
+                "require-available",
+                "--intent-file",
+                str(intent),
             )
             self.run_cli(
                 cli,
@@ -184,6 +228,15 @@ class InstallSmokeTests(unittest.TestCase):
             result = wait_result("SMOKE-1")
             failed_result = wait_result("SMOKE-FAIL")
             check_result = wait_result("SMOKE-CHECK")
+            wait_status = self.run_cli(
+                cli,
+                project,
+                "worker",
+                "wait",
+                "--task-id",
+                "SMOKE-1",
+                "--json",
+            )
             smoke_evidence = json.loads(
                 (
                     project
@@ -307,20 +360,28 @@ class InstallSmokeTests(unittest.TestCase):
             report_draft_text = report_draft.read_text(encoding="utf-8")
             policy_exists = policy_path.is_file()
         self.assertEqual(bind["host"], "claude")
-        self.assertEqual(version, "orchestrator-engine 0.2.0")
+        self.assertEqual(version, "orchestrator-engine 0.3.0")
         self.assertEqual(adoption["kind"], "ORCHESTRATOR_ADOPTION")
         self.assertTrue(policy_exists)
         self.assertTrue(workers["workers"]["smoke"]["enabled"])
         self.assertEqual(worker_diagnostics["kind"], "WORKER_DIAGNOSTICS")
         self.assertEqual(worker_diagnostics["diagnostic_count"], 0)
+        self.assertIn("--availability-mode", worker_run_help)
         # Dispatch hands the descriptor to the supervisor, which claims it and
         # records `running` itself; the dispatcher never writes it again.
         self.assertEqual(dispatched["status"], "starting")
         self.assertEqual(result["terminal_status"], "completed")
+        self.assertEqual(wait_status["kind"], "WORKER_WAIT_STATUS")
+        self.assertEqual(wait_status["status"], "completed")
         self.assertEqual(
             smoke_evidence["worker_policy"]["name"],
             "quality-efficient",
         )
+        self.assertEqual(
+            smoke_evidence["availability_preflight"]["status"],
+            "available",
+        )
+        self.assertEqual(smoke_evidence["intent_admission"]["mode"], "strict")
         self.assertEqual(failed_result["terminal_status"], "failed")
         self.assertEqual(check_result["terminal_status"], "completed")
         self.assertEqual(task_diagnostics["kind"], "WORKER_TASK_DIAGNOSTICS")

@@ -317,26 +317,93 @@ availability_probe = ["/path/to/project-check", "--worker", "claude"] # optional
 availability_timeout_seconds = 5 # required with availability_probe; 0 < value <= 300
 ```
 
+Optional dispatch admission defaults:
+
+```toml
+[dispatch]
+availability_mode = "off"       # off | block-unavailable | require-available
+intent_enforcement = "off"      # off | permissions | strict
+```
+
 `availability_probe` is an adopting project's or adapter's non-AI local
-command. Core executes it only for `worker availability` or when
-`worker run --preflight-availability` is explicitly selected. Exit 0 means
+command. Core executes it only for `worker availability` or when a dispatch
+availability mode requests it. Exit 0 means
 `available`; nonzero means `unavailable`; timeout or execution failure means
 `probe_error`. Profiles without a probe report `not_configured` and retain
 existing dispatch behavior. This report is bounded and versioned. Probe output
 content is never returned: the report contains only its byte count and SHA-256
 digest, so a local probe cannot accidentally leak private diagnostics.
 
-With `worker run --preflight-availability`, only `unavailable` blocks dispatch.
-`not_configured` and `probe_error` remain advisory because core cannot infer
-provider quota from a missing or broken adopter-owned command.
+`worker run --preflight-availability` remains a compatibility alias for
+`--availability-mode block-unavailable`: only `unavailable` blocks dispatch,
+while `not_configured` and `probe_error` remain advisory. In
+`require-available`, every status other than `available` blocks before task
+artifacts are created. A CLI mode overrides `[dispatch].availability_mode`;
+specifying the legacy flag and the new option together is an error.
 
-The preflight is advisory: it is a check-then-run sequence and cannot
-guarantee quota or availability at launch time. It is not a provider quota API;
+The preflight is a point-in-time check-then-run sequence and cannot guarantee
+quota or availability at launch time. Successful checked dispatches snapshot
+the mode, status, timestamp, exit code/error category and bounded output
+size/hash metadata into task/evidence. Raw probe output is never stored. It is
+not a provider quota API;
 the engine does not poll an AI model or invent provider commands. Use
 `worker availability --worker NAME` for one enabled profile, or
 `worker availability --all` to include disabled profiles. The timeout must be
 finite and no greater than 300 seconds, so a probe cannot hold the command
 indefinitely.
+
+### Task intent admission
+
+The legacy `[dispatch].enforce_intent` boolean remains supported: `true` maps
+to `intent_enforcement = "permissions"`, and `false` maps to `"off"`.
+Configuring both forms is an error. Permission enforcement preserves the v0.2
+behavior: `permission_profile` may not exceed task intent permissions.
+
+Strict mode additionally requires project-owned compatibility declarations:
+
+```toml
+[workers.reviewer]
+command = ["agent", "--non-interactive"]
+permission_profile = "readonly"
+
+[workers.reviewer.admission]
+roles = ["review", "triage"]
+max_risk = "high"
+verification = ["structural", "focused", "full"]
+authorizations = { commit = false, push = false, network = true }
+```
+
+For every field present in `WORKER_TASK_INTENT`, strict mode fails closed when
+the corresponding declaration is absent or incompatible. Risk is ordered
+`low < medium < high`; role and verification use exact membership. A profile
+authorization set to true must also be true in task intent, with omitted task
+authorization values treated as false. Admission metadata is an auditable
+project assertion, not proof of model capability or provider sandbox behavior.
+Successful matching is snapshotted in task/evidence as `intent_admission`, so
+later edits to `workers.toml` do not change the recorded dispatch decision.
+
+### Blocking worker wait
+
+`worker wait --task-id TASK-ID` is the human-facing fallback for hosts that
+cannot refresh an already-open chat. It reads only the task descriptor and
+terminal result, refreshes one compact TTY line, and exits when the task is
+terminal. Color and the terminal bell default to `auto`; `--color` and
+`--bell` accept `auto`, `always` or `never`. An optional positive
+`--timeout-seconds` bounds the local wait. Exit status is `0` for a completed
+worker, `2` for another terminal worker status, `3` when operator action is
+required and `124` when only the local wait times out. The default stale
+threshold is three worker heartbeat intervals (90 seconds) and can be changed
+with positive `--stale-after-seconds`.
+
+`--json` suppresses the live display and emits one bounded
+`WORKER_WAIT_STATUS` object. It contains task/worker/status, bounded heartbeat
+metadata and terminal artifact paths, but never worker stdout or stderr. The
+command performs deterministic filesystem reads and sleeps; it does not invoke
+an AI model. Agents ending a Codex orchestration turn should show this command
+to the user instead of repeatedly checking task state themselves. A dead
+supervisor, stale heartbeat, unreadable lease or terminal descriptor without a
+readable result produces bounded `health` metadata and `wait_status:
+"action_required"`; the wait never reaps, kills or rewrites the task itself.
 
 **Model and effort selection happens inside `command`.** The engine does not
 interpret keys like `model` or `effort` — free-form keys are recorded in each
@@ -559,6 +626,12 @@ When a verification follow-up is received, the host agent should read
 do not read the full log unless the user asks. If `status` is not `passed`,
 read the relevant command log(s) referenced by failed command entries.
 
+The check runner itself should not invoke an AI model merely to execute or
+wait for deterministic commands. A project may optionally dispatch a low-cost
+analysis worker after a failed check to summarize only the referenced failure
+logs. That triage is a separate task with separate evidence; it must not
+replace the original verification result or the host agent's review.
+
 `checks` is the read-only status command for verification artifacts. It does
 not run commands or mutate check directories.
 
@@ -758,9 +831,11 @@ explicit, audited override; no semantic or fuzzy similarity is attempted.
 `worker run --intent-file intent.json` accepts the provider-neutral fields
 `role`, `risk`, `verification`, `permissions` and boolean `authorizations` for
 `commit`, `push` and `network`. Intent is validated, snapshotted and rendered
-into the immutable effective prompt. Optional `[dispatch].enforce_intent =
-true` rejects a profile whose `permission_profile` exceeds the intent's maximum
-permission level. `worker retry` accepts only unsuccessful
+into the immutable effective prompt. Legacy `[dispatch].enforce_intent = true`
+or `intent_enforcement = "permissions"` rejects a profile whose
+`permission_profile` exceeds the intent's maximum permission level. Strict
+enforcement also applies the profile admission declaration described above.
+`worker retry` accepts only unsuccessful
 terminal tasks, creates a new task id/attempt, enforces `max_attempts`, and
 records `root_task_id`, `parent_task_id`, the operator reason and an optional
 `--delay-seconds` deterministic `not_before` backoff. A successful

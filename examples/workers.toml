@@ -11,8 +11,8 @@
 # The supervisor refreshes task.json (`last_alive_at`) while they run. Add
 # timeout_seconds to bounded scripts such as smoke tests and check runners.
 # Optional availability probes are adopter-owned local commands, not provider
-# quota APIs. They run only via `worker availability` or the explicit
-# `worker run --preflight-availability` switch, and are advisory at launch.
+# quota APIs. They run via `worker availability` or a dispatch availability
+# mode. Results are point-in-time snapshots, not future quota guarantees.
 # availability_probe = ["/path/to/project-check", "--available"]
 # availability_timeout_seconds = 5
 
@@ -26,6 +26,8 @@ output_strategy = "compact-evidence"
 # Optional bounded admission. Uncomment only after choosing host capacity.
 # [dispatch]
 # max_concurrent = 3
+# availability_mode = "require-available" # requires a configured profile probe
+# intent_enforcement = "strict"           # requires profile admission metadata
 # Per-profile controls are also optional:
 # max_concurrent = 1
 # max_no_progress_seconds = 900   # warning only; never kills by default
@@ -63,6 +65,14 @@ capability = "code-edit"
 permission_profile = "full"
 cost = "medium"
 recommended_for = ["implementation", "review"]
+
+# Strict intent enforcement uses this project-owned compatibility declaration.
+# It does not prove model capability or enforce the provider sandbox.
+[workers.claude.admission]
+roles = ["implementation", "review"]
+max_risk = "high"
+verification = ["structural", "focused", "full"]
+authorizations = { commit = false, push = false, network = true }
 
 [workers.claude-deep]
 enabled = false

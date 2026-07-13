@@ -281,6 +281,45 @@ def build_parser() -> argparse.ArgumentParser:
         default=task_diagnostics.DEFAULT_LARGE_LOG_BYTES,
         help="Worker log size that should be considered too large for chat.",
     )
+    worker_wait = worker_subparsers.add_parser(
+        "wait",
+        help="Show a compact live status until one worker task finishes.",
+    )
+    worker_wait.add_argument("--task-id", required=True)
+    worker_wait.add_argument(
+        "--interval-seconds",
+        type=float,
+        default=2.0,
+        help="Seconds between local state reads (no model calls).",
+    )
+    worker_wait.add_argument(
+        "--timeout-seconds",
+        type=float,
+        help="Stop waiting after this many seconds; omitted means no timeout.",
+    )
+    worker_wait.add_argument(
+        "--stale-after-seconds",
+        type=float,
+        default=task_diagnostics.DEFAULT_STALE_AFTER_SECONDS,
+        help="Stop with action_required after this task heartbeat age.",
+    )
+    worker_wait.add_argument(
+        "--json",
+        action="store_true",
+        help="Suppress live display and print one final bounded JSON object.",
+    )
+    worker_wait.add_argument(
+        "--color",
+        choices=("auto", "always", "never"),
+        default="auto",
+        help="Color policy for the interactive terminal display.",
+    )
+    worker_wait.add_argument(
+        "--bell",
+        choices=("auto", "always", "never"),
+        default="auto",
+        help="Terminal bell policy when the wait ends.",
+    )
     worker_resolve = worker_subparsers.add_parser(
         "resolve",
         help="Mark a historical worker task outcome as operator-resolved.",
@@ -339,10 +378,16 @@ def build_parser() -> argparse.ArgumentParser:
     worker_run.add_argument("--worker", required=True)
     worker_run.add_argument("--task-id", required=True)
     worker_run.add_argument("--prompt-file", type=Path, required=True)
-    worker_run.add_argument(
+    availability_group = worker_run.add_mutually_exclusive_group()
+    availability_group.add_argument(
         "--preflight-availability",
         action="store_true",
-        help="Run the configured local probe before dispatch (advisory).",
+        help="Compatibility alias for --availability-mode block-unavailable.",
+    )
+    availability_group.add_argument(
+        "--availability-mode",
+        choices=("off", "block-unavailable", "require-available"),
+        help="Override the configured point-in-time availability preflight mode.",
     )
     worker_run.add_argument("--intent-file", type=Path)
     worker_run.add_argument("--allow-duplicate", action="store_true")
@@ -630,7 +675,14 @@ def main(argv: list[str] | None = None) -> int:
             if len(roots) != 1:
                 raise core.OrchestratorError("worker requires exactly one project root")
             output = run_worker_cli_command(args, roots[0])
-            print_json(output)
+            if args.worker_command != "wait" or args.json:
+                print_json(output)
+            if args.worker_command == "wait":
+                if output.get("wait_status") == "timed_out":
+                    return 124
+                if output.get("wait_status") == "action_required":
+                    return 3
+                return 0 if output.get("status") == "completed" else 2
             if args.worker_command in {"diagnose", "tasks"}:
                 return worker_diagnostics.exit_code_for_worst(
                     output.get("worst_severity") if isinstance(output, dict) else None
@@ -641,6 +693,9 @@ def main(argv: list[str] | None = None) -> int:
                 print_json(output)
         else:  # pragma: no cover - argparse enforces this branch.
             raise core.OrchestratorError(f"unsupported command: {args.command}")
+    except KeyboardInterrupt:
+        print("\nStopped by user.", file=sys.stderr)
+        return 130
     except (OSError, RuntimeError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
@@ -733,6 +788,8 @@ def run_worker_cli_command(args: argparse.Namespace, root: Path) -> object:
             stale_after_seconds=args.stale_after_seconds,
             large_log_bytes=args.large_log_bytes,
         )
+    if args.worker_command == "wait":
+        return run_worker_wait_command(args, root)
     if args.worker_command == "resolve":
         return task_resolution.write_resolution(
             root,
@@ -765,6 +822,7 @@ def run_worker_cli_command(args: argparse.Namespace, root: Path) -> object:
             prompt_file=args.prompt_file,
             state_dir=args.state_dir,
             preflight_availability=args.preflight_availability,
+            availability_mode=args.availability_mode,
             intent_file=args.intent_file,
             allow_duplicate=args.allow_duplicate,
             duplicate_reason=args.duplicate_reason,
@@ -788,6 +846,93 @@ def run_worker_cli_command(args: argparse.Namespace, root: Path) -> object:
             state_dir=args.state_dir,
         )
     raise workers.WorkerError(f"unsupported worker command: {args.worker_command}")
+
+
+def run_worker_wait_command(args: argparse.Namespace, root: Path) -> dict[str, object]:
+    interactive = not args.json
+    is_tty = bool(getattr(sys.stdout, "isatty", lambda: False)())
+    use_color = (interactive and args.color == "always") or (
+        interactive
+        and args.color == "auto"
+        and is_tty
+        and "NO_COLOR" not in os.environ
+    )
+    use_bell = (interactive and args.bell == "always") or (
+        interactive and args.bell == "auto" and is_tty
+    )
+    last_line_width = 0
+
+    def render(snapshot: dict[str, object]) -> None:
+        nonlocal last_line_width
+        final = bool(snapshot.get("terminal")) or (
+            snapshot.get("wait_status") in {"timed_out", "action_required"}
+        )
+        if not is_tty and not final:
+            return
+        line = format_worker_wait_line(snapshot, use_color=use_color)
+        if is_tty:
+            padding = " " * max(last_line_width - visible_text_length(line), 0)
+            print(f"\r{line}{padding}", end="\n" if final else "", flush=True)
+            last_line_width = visible_text_length(line)
+        else:
+            print(line, flush=True)
+        if final and use_bell:
+            print("\a", end="", flush=True)
+
+    return workers.wait_for_worker_task(
+        root,
+        task_id=args.task_id,
+        state_dir=args.state_dir,
+        interval_seconds=args.interval_seconds,
+        timeout_seconds=args.timeout_seconds,
+        stale_after_seconds=args.stale_after_seconds,
+        on_update=None if args.json else render,
+    )
+
+
+def format_worker_wait_line(
+    snapshot: dict[str, object], *, use_color: bool
+) -> str:
+    status = str(snapshot.get("status") or "unknown")
+    task_id = str(snapshot.get("task_id") or "unknown")
+    worker = str(snapshot.get("worker") or "unknown")
+    waited = float(snapshot.get("waited_seconds") or 0.0)
+    if snapshot.get("wait_status") == "action_required":
+        label, color = "ACTION", "31"
+        health = snapshot.get("health")
+        health_status = (
+            str(health.get("status")) if isinstance(health, dict) else "unhealthy"
+        )
+        detail = f"{health_status}; return to the chat"
+    elif snapshot.get("wait_status") == "timed_out":
+        label, color = "WAIT", "33"
+        detail = "still active; re-run this command later"
+    elif status == "completed":
+        label, color = "DONE", "32"
+        detail = "return to the chat to review the result"
+    elif status in core.TERMINAL_STATUSES:
+        label, color = "ACTION", "31"
+        detail = "return to the chat to review diagnostics"
+    else:
+        label, color = "WORKING", "36"
+        detail = f"waiting {waited:.0f}s"
+    prefix = f"[{label}]"
+    if use_color:
+        prefix = f"\x1b[{color};1m{prefix}\x1b[0m"
+    return f"{prefix} {task_id} | {worker} | {status} | {detail}"
+
+
+def visible_text_length(value: str) -> int:
+    length = 0
+    in_escape = False
+    for character in value:
+        if character == "\x1b":
+            in_escape = True
+        elif in_escape and character == "m":
+            in_escape = False
+        elif not in_escape:
+            length += 1
+    return length
 
 
 def run_report_command(args: argparse.Namespace, root: Path) -> str | None:

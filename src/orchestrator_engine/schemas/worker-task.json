@@ -53,6 +53,34 @@
     "intent_file": {"type": "string", "minLength": 1},
     "intent_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "task_intent": {"type": "object"},
+    "availability_preflight": {
+      "type": "object",
+      "required": ["mode", "status", "checked_at"],
+      "properties": {
+        "mode": {"enum": ["block-unavailable", "require-available"]},
+        "status": {"enum": ["available", "unavailable", "probe_error", "not_configured"]},
+        "checked_at": {"type": "string", "format": "date-time"},
+        "exit_code": {"type": "integer"},
+        "output_bytes": {"type": "integer", "minimum": 0},
+        "output_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "error": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "intent_admission": {
+      "type": "object",
+      "required": ["mode", "evaluated_at", "permission_profile"],
+      "properties": {
+        "mode": {"enum": ["permissions", "strict"]},
+        "evaluated_at": {"type": "string", "format": "date-time"},
+        "permission_profile": {
+          "type": ["string", "null"],
+          "enum": ["readonly", "restricted", "full", null]
+        },
+        "worker_admission": {"type": "object"}
+      },
+      "additionalProperties": false
+    },
     "dispatch_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "dispatch_claim_path": {"type": "string", "minLength": 1},
     "retry_lineage": {"type": "object"},

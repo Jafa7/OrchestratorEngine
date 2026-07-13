@@ -2,10 +2,12 @@ import json
 import math
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from orchestrator_engine import worker_diagnostics, workers
+from orchestrator_engine import core, worker_diagnostics, workers
 
 
 class WorkerAvailabilityTests(unittest.TestCase):
@@ -80,6 +82,137 @@ class WorkerAvailabilityTests(unittest.TestCase):
                 workers.run_worker(root, worker="w", task_id="T", prompt_file=prompt,
                                    preflight_availability=True)
             self.assertFalse((workers.tasks_root(root) / "T").exists())
+
+    def test_availability_modes_apply_config_and_cli_precedence(self):
+        cases = (
+            ("block-unavailable", "available", False),
+            ("block-unavailable", "unavailable", True),
+            ("block-unavailable", "probe_error", False),
+            ("block-unavailable", "not_configured", False),
+            ("require-available", "available", False),
+            ("require-available", "unavailable", True),
+            ("require-available", "probe_error", True),
+            ("require-available", "not_configured", True),
+        )
+        for index, (mode, status, blocked) in enumerate(cases):
+            with (
+                self.subTest(mode=mode, status=status),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                    root = Path(directory)
+                    config = workers.workers_config_path(root)
+                    config.parent.mkdir(parents=True)
+                    config.write_text(
+                        f'[dispatch]\navailability_mode = "{mode}"\n'
+                        '[workers.w]\ncommand = ["true"]\n',
+                        encoding="utf-8",
+                    )
+                    prompt = root / "prompt"
+                    prompt.write_text("work", encoding="utf-8")
+                    result = {"status": status}
+                    with patch(
+                        "orchestrator_engine.worker_diagnostics.run_availability_probe",
+                        return_value=result,
+                    ):
+                        if blocked:
+                            with self.assertRaises(workers.WorkerError):
+                                workers.run_worker(
+                                    root,
+                                    worker="w",
+                                    task_id=f"T-{index}",
+                                    prompt_file=prompt,
+                                )
+                            self.assertFalse(workers.tasks_root(root).exists())
+                        else:
+                            dispatched = workers.run_worker(
+                                root,
+                                worker="w",
+                                task_id=f"T-{index}",
+                                prompt_file=prompt,
+                                popen_factory=lambda *args, **kwargs: type(
+                                    "Process", (), {"pid": 9000 + index}
+                                )(),
+                            )
+                            self.assertEqual(
+                                dispatched["availability_preflight"]["status"], status
+                            )
+                            self.assertEqual(
+                                dispatched["availability_preflight"]["mode"], mode
+                            )
+
+    def test_cli_mode_overrides_config_and_legacy_conflict_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = workers.workers_config_path(root)
+            config.parent.mkdir(parents=True)
+            config.write_text(
+                '[dispatch]\navailability_mode = "require-available"\n'
+                '[workers.w]\ncommand = ["true"]\n',
+                encoding="utf-8",
+            )
+            prompt = root / "prompt"
+            prompt.write_text("work", encoding="utf-8")
+            dispatched = workers.run_worker(
+                root,
+                worker="w",
+                task_id="T-OFF",
+                prompt_file=prompt,
+                availability_mode="off",
+                popen_factory=lambda *args, **kwargs: type(
+                    "Process", (), {"pid": 9100}
+                )(),
+            )
+            self.assertNotIn("availability_preflight", dispatched)
+            with self.assertRaisesRegex(workers.WorkerError, "cannot be combined"):
+                workers.run_worker(
+                    root,
+                    worker="w",
+                    task_id="T-CONFLICT",
+                    prompt_file=prompt,
+                    preflight_availability=True,
+                    availability_mode="off",
+                )
+
+    def test_preflight_metadata_reaches_evidence_without_raw_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            config = workers.workers_config_path(root)
+            config.parent.mkdir(parents=True)
+            config.write_text(
+                "[workers.w]\n"
+                f'command = ["{sys.executable}", "-c", "print(42)"]\n'
+                f'availability_probe = ["{sys.executable}", "-c", '
+                '"print(\'secret\')"]\n'
+                "availability_timeout_seconds = 2\n",
+                encoding="utf-8",
+            )
+            prompt = root / "prompt"
+            prompt.write_text("work", encoding="utf-8")
+            dispatched = workers.run_worker(
+                root,
+                worker="w",
+                task_id="T-EVIDENCE",
+                prompt_file=prompt,
+                availability_mode="require-available",
+            )
+            evidence_path = Path(dispatched["task_dir"]) / "evidence.json"
+            for _ in range(100):
+                if evidence_path.is_file():
+                    break
+                time.sleep(0.05)
+            evidence = core.load_object(evidence_path)
+            snapshot = evidence["availability_preflight"]
+            self.assertEqual(snapshot["status"], "available")
+            self.assertIn("output_sha256", snapshot)
+            self.assertNotIn("output", snapshot)
+            self.assertNotIn("secret", json.dumps(snapshot))
+            descriptor_path = Path(dispatched["descriptor_path"])
+            for _ in range(100):
+                descriptor = core.load_object(descriptor_path)
+                if descriptor.get("status") in core.TERMINAL_STATUSES:
+                    break
+                time.sleep(0.05)
+            self.assertIn(descriptor["status"], core.TERMINAL_STATUSES)
 
 
 if __name__ == "__main__":

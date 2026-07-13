@@ -27,6 +27,14 @@ is needed to establish a correct result.
 - Run a required full gate only on the finished candidate before handoff. If
   it fails, fix through focused checks and run full again only for the new
   final candidate. Never run the complete suite after every intermediate edit.
+- The implementation worker owns verification at the selected risk level and
+  should finish that verification before handoff. Run a long final gate through
+  one blocking deterministic check-runner call that stores complete logs and
+  returns a compact result. Waiting inside that process requires no model
+  polling; do not delegate mere command execution or waiting to another AI.
+- If a failed gate is not clear from its bounded evidence, inspect only the
+  referenced failed-command logs. Use a lower-cost analysis worker only when
+  it adds real diagnostic value, not as a test-process monitor.
 - Do not repeat an already-passing check without a scope-invalidating change.
 
 ## Context and output economy

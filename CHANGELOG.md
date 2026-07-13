@@ -4,6 +4,25 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-13
+
+### Added
+
+- `worker wait` provides a compact color-aware blocking terminal monitor that
+  performs no model polling and tells Codex Desktop users when to return to the
+  chat for result review. It reports dead/stale supervisors and incomplete
+  terminal state as operator action instead of waiting indefinitely.
+- Opt-in dispatch admission modes add strict adopter-owned availability checks
+  and full task-intent/profile compatibility declarations while preserving
+  legacy advisory preflight and permission-only enforcement behavior.
+
+### Changed
+
+- The quality-efficient worker policy keeps implementation ownership through
+  risk-selected final verification, uses deterministic blocking check runners
+  instead of model polling, and reserves low-cost AI analysis for failures
+  where bounded evidence needs genuine diagnosis.
+
 ## [0.2.0] - 2026-07-12
 
 ### Added

@@ -13,6 +13,25 @@ from orchestrator_engine import binding, cli, core, watcher, workers
 
 
 class CliTests(unittest.TestCase):
+    def test_worker_run_availability_options_are_mutually_exclusive(self) -> None:
+        parser = cli.build_parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args(
+                [
+                    "worker",
+                    "run",
+                    "--worker",
+                    "w",
+                    "--task-id",
+                    "T",
+                    "--prompt-file",
+                    "prompt.md",
+                    "--preflight-availability",
+                    "--availability-mode",
+                    "off",
+                ]
+            )
+
     def test_emit_and_inbox_round_trip_through_cli(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -356,6 +375,179 @@ command = ["true"]
             report["tasks"]["T-LOUD"]["diagnostics"][0]["code"],
             "task_large_worker_log",
         )
+
+    def test_worker_wait_prints_compact_colored_terminal_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            task_dir = workers.task_dir_for(root, "T-DONE")
+            task_dir.mkdir(parents=True)
+            core.atomic_json(
+                task_dir / "task.json",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-DONE",
+                    "worker": "cheap",
+                    "status": "completed",
+                },
+            )
+            core.atomic_json(
+                task_dir / "result.json",
+                {
+                    "schema_version": 1,
+                    "kind": "WORKER_RESULT",
+                    "task_id": "T-DONE",
+                    "worker": "cheap",
+                    "terminal_status": "completed",
+                    "exit_code": 0,
+                    "failure_reason": None,
+                    "duration_seconds": 1.25,
+                    "finished_at": core.utc_now(),
+                },
+            )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "worker",
+                        "wait",
+                        "--task-id",
+                        "T-DONE",
+                        "--color",
+                        "always",
+                        "--bell",
+                        "always",
+                    ]
+                )
+
+        self.assertEqual(code, 0)
+        self.assertIn("\x1b[32;1m[DONE]\x1b[0m", output.getvalue())
+        self.assertIn("return to the chat", output.getvalue())
+        self.assertTrue(output.getvalue().endswith("\a"))
+
+    def test_worker_wait_json_is_bounded_and_machine_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            task_dir = workers.task_dir_for(root, "T-FAIL")
+            task_dir.mkdir(parents=True)
+            core.atomic_json(
+                task_dir / "task.json",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-FAIL",
+                    "worker": "cheap",
+                    "status": "failed",
+                },
+            )
+            core.atomic_json(
+                task_dir / "result.json",
+                {
+                    "schema_version": 1,
+                    "kind": "WORKER_RESULT",
+                    "task_id": "T-FAIL",
+                    "worker": "cheap",
+                    "terminal_status": "failed",
+                    "exit_code": 1,
+                    "failure_reason": "test failure",
+                    "duration_seconds": 2.0,
+                    "finished_at": core.utc_now(),
+                    "stdout": "must not leak",
+                },
+            )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "worker",
+                        "wait",
+                        "--task-id",
+                        "T-FAIL",
+                        "--json",
+                    ]
+                )
+
+        report = json.loads(output.getvalue())
+        self.assertEqual(code, 2)
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(report["exit_code"], 1)
+        self.assertNotIn("stdout", report)
+        self.assertNotIn("\x1b", output.getvalue())
+
+    def test_worker_wait_timeout_has_distinct_exit_code(self) -> None:
+        timed_out = {
+            "schema_version": 1,
+            "kind": "WORKER_WAIT_STATUS",
+            "task_id": "T-RUNNING",
+            "worker": "cheap",
+            "status": "running",
+            "terminal": False,
+            "wait_status": "timed_out",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            output = io.StringIO()
+            with (
+                patch(
+                    "orchestrator_engine.cli.workers.wait_for_worker_task",
+                    return_value=timed_out,
+                ),
+                contextlib.redirect_stdout(output),
+            ):
+                code = cli.main(
+                    [
+                        "--project-root",
+                        temporary,
+                        "worker",
+                        "wait",
+                        "--task-id",
+                        "T-RUNNING",
+                        "--json",
+                    ]
+                )
+
+        self.assertEqual(code, 124)
+        self.assertEqual(json.loads(output.getvalue())["wait_status"], "timed_out")
+
+    def test_worker_wait_reports_dead_supervisor_as_action_required(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            task_dir = workers.task_dir_for(root, "T-DEAD")
+            task_dir.mkdir(parents=True)
+            core.atomic_json(
+                task_dir / "task.json",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-DEAD",
+                    "worker": "cheap",
+                    "status": "running",
+                    "supervisor_pid": 999_999_999,
+                },
+            )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "worker",
+                        "wait",
+                        "--task-id",
+                        "T-DEAD",
+                        "--color",
+                        "never",
+                        "--bell",
+                        "never",
+                    ]
+                )
+
+        self.assertEqual(code, 3)
+        self.assertIn("[ACTION]", output.getvalue())
+        self.assertIn("supervisor_dead", output.getvalue())
 
     def test_worker_resolve_and_resolutions_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

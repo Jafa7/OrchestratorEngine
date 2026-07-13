@@ -92,13 +92,16 @@ paths instead of repeatedly embedding cumulative log bodies.
 ## Codex Desktop interpretation
 
 Codex Desktop on Windows does not currently provide reliable live wakeup for
-an already-open chat. It may still require manual refresh or agent-driven
-polling. This benchmark measures the useful optimization that remains: each
-poll can read a bounded status report instead of cumulative logs.
+an already-open chat. This benchmark measures the useful optimization that
+remains when an agent does check state: each check can read a bounded status
+report instead of cumulative logs. The preferred manual fallback is now
+`worker wait`: it performs those filesystem checks outside the model, updates
+one terminal line and tells the user when to return to the chat.
 
-The graph does not claim that OrchestratorEngine eliminates Codex polling.
-Claude's live stream can avoid intermediate status reads entirely, but that
-additional benefit is also outside this four-poll comparison.
+The graph does not claim that `worker wait` creates Codex live wakeup. It
+eliminates intermediate model calls while the user still returns to the chat
+manually. Claude's live stream also avoids that manual return step, but that
+additional benefit is outside this four-check comparison.
 
 ## Limitations
 

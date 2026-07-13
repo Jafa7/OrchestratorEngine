@@ -36,8 +36,8 @@ CLI worker through `codex exec`.
 ## Measured coordination context reduction
 
 The graph below shows one practical benefit even when a host such as Codex
-Desktop still requires polling: an agent can read a compact task status instead
-of repeatedly loading growing worker logs. Lower is better.
+Desktop cannot wake live: status checks can read compact task state instead of
+repeatedly loading growing worker logs. Lower is better.
 
 ![Context read while checking background work](docs/assets/coordination-context.svg)
 
@@ -55,8 +55,9 @@ reading when needed.
 The measurement uses four checks against deterministic growing logs and UTF-8
 bytes as a provider-neutral proxy for context volume. It does not claim the
 same percentage of total token or engineering cost for every workflow. Codex
-Desktop polling is reduced in size, not eliminated; Claude live wakeup can
-avoid intermediate checks entirely. See the reproducible
+agents can avoid those intermediate model calls by handing `worker wait` to
+the user's terminal; Claude live wakeup avoids the manual return step as well.
+See the reproducible
 [measurement methodology](docs/coordination-efficiency.md).
 
 ## Connecting the engine to your project
@@ -256,11 +257,13 @@ orchestrator-engine --project-root /path/to/project worker availability \
   --worker codex
 orchestrator-engine --project-root /path/to/project worker run \
   --worker codex --task-id PREFLIGHT-001 --prompt-file task-001.md \
-  --preflight-availability
+  --availability-mode require-available
 ```
 
-Profiles without an adopter-provided probe report `not_configured`; the engine
-does not invent a provider quota API or spend model tokens to poll availability.
+`block-unavailable` preserves the legacy advisory behavior;
+`require-available` fails closed unless the adopter-owned probe returns
+`available`. Checked dispatches record only bounded status/hash metadata. The
+engine does not invent a provider quota API or spend model tokens polling.
 
 Start the VS Code delivery watcher (use `watcher stream` from Claude; for Codex,
 review durable history manually):
@@ -276,6 +279,20 @@ Dispatch a task from the host chat and end the turn:
 orchestrator-engine --project-root /path/to/project worker run \
   --worker claude --task-id TASK-001 --prompt-file task-001.md
 ```
+
+When Codex Desktop cannot refresh the open chat, leave the user one compact
+terminal monitor instead of polling from the model:
+
+```bash
+orchestrator-engine --project-root /path/to/project worker wait \
+  --task-id TASK-001
+```
+
+The command updates one colored line without AI calls, rings the terminal bell
+when supported and tells the user when to return to the chat. Add `--json` for
+one bounded machine-readable result with no live display. It stops with a red
+`ACTION` message instead of waiting forever when the supervisor is dead, its
+heartbeat is stale or terminal result state is unreadable.
 
 Optional concurrency, intent and recovery controls stay deterministic and
 local. Limits live in `workers.toml`; operator actions are explicit:

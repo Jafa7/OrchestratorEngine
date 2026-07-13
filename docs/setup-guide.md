@@ -65,7 +65,7 @@ For a reproducible install outside a source checkout, install the release tag:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.2.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.3.0"
 ```
 
 GitHub Release archives and wheel/sdist assets are published with the tag;
@@ -300,9 +300,19 @@ read-only; it reports machine-readable advisory diagnostics and exits `2` when
 enabled profiles still have warnings.
 
 If the adopter configured `availability_probe` for a worker, run it explicitly
-with `worker availability --worker NAME`. Add `--preflight-availability` to a
-specific `worker run` only when that local probe should gate dispatch. Profiles
-without a probe remain dispatchable and report `not_configured`.
+with `worker availability --worker NAME`. Use
+`--availability-mode block-unavailable` (or legacy
+`--preflight-availability`) to block a known unavailable result. Use
+`--availability-mode require-available` when a missing, failed or unavailable
+probe must fail closed. Existing profiles remain compatible because the
+default mode is `off`.
+
+For structured admission, set `[dispatch].intent_enforcement = "strict"` and
+add `[workers.NAME.admission]` declarations for roles, maximum risk,
+verification levels and commit/push/network authorizations. Strict mode also
+uses the existing `permission_profile`. Treat these values as project-owned
+assertions for deterministic profile selection, not provider capability
+detection.
 
 ## Step 4 — Configure verification workers
 
@@ -404,6 +414,12 @@ summarizes all check results, failed command log paths and missing artifacts in
 one compact JSON report. If a check reports `"failed"` or `"errored"`, read
 `summary.txt` first, then inspect only the failed command logs referenced by
 the JSON result.
+
+Do not assign a model to merely wait for the suite. The check profile should
+run the deterministic project runner directly. For a passing suite no AI
+triage is needed. For a failure, an optional low-cost analysis worker may read
+only the referenced failed-command logs and prepare a bounded handoff for the
+host agent, which verifies the diagnosis before changing code.
 
 Use the prompt templates in [`examples/prompts`](../examples/prompts) for
 review, implementation, verification and adopter-report workers. They encode
@@ -522,11 +538,22 @@ To delegate a task to a CLI worker:
 3. Write the full task prompt to a file (e.g. `.orchestrator/prompts/<task-id>.md`).
 4. Dispatch: `orchestrator-engine --project-root <root> worker run \
    --worker <profile> --task-id <TASK-ID> --prompt-file <file>`
-5. End the turn. Do not poll. Claude supports live stream wakeup, VS Code
-   attempts best-effort UI delivery, and Codex Desktop uses durable history and
-   manual review. If you must inspect detached task state, run
-   `orchestrator-engine --project-root <root> worker tasks --severity warning`
-   and read only the reported artifacts.
+5. Do not perform AI polling. When ending a Codex turn, show the user this
+   command before the handoff:
+
+   ```bash
+   orchestrator-engine --project-root <root> worker wait --task-id <TASK-ID>
+   ```
+
+   In an interactive terminal it refreshes one compact line, uses color and a
+   terminal bell when available, and tells the user when to return to the chat.
+   Its local state reads do not call a model. Use `--json` for one bounded
+   machine-readable terminal result. A red `ACTION` result means the worker
+   heartbeat/lease/result needs chat review; the command does not modify or
+   reap it. Claude supports live stream wakeup and VS Code attempts best-effort
+   UI delivery; neither needs this manual fallback.
+   For diagnostics after an unsuccessful result, run `worker tasks --task-id
+   <TASK-ID> --severity warning` and read only the reported artifacts.
 
 If setup or runtime diagnostics still look wrong, create a structured report
 for OrchestratorEngine instead of pasting full logs:

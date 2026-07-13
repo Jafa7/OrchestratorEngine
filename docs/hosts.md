@@ -67,10 +67,27 @@ Notes:
 - Review the durable inbox/event/result/evidence history manually. Record that
   review without deleting any artifact with `watcher --host codex acknowledge
   --event-id EVENT_ID --reason "reviewed manually"`.
+- When ending the dispatching Codex turn, show the user
+  `orchestrator-engine --project-root /path/to/project worker wait --task-id
+  TASK-ID`. It refreshes one compact terminal line and rings the terminal bell
+  on completion without invoking a model; the user then returns to the chat
+  for review.
 - For supported live orchestration, prefer Claude stream as the host. VS Code
   chat is a best-effort UI path. Use `codex exec` as a worker profile; Codex
   Desktop remains useful for dispatching work when delayed/history visibility
   is acceptable.
+
+Recommended Codex waiting policy (heuristic, not core dispatch logic):
+
+- expected under 2 minutes: keep the turn active with one blocking `worker
+  wait`; the model does not run while the command is blocked;
+- expected 2–10 minutes: use the same blocking wait, or an optional cheap
+  internal sentinel subagent when the host supports completion notifications;
+- expected over 10 minutes: end the turn and show `worker wait` to the user.
+
+Do not repeatedly ask a model for task status. Duration estimates are advisory:
+the host agent may choose the safer longer-task path whenever the current chat
+must remain usable or the worker duration is uncertain.
 
 ## Claude Code / Claude for Windows
 

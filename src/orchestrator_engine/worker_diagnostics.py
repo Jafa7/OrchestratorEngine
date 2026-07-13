@@ -331,6 +331,7 @@ def profile_summary(
         "timeout_seconds": config["timeout_seconds"],
         "expect_long_running": config["expect_long_running"],
         "policy": config.get("policy"),
+        "admission": config.get("admission"),
         "policy_files": (
             [str(path) for path in config["policy_config"]["files"]]
             if config.get("policy_config") is not None

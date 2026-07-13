@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 import tomllib
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,8 @@ from . import (
 
 WORKERS_CONFIG_NAME = "workers.toml"
 PROMPT_MODES = {"arg", "stdin"}
+AVAILABILITY_MODES = {"off", "block-unavailable", "require-available"}
+INTENT_ENFORCEMENT_MODES = {"off", "permissions", "strict"}
 TASK_KIND = "WORKER_TASK"
 RESERVED_KEYS = {
     "enabled",
@@ -51,6 +54,7 @@ RESERVED_KEYS = {
     "soft_output_bytes",
     "soft_token_budget",
     "usage_adapter",
+    "admission",
 }
 # Workers may legitimately run for hours with no configured timeout; the
 # supervisor refreshes the task descriptor on this cadence so long tasks stay
@@ -266,7 +270,12 @@ def load_dispatch_config(
 ) -> dict[str, Any]:
     path = workers_config_path(project_root, state_dir=state_dir)
     if not path.is_file():
-        return {"max_concurrent": None, "enforce_intent": False}
+        return {
+            "max_concurrent": None,
+            "enforce_intent": False,
+            "intent_enforcement": "off",
+            "availability_mode": "off",
+        }
     try:
         value = tomllib.loads(path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as error:
@@ -282,7 +291,30 @@ def load_dispatch_config(
     enforce_intent = dispatch.get("enforce_intent", False)
     if not isinstance(enforce_intent, bool):
         raise WorkerError("dispatch enforce_intent must be a boolean")
-    return {"max_concurrent": limit, "enforce_intent": enforce_intent}
+    if "enforce_intent" in dispatch and "intent_enforcement" in dispatch:
+        raise WorkerError(
+            "dispatch cannot specify both enforce_intent and intent_enforcement"
+        )
+    intent_enforcement = dispatch.get(
+        "intent_enforcement", "permissions" if enforce_intent else "off"
+    )
+    if intent_enforcement not in INTENT_ENFORCEMENT_MODES:
+        raise WorkerError(
+            "dispatch intent_enforcement must be one of: "
+            + ", ".join(sorted(INTENT_ENFORCEMENT_MODES))
+        )
+    availability_mode = dispatch.get("availability_mode", "off")
+    if availability_mode not in AVAILABILITY_MODES:
+        raise WorkerError(
+            "dispatch availability_mode must be one of: "
+            + ", ".join(sorted(AVAILABILITY_MODES))
+        )
+    return {
+        "max_concurrent": limit,
+        "enforce_intent": intent_enforcement != "off",
+        "intent_enforcement": intent_enforcement,
+        "availability_mode": availability_mode,
+    }
 
 
 def enforce_task_intent(
@@ -291,23 +323,139 @@ def enforce_task_intent(
     intent: dict[str, Any] | None,
     config: dict[str, Any],
     state_dir: str,
-) -> None:
+) -> dict[str, Any] | None:
     dispatch = load_dispatch_config(project_root, state_dir=state_dir)
-    if not dispatch["enforce_intent"] or intent is None:
-        return
+    mode = dispatch["intent_enforcement"]
+    if mode == "off" or intent is None:
+        return None
     requested = intent.get("permissions")
-    if not isinstance(requested, str):
-        return
-    configured = config.get("extras", {}).get("permission_profile")
-    if configured not in {"readonly", "restricted", "full"}:
+    if isinstance(requested, str):
+        configured = config.get("extras", {}).get("permission_profile")
+        if configured not in {"readonly", "restricted", "full"}:
+            raise WorkerError(
+                "intent enforcement requires worker permission_profile metadata"
+            )
+        rank = {"readonly": 0, "restricted": 1, "full": 2}
+        if rank[str(configured)] > rank[requested]:
+            raise WorkerError(
+                f"worker permission_profile {configured} exceeds task intent "
+                f"{requested}"
+            )
+    if mode != "strict":
+        return {
+            "mode": mode,
+            "evaluated_at": core.utc_now(),
+            "permission_profile": config.get("extras", {}).get(
+                "permission_profile"
+            ),
+        }
+    admission_fields = {"role", "risk", "verification", "authorizations"}
+    needs_admission = any(key in intent for key in admission_fields)
+    admission = config.get("admission")
+    if needs_admission and not isinstance(admission, dict):
         raise WorkerError(
-            "intent enforcement requires worker permission_profile metadata"
+            "strict intent enforcement requires worker admission metadata"
         )
-    rank = {"readonly": 0, "restricted": 1, "full": 2}
-    if rank[str(configured)] > rank[requested]:
+    if not isinstance(admission, dict):
+        admission = {}
+    role = intent.get("role")
+    if isinstance(role, str):
+        roles = admission.get("roles")
+        if roles is None:
+            raise WorkerError("strict intent role requires worker admission roles")
+        if role not in roles:
+            raise WorkerError(f"worker admission roles do not include task role {role}")
+    risk = intent.get("risk")
+    if isinstance(risk, str):
+        maximum = admission.get("max_risk")
+        if maximum is None:
+            raise WorkerError("strict intent risk requires worker admission max_risk")
+        risk_rank = {"low": 0, "medium": 1, "high": 2}
+        if risk_rank[risk] > risk_rank[maximum]:
+            raise WorkerError(f"task risk {risk} exceeds worker max_risk {maximum}")
+    verification = intent.get("verification")
+    if isinstance(verification, str):
+        supported = admission.get("verification")
+        if supported is None:
+            raise WorkerError(
+                "strict intent verification requires worker admission verification"
+            )
+        if verification not in supported:
+            raise WorkerError(
+                "worker admission verification does not include task verification "
+                f"{verification}"
+            )
+    if "authorizations" in intent:
+        configured_authorizations = admission.get("authorizations")
+        if configured_authorizations is None:
+            raise WorkerError(
+                "strict intent authorizations require worker admission authorizations"
+            )
+        requested_authorizations = intent.get("authorizations", {})
+        for key in ("commit", "push", "network"):
+            configured_value = configured_authorizations.get(key, False)
+            requested_value = requested_authorizations.get(key, False)
+            if configured_value and not requested_value:
+                raise WorkerError(
+                    f"worker admission authorization {key} exceeds task intent"
+                )
+    return {
+        "mode": mode,
+        "evaluated_at": core.utc_now(),
+        "permission_profile": config.get("extras", {}).get("permission_profile"),
+        "worker_admission": admission,
+    }
+
+
+def validate_admission(name: str, value: object) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise WorkerError(f"worker {name} admission must be a table")
+    allowed_keys = {"roles", "max_risk", "verification", "authorizations"}
+    unknown = sorted(set(value) - allowed_keys)
+    if unknown:
         raise WorkerError(
-            f"worker permission_profile {configured} exceeds task intent {requested}"
+            f"worker {name} admission contains unknown fields: {', '.join(unknown)}"
         )
+    normalized: dict[str, Any] = {}
+    for key, allowed in (
+        ("roles", INTENT_ENUMS["role"]),
+        ("verification", INTENT_ENUMS["verification"]),
+    ):
+        items = value.get(key)
+        if items is None:
+            continue
+        if (
+            not isinstance(items, list)
+            or not items
+            or not all(isinstance(item, str) and item in allowed for item in items)
+            or len(set(items)) != len(items)
+        ):
+            raise WorkerError(
+                f"worker {name} admission {key} must be a non-empty unique list of: "
+                + ", ".join(sorted(allowed))
+            )
+        normalized[key] = list(items)
+    max_risk = value.get("max_risk")
+    if max_risk is not None:
+        if max_risk not in INTENT_ENUMS["risk"]:
+            raise WorkerError(
+                f"worker {name} admission max_risk must be one of: low, medium, high"
+            )
+        normalized["max_risk"] = max_risk
+    authorizations = value.get("authorizations")
+    if authorizations is not None:
+        if not isinstance(authorizations, dict) or any(
+            key not in {"commit", "push", "network"} or not isinstance(item, bool)
+            for key, item in authorizations.items()
+        ):
+            raise WorkerError(
+                f"worker {name} admission authorizations must contain only boolean "
+                "commit/push/network fields"
+            )
+        normalized["authorizations"] = dict(authorizations)
+    return normalized
 
 
 def validate_worker_config(name: str, config: object) -> dict[str, Any]:
@@ -394,6 +542,7 @@ def validate_worker_config(name: str, config: object) -> dict[str, Any]:
             f"worker {name} availability_timeout_seconds must be finite and between "
             f"0 and {MAX_AVAILABILITY_TIMEOUT_SECONDS:g} seconds"
         )
+    admission = validate_admission(name, config.get("admission"))
     extras = {key: value for key, value in config.items() if key not in RESERVED_KEYS}
     diagnostics = worker_diagnostics.evaluate_profile(
         name=name,
@@ -432,6 +581,7 @@ def validate_worker_config(name: str, config: object) -> dict[str, Any]:
         **numeric_limits,
         "availability_probe": list(availability_probe) if availability_probe else None,
         "availability_timeout_seconds": availability_timeout,
+        "admission": admission,
         "extras": extras,
         "diagnostics": diagnostics,
         "warnings": worker_diagnostics.filter_diagnostics(
@@ -525,6 +675,7 @@ def list_workers(
                     config["availability_probe"] is not None
                 ),
                 "availability_timeout_seconds": config["availability_timeout_seconds"],
+                "admission": config["admission"],
                 "warnings": config["warnings"],
                 **config["extras"],
             }
@@ -967,6 +1118,7 @@ def run_worker(
     state_dir: str = core.DEFAULT_STATE_DIR,
     popen_factory=subprocess.Popen,
     preflight_availability: bool = False,
+    availability_mode: str | None = None,
     intent_file: Path | None = None,
     allow_duplicate: bool = False,
     duplicate_reason: str | None = None,
@@ -981,18 +1133,45 @@ def run_worker(
     """
     project = project_root.expanduser().resolve()
     config = require_worker(project, worker, state_dir=state_dir)
-    if preflight_availability:
-        availability = worker_diagnostics.run_availability_probe(config)
-        if availability["status"] == "unavailable":
-            raise WorkerError(f"worker {worker} availability probe reports unavailable")
+    if preflight_availability and availability_mode is not None:
+        raise WorkerError(
+            "--preflight-availability cannot be combined with --availability-mode"
+        )
+    dispatch = load_dispatch_config(project, state_dir=state_dir)
     prompt = prompt_file.expanduser().resolve()
     intent, intent_sha256 = load_task_intent(intent_file)
-    enforce_task_intent(
+    intent_admission = enforce_task_intent(
         project,
         intent=intent,
         config=config,
         state_dir=state_dir,
     )
+    effective_availability_mode = (
+        "block-unavailable"
+        if preflight_availability
+        else availability_mode or dispatch["availability_mode"]
+    )
+    if effective_availability_mode not in AVAILABILITY_MODES:
+        raise WorkerError(
+            "availability mode must be one of: "
+            + ", ".join(sorted(AVAILABILITY_MODES))
+        )
+    availability_snapshot: dict[str, Any] | None = None
+    if effective_availability_mode != "off":
+        availability_snapshot = {
+            "mode": effective_availability_mode,
+            "checked_at": core.utc_now(),
+            **worker_diagnostics.run_availability_probe(config),
+        }
+        status = availability_snapshot["status"]
+        blocked = status == "unavailable" or (
+            effective_availability_mode == "require-available" and status != "available"
+        )
+        if blocked:
+            raise WorkerError(
+                f"worker {worker} availability preflight {status} "
+                f"under mode {effective_availability_mode}"
+            )
     task_dir = task_dir_for(project, task_id, state_dir=state_dir)
     descriptor_path = task_dir / "task.json"
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -1072,6 +1251,10 @@ def run_worker(
         descriptor["intent_file"] = str(intent_path)
         descriptor["intent_sha256"] = intent_sha256
         descriptor["task_intent"] = intent
+    if intent_admission is not None:
+        descriptor["intent_admission"] = intent_admission
+    if availability_snapshot is not None:
+        descriptor["availability_preflight"] = availability_snapshot
     if lineage is not None:
         descriptor["retry_lineage"] = lineage
     if config["warnings"]:
@@ -1509,6 +1692,206 @@ def load_terminal_result(result_path: Path) -> dict[str, Any] | None:
     if result.get("terminal_status") not in core.TERMINAL_STATUSES:
         return None
     return result
+
+
+def worker_wait_snapshot(
+    project_root: Path,
+    *,
+    task_id: str,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    stale_after_seconds: float = TASK_HEARTBEAT_INTERVAL_SECONDS * 3,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Return the bounded state needed by a human or deterministic waiter."""
+    project = project_root.expanduser().resolve()
+    task_dir = task_dir_for(project, task_id, state_dir=state_dir)
+    descriptor_path = task_dir / "task.json"
+    descriptor = core.load_object(descriptor_path)
+    result_path = task_dir / "result.json"
+    result = load_terminal_result(result_path)
+    descriptor_status = str(descriptor.get("status") or "unknown")
+    result_status = (
+        str(result["terminal_status"]) if result is not None else None
+    )
+    terminal = result is not None and descriptor_status in core.TERMINAL_STATUSES
+    status = (
+        result_status
+        if terminal
+        else ("finalizing" if result is not None else descriptor_status)
+    )
+    snapshot: dict[str, Any] = {
+        "schema_version": core.SCHEMA_VERSION,
+        "kind": "WORKER_WAIT_STATUS",
+        "task_id": task_id,
+        "worker": descriptor.get("worker")
+        or (result.get("worker") if result is not None else None),
+        "status": status,
+        "terminal": terminal,
+        "task_path": str(descriptor_path),
+    }
+    progress = descriptor.get("progress")
+    if isinstance(progress, dict):
+        snapshot["progress"] = {
+            key: progress.get(key)
+            for key in (
+                "heartbeat_count",
+                "stdout_bytes",
+                "stderr_bytes",
+                "last_output_growth_at",
+                "updated_at",
+            )
+            if progress.get(key) is not None
+        }
+    if result is not None:
+        failure_reason = result.get("failure_reason")
+        if isinstance(failure_reason, str):
+            failure_reason = failure_reason[:500]
+        snapshot.update(
+            {
+                "exit_code": result.get("exit_code"),
+                "terminal_status": result_status,
+                "failure_reason": failure_reason,
+                "duration_seconds": result.get("duration_seconds"),
+                "finished_at": result.get("finished_at"),
+                "result_path": str(result_path),
+            }
+        )
+        evidence_path = task_dir / "evidence.json"
+        if evidence_path.is_file():
+            snapshot["evidence_path"] = str(evidence_path)
+    health = worker_wait_health(
+        task_dir,
+        descriptor=descriptor,
+        descriptor_status=descriptor_status,
+        result=result,
+        stale_after_seconds=stale_after_seconds,
+        now=now or datetime.now(UTC),
+    )
+    if health is not None:
+        snapshot["health"] = health
+    snapshot["suggested_action"] = wait_suggested_action(status)
+    return snapshot
+
+
+def worker_wait_health(
+    task_dir: Path,
+    *,
+    descriptor: dict[str, Any],
+    descriptor_status: str,
+    result: dict[str, Any] | None,
+    stale_after_seconds: float,
+    now: datetime,
+) -> dict[str, Any] | None:
+    if result is None and descriptor_status in core.TERMINAL_STATUSES:
+        return {
+            "status": "terminal_result_unreadable",
+            "message": "terminal task descriptor has no readable result",
+        }
+    if descriptor_status not in {"starting", "running", "cancelling"}:
+        return None
+    heartbeat_age = worker_lease.lease_age_seconds(
+        {
+            "renewed_at": descriptor.get("last_alive_at")
+            or descriptor.get("created_at")
+        },
+        now=now,
+    )
+    try:
+        lease = worker_lease.load_lease(worker_lease.lease_path(task_dir))
+    except worker_lease.WorkerLeaseError as error:
+        return {
+            "status": "lease_unreadable",
+            "message": str(error)[:500],
+            "heartbeat_age_seconds": heartbeat_age,
+        }
+    supervisor_state = (
+        worker_lease.identity_state(lease.get("supervisor_identity"))
+        if lease is not None
+        else worker_lease.pid_state(descriptor.get("supervisor_pid"))
+    )
+    if supervisor_state["state"] == "gone":
+        return {
+            "status": "supervisor_dead",
+            "message": "the recorded supervisor process is no longer alive",
+            "heartbeat_age_seconds": heartbeat_age,
+        }
+    if heartbeat_age is not None and heartbeat_age > stale_after_seconds:
+        return {
+            "status": "heartbeat_stale",
+            "message": (
+                f"task heartbeat age {heartbeat_age:.1f}s exceeds "
+                f"{stale_after_seconds:.1f}s"
+            ),
+            "heartbeat_age_seconds": round(heartbeat_age, 3),
+            "supervisor_state": supervisor_state["state"],
+        }
+    return None
+
+
+def wait_suggested_action(status: str) -> str:
+    if status == "completed":
+        return "Return to the orchestrating chat to review the worker result."
+    if status in core.TERMINAL_STATUSES:
+        return "Return to the orchestrating chat to review the failure evidence."
+    return "Keep this command open; it will update when the worker finishes."
+
+
+def wait_for_worker_task(
+    project_root: Path,
+    *,
+    task_id: str,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    interval_seconds: float = 2.0,
+    timeout_seconds: float | None = None,
+    stale_after_seconds: float = TASK_HEARTBEAT_INTERVAL_SECONDS * 3,
+    on_update: Callable[[dict[str, Any]], None] | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    """Block without AI polling until a task is terminal or the wait times out."""
+    if not math.isfinite(interval_seconds) or interval_seconds <= 0:
+        raise WorkerError("wait interval must be finite and positive")
+    if timeout_seconds is not None and (
+        not math.isfinite(timeout_seconds) or timeout_seconds <= 0
+    ):
+        raise WorkerError("wait timeout must be finite and positive")
+    if not math.isfinite(stale_after_seconds) or stale_after_seconds <= 0:
+        raise WorkerError("wait stale threshold must be finite and positive")
+    started = monotonic()
+    deadline = started + timeout_seconds if timeout_seconds is not None else None
+    while True:
+        snapshot = worker_wait_snapshot(
+            project_root,
+            task_id=task_id,
+            state_dir=state_dir,
+            stale_after_seconds=stale_after_seconds,
+        )
+        now = monotonic()
+        snapshot["waited_seconds"] = round(max(now - started, 0.0), 3)
+        if on_update is not None:
+            on_update(snapshot)
+        if snapshot["terminal"]:
+            return snapshot
+        if snapshot.get("health") is not None:
+            snapshot["wait_status"] = "action_required"
+            snapshot["suggested_action"] = (
+                "Return to the orchestrating chat and inspect task diagnostics."
+            )
+            if on_update is not None:
+                on_update(snapshot)
+            return snapshot
+        if deadline is not None and now >= deadline:
+            snapshot["wait_status"] = "timed_out"
+            snapshot["suggested_action"] = (
+                "The worker is still active; re-run this command later."
+            )
+            if on_update is not None:
+                on_update(snapshot)
+            return snapshot
+        sleep_seconds = interval_seconds
+        if deadline is not None:
+            sleep_seconds = min(sleep_seconds, max(deadline - now, 0.0))
+        sleeper(sleep_seconds)
 
 
 def finalize_terminal_task(
@@ -1959,6 +2342,12 @@ def supervise_worker(
         "started_at": started_at,
         "finished_at": result["finished_at"],
     }
+    availability_preflight = descriptor_snapshot.get("availability_preflight")
+    if isinstance(availability_preflight, dict):
+        evidence["availability_preflight"] = availability_preflight
+    intent_admission = descriptor_snapshot.get("intent_admission")
+    if isinstance(intent_admission, dict):
+        evidence["intent_admission"] = intent_admission
     if wake_target is not None:
         evidence["wake_target"] = wake_target
     if policy_snapshot is not None:

@@ -11,7 +11,7 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release is `0.2.0` and the durable JSON contract schema version is
+The current release is `0.3.0` and the durable JSON contract schema version is
 `1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
@@ -19,7 +19,7 @@ PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.2.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.3.0"
 ```
 
 ## Schema Compatibility
@@ -73,6 +73,27 @@ Newly dispatched tasks always receive an immutable `effective-prompt.md` task
 snapshot. A selected policy is prepended to that snapshot. Old task
 directories remain valid without the new optional fields, and schema version
 stays at `1` because this is a forward-compatible addition.
+
+`adopt` never overwrites an existing project-local policy. To adopt newer
+verification ownership rules, compare the installed
+`examples/policies/quality-efficient.md` with the adopter's
+`.orchestrator/policies/quality-efficient.md`, review the change, and update
+the adopter copy explicitly. The current policy keeps implementation context
+through final risk-selected verification, uses one blocking deterministic
+check-runner call for long gates, and forbids using another AI merely to poll
+or wait for that process.
+
+## Dispatch admission after v0.2.0
+
+Availability and intent admission are opt-in. Existing configurations retain
+their behavior: availability defaults to `off`, and legacy
+`enforce_intent = true` still performs permission-only enforcement.
+
+To require a positive adopter-owned availability probe, configure
+`[dispatch].availability_mode = "require-available"`. To validate all fields
+of `WORKER_TASK_INTENT`, configure `intent_enforcement = "strict"` and add a
+`[workers.NAME.admission]` block. Do not set `enforce_intent` and
+`intent_enforcement` together.
 
 ## Watcher State
 

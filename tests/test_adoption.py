@@ -17,6 +17,14 @@ class AdoptionTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertEqual(example, worker_policy.QUALITY_EFFICIENT_POLICY)
 
+    def test_quality_policy_keeps_final_verification_without_ai_polling(self) -> None:
+        policy = " ".join(worker_policy.QUALITY_EFFICIENT_POLICY.split())
+
+        self.assertIn("implementation worker owns verification", policy)
+        self.assertIn("one blocking deterministic check-runner call", policy)
+        self.assertIn("requires no model polling", policy)
+        self.assertIn("not as a test-process monitor", policy)
+
     def test_adopt_creates_state_layout_when_absent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

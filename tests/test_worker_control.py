@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import sys
 import tempfile
 import time
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -255,6 +257,172 @@ permission_profile = "full"
                     popen_factory=FakePopen,
                 )
 
+    def test_strict_intent_accepts_complete_admission_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            config = workers.workers_config_path(root)
+            config.parent.mkdir(parents=True)
+            config.write_text(
+                """
+[dispatch]
+intent_enforcement = "strict"
+[workers.reviewer]
+command = ["true"]
+permission_profile = "readonly"
+[workers.reviewer.admission]
+roles = ["review"]
+max_risk = "high"
+verification = ["focused", "full"]
+authorizations = { commit = false, push = false, network = false }
+""",
+                encoding="utf-8",
+            )
+            intent = root / "intent.json"
+            intent.write_text(
+                json.dumps(
+                    {
+                        "role": "review",
+                        "risk": "medium",
+                        "verification": "focused",
+                        "permissions": "readonly",
+                        "authorizations": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            dispatched = workers.run_worker(
+                root,
+                worker="reviewer",
+                task_id="T-STRICT-OK",
+                prompt_file=prompt(root, "strict-ok"),
+                intent_file=intent,
+                popen_factory=FakePopen,
+            )
+        self.assertEqual(dispatched["status"], "starting")
+        self.assertEqual(dispatched["intent_admission"]["mode"], "strict")
+        self.assertEqual(
+            dispatched["intent_admission"]["worker_admission"]["roles"],
+            ["review"],
+        )
+
+    def test_strict_permissions_only_does_not_require_admission_block(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            config = workers.workers_config_path(root)
+            config.parent.mkdir(parents=True)
+            config.write_text(
+                '[dispatch]\nintent_enforcement = "strict"\n'
+                '[workers.w]\ncommand = ["true"]\n'
+                'permission_profile = "readonly"\n',
+                encoding="utf-8",
+            )
+            intent = root / "intent.json"
+            intent.write_text(
+                json.dumps({"permissions": "readonly"}), encoding="utf-8"
+            )
+            dispatched = workers.run_worker(
+                root,
+                worker="w",
+                task_id="T-PERMISSION-ONLY",
+                prompt_file=prompt(root, "permission-only"),
+                intent_file=intent,
+                popen_factory=FakePopen,
+            )
+        self.assertEqual(dispatched["intent_admission"]["worker_admission"], {})
+
+    def test_strict_intent_rejects_mismatch_and_missing_declarations(self) -> None:
+        base_admission = {
+            "roles": ["review"],
+            "max_risk": "medium",
+            "verification": ["focused"],
+            "authorizations": {"commit": False, "push": False, "network": False},
+        }
+        cases = (
+            ({"role": "implementation"}, "roles do not include"),
+            ({"risk": "high"}, "exceeds worker max_risk"),
+            ({"verification": "full"}, "does not include"),
+            ({"permissions": "readonly"}, "permission_profile"),
+            ({"authorizations": {"commit": False}}, "authorization commit"),
+            ({"authorizations": {"push": False}}, "authorization push"),
+            ({"authorizations": {"network": False}}, "authorization network"),
+        )
+        for index, (intent_value, message) in enumerate(cases):
+            with self.subTest(intent=intent_value):
+                admission = json.loads(json.dumps(base_admission))
+                permission = "full" if "permissions" in intent_value else "readonly"
+                if "authorizations" in intent_value:
+                    key = next(iter(intent_value["authorizations"]))
+                    admission["authorizations"][key] = True
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary).resolve()
+                    config = workers.workers_config_path(root)
+                    config.parent.mkdir(parents=True)
+                    roles = ", ".join(f'"{item}"' for item in admission["roles"])
+                    verification = ", ".join(
+                        f'"{item}"' for item in admission["verification"]
+                    )
+                    authorizations = ", ".join(
+                        f"{key} = {str(value).lower()}"
+                        for key, value in admission["authorizations"].items()
+                    )
+                    config.write_text(
+                        "[dispatch]\nintent_enforcement = \"strict\"\n"
+                        "[workers.w]\ncommand = [\"true\"]\n"
+                        f'permission_profile = "{permission}"\n'
+                        "[workers.w.admission]\n"
+                        f"roles = [{roles}]\n"
+                        f'max_risk = "{admission["max_risk"]}"\n'
+                        f"verification = [{verification}]\n"
+                        f"authorizations = {{ {authorizations} }}\n",
+                        encoding="utf-8",
+                    )
+                    intent = root / "intent.json"
+                    intent.write_text(json.dumps(intent_value), encoding="utf-8")
+                    with self.assertRaisesRegex(workers.WorkerError, message):
+                        workers.run_worker(
+                            root,
+                            worker="w",
+                            task_id=f"T-STRICT-{index}",
+                            prompt_file=prompt(root, f"strict-{index}"),
+                            intent_file=intent,
+                            popen_factory=FakePopen,
+                        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            config = workers.workers_config_path(root)
+            config.parent.mkdir(parents=True)
+            config.write_text(
+                '[dispatch]\nintent_enforcement = "strict"\n'
+                '[workers.w]\ncommand = ["true"]\npermission_profile = "readonly"\n'
+                '[workers.w.admission]\nmax_risk = "high"\n',
+                encoding="utf-8",
+            )
+            intent = root / "intent.json"
+            intent.write_text(json.dumps({"role": "review"}), encoding="utf-8")
+            with self.assertRaisesRegex(workers.WorkerError, "requires.*roles"):
+                workers.run_worker(
+                    root,
+                    worker="w",
+                    task_id="T-MISSING",
+                    prompt_file=prompt(root, "missing"),
+                    intent_file=intent,
+                    popen_factory=FakePopen,
+                )
+
+    def test_dispatch_rejects_ambiguous_intent_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            config = workers.workers_config_path(root)
+            config.parent.mkdir(parents=True)
+            config.write_text(
+                '[dispatch]\nenforce_intent = true\nintent_enforcement = "strict"\n'
+                '[workers.w]\ncommand = ["true"]\n',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(workers.WorkerError, "cannot specify both"):
+                workers.load_dispatch_config(root)
+
     def test_retry_records_bounded_lineage(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -282,6 +450,181 @@ permission_profile = "full"
         self.assertEqual(retried["retry_lineage"]["attempt"], 2)
         self.assertEqual(retried["retry_lineage"]["max_attempts"], 2)
         self.assertEqual(retried["status"], "queued")
+
+
+class WorkerWaitTests(unittest.TestCase):
+    def test_wait_transitions_without_reading_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            task_dir = workers.task_dir_for(root, "T-WAIT")
+            task_dir.mkdir(parents=True)
+            core.atomic_json(
+                task_dir / "task.json",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-WAIT",
+                    "worker": "slow",
+                    "status": "running",
+                    "progress": {
+                        "heartbeat_count": 2,
+                        "stdout_bytes": 1_000_000,
+                    },
+                },
+            )
+            (task_dir / "worker-stdout.log").write_text(
+                "private output must not be read", encoding="utf-8"
+            )
+            clock = [0.0]
+
+            def finish_worker(seconds: float) -> None:
+                clock[0] += seconds
+                core.atomic_json(
+                    task_dir / "result.json",
+                    {
+                        "schema_version": 1,
+                        "kind": "WORKER_RESULT",
+                        "task_id": "T-WAIT",
+                        "worker": "slow",
+                        "terminal_status": "completed",
+                        "exit_code": 0,
+                        "failure_reason": None,
+                        "duration_seconds": 10.0,
+                        "finished_at": core.utc_now(),
+                    },
+                )
+                descriptor = core.load_object(task_dir / "task.json")
+                descriptor["status"] = "completed"
+                core.atomic_json(task_dir / "task.json", descriptor)
+
+            result = workers.wait_for_worker_task(
+                root,
+                task_id="T-WAIT",
+                interval_seconds=0.1,
+                monotonic=lambda: clock[0],
+                sleeper=finish_worker,
+            )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["progress"]["stdout_bytes"], 1_000_000)
+        self.assertNotIn("stdout", result)
+
+    def test_wait_does_not_finish_before_descriptor_finalization(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            task_dir = workers.task_dir_for(root, "T-FINALIZING")
+            task_dir.mkdir(parents=True)
+            core.atomic_json(
+                task_dir / "task.json",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-FINALIZING",
+                    "worker": "slow",
+                    "status": "running",
+                    "supervisor_pid": os.getpid(),
+                },
+            )
+            core.atomic_json(
+                task_dir / "result.json",
+                {
+                    "schema_version": 1,
+                    "kind": "WORKER_RESULT",
+                    "task_id": "T-FINALIZING",
+                    "worker": "slow",
+                    "terminal_status": "completed",
+                    "exit_code": 0,
+                    "failure_reason": None,
+                    "duration_seconds": 1.0,
+                    "finished_at": core.utc_now(),
+                },
+            )
+            snapshot = workers.worker_wait_snapshot(
+                root, task_id="T-FINALIZING"
+            )
+
+        self.assertEqual(snapshot["status"], "finalizing")
+        self.assertEqual(snapshot["terminal_status"], "completed")
+        self.assertFalse(snapshot["terminal"])
+
+    def test_wait_timeout_preserves_running_task_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            task_dir = workers.task_dir_for(root, "T-LONG")
+            task_dir.mkdir(parents=True)
+            core.atomic_json(
+                task_dir / "task.json",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-LONG",
+                    "worker": "slow",
+                    "status": "running",
+                },
+            )
+            clock = [0.0]
+            result = workers.wait_for_worker_task(
+                root,
+                task_id="T-LONG",
+                interval_seconds=0.1,
+                timeout_seconds=0.2,
+                monotonic=lambda: clock[0],
+                sleeper=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+            )
+
+        self.assertEqual(result["status"], "running")
+        self.assertEqual(result["wait_status"], "timed_out")
+        self.assertFalse(result["terminal"])
+
+    def test_wait_snapshot_reports_stale_live_supervisor(self) -> None:
+        now = datetime(2026, 7, 13, 12, 0, tzinfo=UTC)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            task_dir = workers.task_dir_for(root, "T-STALE")
+            task_dir.mkdir(parents=True)
+            core.atomic_json(
+                task_dir / "task.json",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-STALE",
+                    "worker": "slow",
+                    "status": "running",
+                    "supervisor_pid": os.getpid(),
+                    "last_alive_at": (now - timedelta(seconds=120)).isoformat(),
+                },
+            )
+            snapshot = workers.worker_wait_snapshot(
+                root,
+                task_id="T-STALE",
+                stale_after_seconds=90,
+                now=now,
+            )
+
+        self.assertEqual(snapshot["health"]["status"], "heartbeat_stale")
+        self.assertEqual(snapshot["health"]["supervisor_state"], "alive")
+
+    def test_wait_requires_action_for_terminal_descriptor_without_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            task_dir = workers.task_dir_for(root, "T-TORN")
+            task_dir.mkdir(parents=True)
+            core.atomic_json(
+                task_dir / "task.json",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-TORN",
+                    "worker": "slow",
+                    "status": "completed",
+                },
+            )
+            result = workers.wait_for_worker_task(root, task_id="T-TORN")
+
+        self.assertEqual(result["wait_status"], "action_required")
+        self.assertEqual(
+            result["health"]["status"], "terminal_result_unreadable"
+        )
 
 
 class WorkerCancelTests(unittest.TestCase):

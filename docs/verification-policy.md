@@ -78,8 +78,17 @@ Run long suites through a detached check runner when available:
    a complete log only when the compact evidence is insufficient.
 7. Do not repeat a passing suite to produce a different summary.
 
+The detached check runner should be a deterministic process, not an AI
+worker. Running commands and waiting for exit codes require no model tokens.
+If a check passes, the host agent consumes only the compact result. If it
+fails and the bounded evidence is not self-explanatory, a low-cost analysis
+worker may inspect only the failed-command logs and return a short triage
+handoff. The host agent remains responsible for validating that diagnosis and
+deciding the fix; worker output is evidence, not authority.
+
 This saves coordination context even on Codex Desktop, where live wakeup is
-not currently reliable and status polling may still be required.
+not currently reliable. If the chat turn ends, show the user `worker wait
+--task-id TASK-ID`; its compact terminal refresh performs no model calls.
 
 ## Reusable agent-instruction snippet
 
