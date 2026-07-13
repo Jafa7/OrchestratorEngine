@@ -6,11 +6,14 @@ import shutil
 import subprocess
 import tempfile
 import time
+import tomllib
 import unittest
 import venv
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+with (REPO_ROOT / "pyproject.toml").open("rb") as project_file:
+    PROJECT_VERSION = tomllib.load(project_file)["project"]["version"]
 
 
 def clean_env() -> dict[str, str]:
@@ -360,7 +363,7 @@ class InstallSmokeTests(unittest.TestCase):
             report_draft_text = report_draft.read_text(encoding="utf-8")
             policy_exists = policy_path.is_file()
         self.assertEqual(bind["host"], "claude")
-        self.assertEqual(version, "orchestrator-engine 0.3.0")
+        self.assertEqual(version, f"orchestrator-engine {PROJECT_VERSION}")
         self.assertEqual(adoption["kind"], "ORCHESTRATOR_ADOPTION")
         self.assertTrue(policy_exists)
         self.assertTrue(workers["workers"]["smoke"]["enabled"])

@@ -41,6 +41,8 @@ jobs:
         run: |
           git diff --check
           test -z "$(git status --porcelain)"
+      - name: Check release metadata consistency
+        run: python tools/check_release_consistency.py
       - name: Lint
         run: ruff check .
       - name: Build distribution
@@ -48,6 +50,7 @@ jobs:
       - name: Smoke test the wheel without PYTHONPATH
         shell: bash
         run: |
+          expected_version="$(python tools/check_release_consistency.py --print-version)"
           python -m venv .wheel-smoke
           env -u PYTHONPATH .wheel-smoke/bin/python -m pip install --no-deps dist/*.whl
-          env -u PYTHONPATH .wheel-smoke/bin/orchestrator-engine --version | grep -Fx 'orchestrator-engine 0.3.0'
+          env -u PYTHONPATH .wheel-smoke/bin/orchestrator-engine --version | grep -Fx "orchestrator-engine ${expected_version}"

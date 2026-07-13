@@ -45,6 +45,12 @@ a passing gate should not be repeated without a scope-invalidating change.
 | Change wheel/sdist contents | Full | Complete gate, build and installed-package smoke |
 | Prepare a tag or GitHub Release | Full | Complete release gate once at the candidate commit |
 
+OrchestratorEngine release candidates also run
+`python tools/check_release_consistency.py` before building. The checker
+compares package/source/lock versions and the current release markers in the
+changelog, setup guide and upgrade guide. CI uses its `--print-version` output
+for wheel smoke instead of maintaining another hard-coded version.
+
 ## Gate validity
 
 A passing gate remains valid until a later edit touches something in its

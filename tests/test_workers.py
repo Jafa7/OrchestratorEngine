@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from typing import Any, ClassVar
 
-from orchestrator_engine import binding, core, workers
+from orchestrator_engine import binding, core, worker_policy, workers
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHECK_RUNNER = REPO_ROOT / "examples" / "check_runner.py"
@@ -334,6 +334,59 @@ prompt_via = "stdin"
             report = workers.diagnose_workers(root, enabled_only=True)
         self.assertNotIn("disabled", report["workers"])
         self.assertIn("echo", report["workers"])
+
+    def test_diagnose_reports_bundled_policy_drift_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            config = workers.workers_config_path(root)
+            policy = config.parent / "policies" / "quality-efficient.md"
+            policy.parent.mkdir(parents=True)
+            policy.write_text("locally customized policy\n", encoding="utf-8")
+            config.write_text(
+                "[policies.quality-efficient]\n"
+                'files = ["policies/quality-efficient.md"]\n'
+                '[workers.one]\ncommand = ["true"]\n'
+                'policy = "quality-efficient"\nexpect_long_running = true\n'
+                '[workers.two]\ncommand = ["true"]\n'
+                'policy = "quality-efficient"\nexpect_long_running = true\n',
+                encoding="utf-8",
+            )
+            report = workers.diagnose_workers(root)
+
+        bundled = report["policies"]["quality-efficient"]
+        self.assertEqual(bundled["status"], "different")
+        self.assertEqual(bundled["revision"], 1)
+        self.assertEqual(len(bundled["bundled_sha256"]), 64)
+        self.assertEqual(len(bundled["local_sha256"]), 64)
+        self.assertEqual(
+            [item["code"] for item in report["policy_diagnostics"]],
+            ["policy_update_available"],
+        )
+
+    def test_diagnose_accepts_current_bundled_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            config = workers.workers_config_path(root)
+            policy = config.parent / "policies" / "quality-efficient.md"
+            policy.parent.mkdir(parents=True)
+            policy.write_text(
+                worker_policy.QUALITY_EFFICIENT_POLICY,
+                encoding="utf-8",
+            )
+            config.write_text(
+                "[policies.quality-efficient]\n"
+                'files = ["policies/quality-efficient.md"]\n'
+                '[workers.one]\ncommand = ["true"]\n'
+                'policy = "quality-efficient"\nexpect_long_running = true\n',
+                encoding="utf-8",
+            )
+            report = workers.diagnose_workers(root)
+
+        self.assertEqual(
+            report["policies"]["quality-efficient"]["status"],
+            "current",
+        )
+        self.assertEqual(report["policy_diagnostics"], [])
 
     def test_diagnose_workers_rejects_unknown_worker(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

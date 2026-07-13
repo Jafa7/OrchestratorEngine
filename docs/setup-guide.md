@@ -65,7 +65,7 @@ For a reproducible install outside a source checkout, install the release tag:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.3.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.3.1"
 ```
 
 GitHub Release archives and wheel/sdist assets are published with the tag;
@@ -298,6 +298,13 @@ orchestrator-engine --project-root /path/to/project worker diagnose --enabled-on
 Every intended worker appears with `"enabled": true`. `worker diagnose` is
 read-only; it reports machine-readable advisory diagnostics and exits `2` when
 enabled profiles still have warnings.
+
+For the bundled `quality-efficient` policy, inspect the `policies` and
+`policy_diagnostics` fields. `status: current` means the local file matches the
+installed bundled revision. `policy_update_available` means the files differ;
+review the hashes and compare the files before deciding whether to preserve a
+local customization or copy the newer bundled policy. No command overwrites
+the local policy automatically.
 
 If the adopter configured `availability_probe` for a worker, run it explicitly
 with `worker availability --worker NAME`. Use

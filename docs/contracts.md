@@ -746,6 +746,14 @@ Profiles without `policy` remain backward compatible; `worker diagnose`
 reports `worker_policy_not_configured` at `info` severity so users can migrate
 intentionally without breaking existing dispatch.
 
+For the bundled `quality-efficient` policy, `worker list` and
+`worker diagnose` expose the bundled revision/SHA-256 and the selected local
+file SHA-256. An exact copy reports `current`; a different local file reports
+`different` plus one informational `policy_update_available` diagnostic per
+policy, regardless of how many profiles select it. Difference is not treated
+as an error because it may be an intentional project customization. The engine
+never overwrites a local policy; operators compare and update it explicitly.
+
 The bundled quality-efficient policy is correctness-first. It saves context by
 using progressive file discovery, focused checks during implementation, one
 full gate on a finished high-risk candidate, bounded output and compact

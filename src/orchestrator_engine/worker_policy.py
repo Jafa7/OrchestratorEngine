@@ -82,10 +82,57 @@ risk level. If blocked, return the blocker and durable evidence instead of
 polling, looping or inventing a result. Do not commit or push unless the task
 explicitly authorizes it.
 """
+QUALITY_EFFICIENT_POLICY_REVISION = 1
+BUNDLED_POLICY_SPECS = {
+    "quality-efficient": {
+        "revision": QUALITY_EFFICIENT_POLICY_REVISION,
+        "filename": "quality-efficient.md",
+        "content": QUALITY_EFFICIENT_POLICY,
+    }
+}
 
 
 class WorkerPolicyError(RuntimeError):
     """A worker policy is invalid or cannot be snapshotted safely."""
+
+
+def bundled_policy_status(
+    policy_name: str,
+    materials: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Compare one selected project policy with its bundled reference."""
+    spec = BUNDLED_POLICY_SPECS.get(policy_name)
+    if spec is None:
+        return None
+    content = str(spec["content"]).encode("utf-8")
+    bundled_sha256 = hashlib.sha256(content).hexdigest()
+    candidates = [
+        item
+        for item in materials
+        if Path(str(item.get("path", ""))).name == spec["filename"]
+    ]
+    if len(materials) == 1 and not candidates:
+        candidates = list(materials)
+    result: dict[str, Any] = {
+        "name": policy_name,
+        "revision": spec["revision"],
+        "bundled_sha256": bundled_sha256,
+        "bundled_bytes": len(content),
+    }
+    if len(candidates) != 1:
+        result["status"] = "not_comparable"
+        return result
+    local = candidates[0]
+    local_sha256 = str(local["sha256"])
+    result.update(
+        {
+            "status": "current" if local_sha256 == bundled_sha256 else "different",
+            "local_path": str(local["path"]),
+            "local_sha256": local_sha256,
+            "local_bytes": int(local["bytes"]),
+        }
+    )
+    return result
 
 
 def load_policies(config_path: Path, value: object) -> dict[str, dict[str, Any]]:

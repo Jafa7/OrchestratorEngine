@@ -381,6 +381,10 @@ reference runner is [examples/check_runner.py](examples/check_runner.py).
 Use `orchestrator-engine --project-root /path/to/project checks` to read a
 compact status report before opening full logs.
 
+`worker diagnose` also compares the bundled `quality-efficient` policy hash
+with the selected project-local copy. It reports differences for explicit
+review but never overwrites adopter policy.
+
 For AI review, implementation, verification and adopter-report workers, start
 from the reusable prompt templates in [examples/prompts](examples/prompts).
 They keep worker output compact: summaries and artifact paths first, full logs

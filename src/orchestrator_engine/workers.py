@@ -236,11 +236,16 @@ def load_registry(
         validated["policy_config"] = (
             policies[policy_name] if policy_name is not None else None
         )
+        validated["bundled_policy"] = None
         if validated["policy_config"] is not None:
             try:
-                worker_policy.read_policy_materials(
+                materials = worker_policy.read_policy_materials(
                     project_root,
                     validated["policy_config"],
+                )
+                validated["bundled_policy"] = worker_policy.bundled_policy_status(
+                    str(policy_name),
+                    materials,
                 )
             except worker_policy.WorkerPolicyError as error:
                 validated["diagnostics"].append(
@@ -671,6 +676,7 @@ def list_workers(
                     if config["policy_config"] is not None
                     else {}
                 ),
+                "bundled_policy": config["bundled_policy"],
                 "availability_probe_configured": (
                     config["availability_probe"] is not None
                 ),
@@ -717,6 +723,36 @@ def diagnose_workers(
             diagnostics=diagnostics,
         )
 
+    policy_summaries: dict[str, Any] = {}
+    policy_diagnostics: list[dict[str, str]] = []
+    for config in registry.values():
+        bundled = config.get("bundled_policy")
+        if not isinstance(bundled, dict):
+            continue
+        policy_name = str(bundled["name"])
+        policy_summaries.setdefault(policy_name, bundled)
+    for policy_name, bundled in sorted(policy_summaries.items()):
+        if bundled.get("status") != "different":
+            continue
+        item = worker_diagnostics.diagnostic(
+            code="policy_update_available",
+            severity="info",
+            message=(
+                f"project policy {policy_name} differs from bundled revision "
+                f"{bundled['revision']}"
+            ),
+            suggested_action=(
+                "Compare the local policy with the bundled reference. Keep "
+                "intentional customizations or update the local copy explicitly; "
+                "OrchestratorEngine never overwrites it automatically."
+            ),
+        )
+        filtered = worker_diagnostics.filter_diagnostics(
+            [item], minimum_severity=minimum_severity
+        )
+        policy_diagnostics.extend(filtered)
+        all_diagnostics.extend(filtered)
+
     return {
         "schema_version": core.SCHEMA_VERSION,
         "kind": "WORKER_DIAGNOSTICS",
@@ -730,6 +766,8 @@ def diagnose_workers(
         "diagnostic_count": len(all_diagnostics),
         "severity_counts": worker_diagnostics.severity_counts(all_diagnostics),
         "worst_severity": worker_diagnostics.worst_severity(all_diagnostics),
+        "policies": policy_summaries,
+        "policy_diagnostics": policy_diagnostics,
         "workers": summaries,
     }
 

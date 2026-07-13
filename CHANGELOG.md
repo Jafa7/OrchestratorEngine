@@ -4,6 +4,21 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-13
+
+### Added
+
+- Read-only bundled worker-policy revision and hash diagnostics identify when
+  a project-local `quality-efficient` policy differs without overwriting
+  intentional adopter customizations.
+- A deterministic release consistency checker validates package, source, lock,
+  changelog and installation-document version markers.
+
+### Changed
+
+- CI and install smoke derive the expected wheel version from checked release
+  metadata instead of maintaining another hard-coded version string.
+
 ## [0.3.0] - 2026-07-13
 
 ### Added
