@@ -158,6 +158,19 @@ def executable_name(command: str) -> str:
     return Path(command).name.lower()
 
 
+def is_known_ai_profile(command: list[str]) -> bool:
+    """Identify provider CLI profiles only for precise advisory diagnostics."""
+    if not command:
+        return False
+    executable = executable_name(command[0])
+    flags = set(command[1:])
+    return (
+        executable in {"copilot", "copilot.exe"}
+        or (executable in {"codex", "codex.exe"} and "exec" in flags)
+        or (executable in {"claude", "claude.exe"} and "-p" in flags)
+    )
+
+
 def provider_diagnostics(
     *,
     name: str,

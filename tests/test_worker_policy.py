@@ -103,6 +103,57 @@ class WorkerPolicyTests(unittest.TestCase):
                 policy_hash,
             )
 
+    def test_snapshot_marks_intent_verification_as_authoritative(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary).resolve()
+            prompt = project / "task.md"
+            prompt.write_text(
+                "Update prose only. Run the full pytest suite before handoff.\n",
+                encoding="utf-8",
+            )
+            snapshot = worker_policy.snapshot_prompt(
+                project,
+                prompt_file=prompt,
+                task_dir=project / ".orchestrator" / "tasks" / "T-INTENT",
+                policy=None,
+                intent={"verification": "structural"},
+            )
+            content = Path(snapshot["effective_prompt_file"]).read_text(
+                encoding="utf-8"
+            )
+
+        self.assertIn(
+            "Verification level from this intent is authoritative: structural",
+            content,
+        )
+        self.assertIn("must not broaden it", content)
+        self.assertIn("Run the full pytest suite", content)
+
+    def test_export_bundled_policy_requires_explicit_replace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "policy.md"
+            first = worker_policy.export_bundled_policy(
+                "quality-efficient",
+                output=output,
+            )
+            with self.assertRaises(worker_policy.WorkerPolicyError):
+                worker_policy.export_bundled_policy(
+                    "quality-efficient",
+                    output=output,
+                )
+            output.write_text("local override\n", encoding="utf-8")
+            replaced = worker_policy.export_bundled_policy(
+                "quality-efficient",
+                output=output,
+                replace=True,
+            )
+            exported_content = output.read_text(encoding="utf-8")
+
+        self.assertEqual(first["kind"], worker_policy.POLICY_EXPORT_KIND)
+        self.assertEqual(first["revision"], 2)
+        self.assertEqual(first["sha256"], replaced["sha256"])
+        self.assertEqual(exported_content, worker_policy.QUALITY_EFFICIENT_POLICY)
+
     def test_snapshot_rejects_accidentally_large_policy(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             project = Path(temporary).resolve()

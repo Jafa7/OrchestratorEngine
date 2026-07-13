@@ -4,8 +4,9 @@
 # CLIs, models and permission policy available on that machine.
 #
 # The engine only runs `command`; model, effort and permission flags belong to
-# each CLI. Free-form keys such as capability, permission_profile and cost are
-# advisory metadata for the orchestrating agent and are preserved in evidence.
+# each CLI. Keys such as capability and cost are advisory metadata preserved in
+# evidence. `permission_profile` is advisory while intent enforcement is off,
+# but becomes a deterministic admission input in permissions or strict mode.
 #
 # No timeout_seconds on AI worker profiles: long-running workers are allowed.
 # The supervisor refreshes task.json (`last_alive_at`) while they run. Add
@@ -28,6 +29,9 @@ output_strategy = "compact-evidence"
 # max_concurrent = 3
 # availability_mode = "require-available" # requires a configured profile probe
 # intent_enforcement = "strict"           # requires profile admission metadata
+# In strict mode, every enabled AI profile should declare supported
+# admission.verification levels, and every AI dispatch should carry an intent
+# file. That value is the authoritative verification breadth for the task.
 # Per-profile controls are also optional:
 # max_concurrent = 1
 # max_no_progress_seconds = 900   # warning only; never kills by default
@@ -53,6 +57,12 @@ capability = "code-edit"
 permission_profile = "restricted"
 cost = "low"
 recommended_for = ["small-edit", "mechanical-fix"]
+
+[workers.claude-fast.admission]
+roles = ["implementation"]
+max_risk = "medium"
+verification = ["structural", "focused"]
+authorizations = { commit = false, push = false, network = false }
 
 [workers.claude]
 enabled = false
@@ -86,6 +96,12 @@ permission_profile = "full"
 cost = "high"
 recommended_for = ["architecture", "large-refactor", "hard-bug"]
 
+[workers.claude-deep.admission]
+roles = ["implementation", "review"]
+max_risk = "high"
+verification = ["structural", "focused", "full"]
+authorizations = { commit = false, push = false, network = true }
+
 [workers.claude-readonly]
 # Plan mode may also write under ~/.claude/plans. That provider-owned copy is
 # not durable evidence: the complete result must still be returned on stdout or
@@ -100,6 +116,12 @@ capability = "review"
 permission_profile = "readonly"
 cost = "medium"
 recommended_for = ["audit", "explain", "triage"]
+
+[workers.claude-readonly.admission]
+roles = ["review", "triage"]
+max_risk = "high"
+verification = ["structural", "focused", "full"]
+authorizations = { commit = false, push = false, network = false }
 
 
 # --- Copilot profiles --------------------------------------------------
@@ -120,6 +142,12 @@ permission_profile = "full"
 cost = "low"
 recommended_for = ["small-edit", "mechanical-fix"]
 
+[workers.copilot-fast.admission]
+roles = ["implementation"]
+max_risk = "medium"
+verification = ["structural", "focused"]
+authorizations = { commit = false, push = false, network = true }
+
 [workers.copilot]
 enabled = false
 command = ["copilot", "--model", "auto", "--effort", "high",
@@ -132,6 +160,12 @@ permission_profile = "full"
 cost = "medium"
 recommended_for = ["implementation", "tests"]
 
+[workers.copilot.admission]
+roles = ["implementation", "verification"]
+max_risk = "high"
+verification = ["structural", "focused", "full"]
+authorizations = { commit = false, push = false, network = true }
+
 [workers.copilot-deep]
 enabled = false
 command = ["copilot", "--model", "auto", "--effort", "xhigh",
@@ -143,6 +177,12 @@ capability = "code-edit"
 permission_profile = "full"
 cost = "high"
 recommended_for = ["review", "refactor", "hard-bug"]
+
+[workers.copilot-deep.admission]
+roles = ["implementation", "review"]
+max_risk = "high"
+verification = ["structural", "focused", "full"]
+authorizations = { commit = false, push = false, network = true }
 
 
 # --- Codex GPT-5.6 profiles -------------------------------------------
@@ -167,6 +207,12 @@ permission_profile = "restricted"
 cost = "low"
 recommended_for = ["small-edit", "triage"]
 
+[workers.codex-fast.admission]
+roles = ["implementation", "triage"]
+max_risk = "medium"
+verification = ["structural", "focused"]
+authorizations = { commit = false, push = false, network = false }
+
 [workers.codex]
 enabled = false
 command = ["codex", "exec", "--json", "-m", "gpt-5.6-terra",
@@ -180,6 +226,12 @@ capability = "code-edit"
 permission_profile = "full"
 cost = "medium"
 recommended_for = ["implementation", "tests"]
+
+[workers.codex.admission]
+roles = ["implementation", "verification"]
+max_risk = "high"
+verification = ["structural", "focused", "full"]
+authorizations = { commit = false, push = false, network = true }
 
 [workers.codex-deep]
 enabled = false
@@ -195,6 +247,12 @@ permission_profile = "full"
 cost = "high"
 recommended_for = ["architecture", "large-refactor", "hard-bug"]
 
+[workers.codex-deep.admission]
+roles = ["implementation", "review"]
+max_risk = "high"
+verification = ["structural", "focused", "full"]
+authorizations = { commit = false, push = false, network = true }
+
 [workers.codex-readonly]
 enabled = false
 command = ["codex", "exec", "--json", "-m", "gpt-5.6-terra",
@@ -209,6 +267,12 @@ permission_profile = "readonly"
 cost = "medium"
 recommended_for = ["audit", "explain", "triage"]
 
+[workers.codex-readonly.admission]
+roles = ["review", "triage"]
+max_risk = "high"
+verification = ["structural", "focused", "full"]
+authorizations = { commit = false, push = false, network = false }
+
 
 # --- Verification profiles -------------------------------------------
 # Bounded check runners should usually have timeout_seconds. See
@@ -220,10 +284,16 @@ command = ["python3", "scripts/orchestrator_check_runner.py",
            "--suite", "fast"]
 prompt_via = "stdin"
 capability = "test"
-permission_profile = "full"
+permission_profile = "restricted"
 cost = "low"
 timeout_seconds = 1800
 recommended_for = ["tests", "pre-commit"]
+
+[workers.check-fast.admission]
+roles = ["verification"]
+max_risk = "medium"
+verification = ["focused"]
+authorizations = { commit = false, push = false, network = false }
 
 [workers.check-full]
 enabled = false
@@ -231,7 +301,13 @@ command = ["python3", "scripts/orchestrator_check_runner.py",
            "--suite", "full"]
 prompt_via = "stdin"
 capability = "test"
-permission_profile = "full"
+permission_profile = "restricted"
 cost = "medium"
 timeout_seconds = 7200
 recommended_for = ["release", "full-verification"]
+
+[workers.check-full.admission]
+roles = ["verification"]
+max_risk = "high"
+verification = ["full"]
+authorizations = { commit = false, push = false, network = false }

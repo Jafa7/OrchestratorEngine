@@ -45,12 +45,16 @@ delayed UI refresh. Treat the deep link and `live_refresh` fields as
 best-effort focus/refresh diagnostics, not proof that the visible Desktop
 agent woke.
 
-1. In the Codex chat you orchestrate from, find the thread id and bind it:
+1. Run the bind command from the Codex chat that will dispatch work. The engine
+   auto-detects that chat's thread id:
 
 ```bash
-orchestrator-engine --project-root /path/to/project bind \
-  --host codex --thread-id THREAD_ID
+orchestrator-engine --project-root /path/to/project bind --host codex
 ```
+
+Confirm `thread_id_source` and `target_thread_id` in the output. Use explicit
+`--thread-id THREAD_ID` only when auto-detection fails or an operator is binding
+a different chat.
 
 Notes:
 
@@ -177,8 +181,13 @@ pick one per task. Then dispatch from the host chat:
 
 ```bash
 orchestrator-engine --project-root /path/to/project worker run \
-  --worker claude --task-id TASK-001 --prompt-file task-001.md
+  --worker claude --task-id TASK-001 --prompt-file task-001.md \
+  --intent-file task-001-intent.json
 ```
+
+The intent records role, risk, verification breadth, permissions and explicit
+commit/push/network authorizations. See the canonical intent example in the
+[setup guide](setup-guide.md#step-7--end-to-end-smoke-test).
 
 `worker run` returns immediately so the chat turn can end. A detached
 supervisor runs the worker CLI, captures stdout/stderr under

@@ -12,6 +12,9 @@ Output policy:
   structural validation and no test suite; isolated behavior gets focused
   owning-module checks; shared contracts, packaging, cross-module changes and
   release candidates get one full gate after implementation is complete.
+- Treat `WORKER_TASK_INTENT.verification` as authoritative when present.
+  Generic or copied task prose cannot broaden it. Report a conflict with a
+  current explicit user request so the orchestrator can dispatch new intent.
 - Use focused checks while editing. If the final full gate fails, fix through
   focused checks and rerun full only for the new final candidate.
 - Complete verification at the selected risk level before handoff. For a long

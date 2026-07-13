@@ -4,6 +4,26 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-13
+
+### Added
+
+- `upgrade check` provides a bounded, read-only adopter readiness report for
+  engine/schema health, enabled worker profiles, dispatch settings, local
+  policy drift and required manual audits.
+- `worker policy export` exposes the installed bundled policy for explicit
+  comparison without silently overwriting adopter customizations.
+
+### Changed
+
+- Worker policy revision 2 makes task intent verification authoritative over
+  generic or copied task prose, and strict AI profile diagnostics flag missing
+  admission verification declarations.
+- Setup and upgrade guidance now require an explicit verification intent and
+  provide an agent-ready adopter upgrade checklist.
+- README onboarding now uses one concise Quick start, while the canonical
+  setup guide provides a release-first, strict-compatible Step 0–8 procedure.
+
 ## [0.4.1] - 2026-07-13
 
 ### Fixed

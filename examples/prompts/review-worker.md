@@ -18,6 +18,8 @@ Output policy:
 - For docs/metadata-only review, use structural checks and do not run a test
   suite. For isolated behavior, prefer focused owning-module tests; require a
   full gate only for shared/cross-module risk, packaging, CI or release work.
+- Treat `WORKER_TASK_INTENT.verification` as authoritative when present;
+  stale or reusable prompt text cannot silently broaden it.
 - Do not modify files, commit or push unless the task prompt explicitly asks
   for those actions.
 

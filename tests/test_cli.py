@@ -1029,6 +1029,42 @@ command = ["true"]
         self.assertEqual(adopt["state_dir"], "local-orchestrator")
         self.assertEqual(doctor["state_dir"], "local-orchestrator")
 
+    def test_worker_policy_export_and_upgrade_check(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            exported = root / "exported-policy.md"
+            policy_out = io.StringIO()
+            with contextlib.redirect_stdout(policy_out):
+                policy_code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "worker",
+                        "policy",
+                        "export",
+                        "--name",
+                        "quality-efficient",
+                        "--output",
+                        str(exported),
+                    ]
+                )
+            upgrade_out = io.StringIO()
+            with contextlib.redirect_stdout(upgrade_out):
+                upgrade_code = cli.main(
+                    ["--project-root", str(root), "upgrade", "check"]
+                )
+
+        self.assertEqual(policy_code, 0)
+        self.assertEqual(
+            json.loads(policy_out.getvalue())["kind"],
+            "ORCHESTRATOR_BUNDLED_POLICY_EXPORT",
+        )
+        self.assertEqual(upgrade_code, 0)
+        self.assertEqual(
+            json.loads(upgrade_out.getvalue())["kind"],
+            "ORCHESTRATOR_UPGRADE_CHECK",
+        )
+
     def test_watcher_acknowledge_marks_event_seen(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

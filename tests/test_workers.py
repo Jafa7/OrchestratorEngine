@@ -355,7 +355,7 @@ prompt_via = "stdin"
 
         bundled = report["policies"]["quality-efficient"]
         self.assertEqual(bundled["status"], "different")
-        self.assertEqual(bundled["revision"], 1)
+        self.assertEqual(bundled["revision"], 2)
         self.assertEqual(len(bundled["bundled_sha256"]), 64)
         self.assertEqual(len(bundled["local_sha256"]), 64)
         self.assertEqual(
@@ -387,6 +387,29 @@ prompt_via = "stdin"
             "current",
         )
         self.assertEqual(report["policy_diagnostics"], [])
+
+    def test_strict_ai_profile_warns_without_verification_admission(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            config = workers.workers_config_path(root)
+            config.parent.mkdir(parents=True)
+            config.write_text(
+                "[dispatch]\n"
+                'intent_enforcement = "strict"\n'
+                "[workers.claude]\n"
+                'command = ["claude", "-p"]\n'
+                'prompt_via = "stdin"\n'
+                "[workers.claude.admission]\n"
+                'roles = ["implementation"]\n',
+                encoding="utf-8",
+            )
+            report = workers.diagnose_workers(root, worker="claude")
+
+        codes = {
+            item["code"]
+            for item in report["workers"]["claude"]["diagnostics"]
+        }
+        self.assertIn("strict_ai_verification_not_declared", codes)
 
     def test_diagnose_workers_rejects_unknown_worker(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

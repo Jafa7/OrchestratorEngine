@@ -722,6 +722,7 @@ def diagnose_workers(
     enabled_only: bool = False,
 ) -> dict[str, Any]:
     registry = load_registry(project_root, state_dir=state_dir)
+    dispatch = load_dispatch_config(project_root, state_dir=state_dir)
     if worker is not None:
         if worker not in registry:
             configured = ", ".join(sorted(registry)) or "<none>"
@@ -735,8 +736,32 @@ def diagnose_workers(
     summaries: dict[str, Any] = {}
     all_diagnostics: list[dict[str, str]] = []
     for name, config in sorted(registry.items()):
+        profile_diagnostics = list(config["diagnostics"])
+        admission = config.get("admission")
+        if (
+            dispatch["intent_enforcement"] == "strict"
+            and worker_diagnostics.is_known_ai_profile(config["command"])
+            and (
+                not isinstance(admission, dict)
+                or not admission.get("verification")
+            )
+        ):
+            profile_diagnostics.append(
+                worker_diagnostics.diagnostic(
+                    code="strict_ai_verification_not_declared",
+                    severity="warning",
+                    message=(
+                        f"worker {name} is an AI profile under strict intent "
+                        "enforcement but declares no supported verification levels"
+                    ),
+                    suggested_action=(
+                        "Add workers.NAME.admission.verification and dispatch AI "
+                        "tasks with an explicit intent.verification value."
+                    ),
+                )
+            )
         diagnostics = worker_diagnostics.filter_diagnostics(
-            config["diagnostics"],
+            profile_diagnostics,
             minimum_severity=minimum_severity,
         )
         all_diagnostics.extend(diagnostics)
@@ -780,6 +805,7 @@ def diagnose_workers(
         "schema_version": core.SCHEMA_VERSION,
         "kind": "WORKER_DIAGNOSTICS",
         "config_path": str(workers_config_path(project_root, state_dir=state_dir)),
+        "dispatch": dispatch,
         "filters": {
             "worker": worker,
             "minimum_severity": minimum_severity,

@@ -52,8 +52,12 @@ documented delivery mechanism:
 
 ```bash
 orchestrator-engine --project-root /path/to/project bind \
-  --host codex --thread-id THREAD_ID
+  --host codex
 ```
+
+Run this from the Codex chat that owns future dispatches and verify the detected
+target. Use `--thread-id THREAD_ID` only as a fallback when auto-detection is
+unavailable or when binding a different chat explicitly.
 
 For Codex, use durable history and explicit manual acknowledgement instead of
 starting a callback watcher for live refresh. See [hosts.md](hosts.md) for

@@ -126,6 +126,19 @@ It returns `ORCHESTRATOR_DOCTOR_REPORT` with `checks[]` entries:
 `doctor` exits `0` for `ok` and `warn`, exits `2` for `error`, and exits `2`
 for warnings only when `--strict` is passed. CLI/runtime errors still exit `1`.
 
+`upgrade check` composes bounded read-only upgrade diagnostics:
+
+```bash
+orchestrator-engine --project-root /path/to/project upgrade check --strict
+```
+
+It returns `ORCHESTRATOR_UPGRADE_CHECK` with the engine/schema versions,
+compact doctor checks, enabled-worker diagnostics, dispatch settings, bundled
+policy drift, next actions and manual checks. Status is `ready`,
+`review_required` or `blocked`. Non-strict mode exits `2` only for `blocked`;
+strict mode also exits `2` for `review_required`. It performs no network call,
+does not discover a release and does not rewrite adopter or durable state.
+
 `status` is the compact read-only operator report:
 
 ```bash
@@ -387,6 +400,11 @@ authorization values treated as false. Admission metadata is an auditable
 project assertion, not proof of model capability or provider sandbox behavior.
 Successful matching is snapshotted in task/evidence as `intent_admission`, so
 later edits to `workers.toml` do not change the recorded dispatch decision.
+When intent includes `verification`, the generated effective prompt declares
+that value authoritative for verification breadth. Generic, copied or reusable
+task instructions cannot broaden it. A conflicting current explicit user
+request must be reported and dispatched with corrected intent rather than
+resolved silently by the worker.
 
 ### Blocking worker wait
 
@@ -503,6 +521,10 @@ the engine reports `copilot_may_request_approval`. Known advisory codes:
   the selected policy is intentional.
 - `claude_missing_permission_mode` — `claude -p` profile lacks an explicit
   `--permission-mode` or `--dangerously-skip-permissions` flag.
+- `strict_ai_verification_not_declared` — strict intent enforcement is active
+  for a known detached AI CLI profile, but its admission block declares no
+  supported verification levels. Add the declaration and send every AI task
+  with explicit `intent.verification`.
 
 `worker diagnose` is the read-only deep registry diagnostic command. It never
 dispatches workers or rewrites commands.
@@ -785,6 +807,12 @@ file SHA-256. An exact copy reports `current`; a different local file reports
 policy, regardless of how many profiles select it. Difference is not treated
 as an error because it may be an intentional project customization. The engine
 never overwrites a local policy; operators compare and update it explicitly.
+
+`worker policy export --name NAME --output PATH` writes a bundled reference
+atomically for that comparison and returns
+`ORCHESTRATOR_BUNDLED_POLICY_EXPORT` with revision, bytes and SHA-256. It
+refuses to overwrite an existing destination unless `--replace` is explicit;
+it never edits the configured adopter policy by itself.
 
 The bundled quality-efficient policy is correctness-first. It saves context by
 using progressive file discovery, focused checks during implementation, one

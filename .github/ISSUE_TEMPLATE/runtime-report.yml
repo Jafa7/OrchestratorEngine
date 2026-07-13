@@ -8,7 +8,7 @@ body:
     attributes:
       label: Adopter project
       description: Project name and local path if safe to share.
-      placeholder: "DocumentationEngine (local path omitted or sanitized)"
+      placeholder: "example-project (local path omitted or sanitized)"
     validations:
       required: true
   - type: dropdown

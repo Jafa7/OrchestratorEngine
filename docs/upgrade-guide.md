@@ -11,7 +11,7 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release is `0.4.1` and the durable JSON contract schema version is
+The current release is `0.5.0` and the durable JSON contract schema version is
 `1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
@@ -19,7 +19,7 @@ PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.4.1"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.5.0"
 ```
 
 ## Schema Compatibility
@@ -31,7 +31,12 @@ Before and after an engine upgrade, run:
 
 ```bash
 orchestrator-engine --project-root /path/to/project doctor
+orchestrator-engine --project-root /path/to/project upgrade check --strict
 ```
+
+For the complete adopter procedure, including local-policy comparison,
+future-facing instruction audit and a dispatch smoke, follow the
+[adopter upgrade checklist](adopter-upgrade-checklist.md).
 
 The `schema_compatibility` check surveys durable events, inbox operational
 JSON, bindings and worker task descriptors without rewriting or deleting them.
@@ -74,14 +79,20 @@ snapshot. A selected policy is prepended to that snapshot. Old task
 directories remain valid without the new optional fields, and schema version
 stays at `1` because this is a forward-compatible addition.
 
-`adopt` never overwrites an existing project-local policy. To adopt newer
-verification ownership rules, compare the installed
-`examples/policies/quality-efficient.md` with the adopter's
-`.orchestrator/policies/quality-efficient.md`, review the change, and update
-the adopter copy explicitly. The current policy keeps implementation context
+`adopt` never overwrites an existing project-local policy. Export the bundled
+reference with `worker policy export --name quality-efficient --output PATH`,
+compare it with the adopter's `.orchestrator/policies/quality-efficient.md`,
+review the change, and update the adopter copy explicitly. The current policy
+keeps implementation context
 through final risk-selected verification, uses one blocking deterministic
 check-runner call for long gates, and forbids using another AI merely to poll
 or wait for that process.
+
+Policy revision 2 also makes `WORKER_TASK_INTENT.verification` authoritative
+for the dispatched task. Copied or reusable task prose cannot silently broaden
+that level. Strict AI profiles without an admission `verification` declaration
+receive a diagnostic so adopter upgrades cannot appear fully configured while
+leaving the decision ambiguous.
 
 ## Dispatch admission after v0.2.0
 

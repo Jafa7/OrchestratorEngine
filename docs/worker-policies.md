@@ -124,14 +124,20 @@ does not change the effective prompt of that dispatched task.
 
 Existing profiles without `policy` continue to work. To adopt policies:
 
-1. Run `adopt` on a new fixture or copy
-   `examples/policies/quality-efficient.md` into the config-relative
-   `policies/` directory.
+1. Run `adopt` on a new fixture. For an existing customized policy, export the
+   installed reference with `worker policy export --name quality-efficient
+   --output /tmp/quality-efficient.md`, compare it, and merge intentionally.
+   Do not overwrite the adopter copy blindly.
 2. Add `[policies.quality-efficient]` and assign
    `policy = "quality-efficient"` to AI worker profiles.
 3. Run `worker list` and `worker diagnose --enabled-only`.
 4. Dispatch a harmless smoke worker and inspect `task.json`,
    `effective-prompt.md` and `evidence.json`.
+
+For AI dispatches, include `WORKER_TASK_INTENT.verification`. The generated
+effective prompt treats that value as authoritative over generic or copied
+verification prose. If a current explicit user instruction conflicts, dispatch
+corrected intent instead of asking the worker to resolve the ambiguity.
 
 Do not mass-edit existing durable task descriptors. Policy adoption affects
 new dispatches only.

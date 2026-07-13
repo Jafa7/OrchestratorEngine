@@ -21,6 +21,10 @@ is needed to establish a correct result.
 ## Verification
 
 - Classify verification as structural, focused or full before running checks.
+- When `WORKER_TASK_INTENT` declares a verification level, treat that value as
+  the authoritative breadth for the dispatched task. Generic, copied or
+  reusable task text must not broaden it. If a current explicit user request
+  conflicts, report the conflict so the orchestrator can dispatch new intent.
 - Documentation/metadata-only work gets structural validation and no test
   suite unless generated output, packaging or test expectations changed.
 - Use focused owning-module checks while implementation is changing.

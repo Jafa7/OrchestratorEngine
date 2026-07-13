@@ -22,9 +22,11 @@ from . import (
     status,
     task_diagnostics,
     task_resolution,
+    upgrade,
     verification,
     watcher,
     worker_diagnostics,
+    worker_policy,
     workers,
 )
 
@@ -199,6 +201,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     adopt.add_argument("--dry-run", action="store_true")
 
+    upgrade_parser = subparsers.add_parser(
+        "upgrade",
+        help="Check adopter readiness after installing a new engine version.",
+    )
+    upgrade_subparsers = upgrade_parser.add_subparsers(
+        dest="upgrade_command", required=True
+    )
+    upgrade_check = upgrade_subparsers.add_parser(
+        "check",
+        help="Run bounded read-only version, state, policy and profile checks.",
+    )
+    upgrade_check.add_argument(
+        "--host",
+        choices=sorted(binding.SUPPORTED_HOSTS),
+        help="Check this host channel instead of the bound host.",
+    )
+    upgrade_check.add_argument(
+        "--strict",
+        action="store_true",
+        help="Return non-zero when review is required as well as when blocked.",
+    )
+
     bind = subparsers.add_parser(
         "bind",
         help="Declare the host target for deterministic completion delivery.",
@@ -265,6 +289,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--enabled-only",
         action="store_true",
         help="Only include enabled worker profiles.",
+    )
+    worker_policy_parser = worker_subparsers.add_parser(
+        "policy",
+        help="Inspect or export bundled worker behavior policies.",
+    )
+    worker_policy_subparsers = worker_policy_parser.add_subparsers(
+        dest="worker_policy_command", required=True
+    )
+    worker_policy_export = worker_policy_subparsers.add_parser(
+        "export",
+        help="Export one bundled policy for explicit adopter-side comparison.",
+    )
+    worker_policy_export.add_argument(
+        "--name",
+        choices=sorted(worker_policy.BUNDLED_POLICY_SPECS),
+        required=True,
+    )
+    worker_policy_export.add_argument("--output", type=Path, required=True)
+    worker_policy_export.add_argument(
+        "--replace",
+        action="store_true",
+        help="Explicitly replace an existing destination file.",
     )
     worker_tasks = worker_subparsers.add_parser(
         "tasks",
@@ -723,6 +769,18 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
             )
             print_json(output)
+        elif args.command == "upgrade":
+            if len(roots) != 1:
+                raise core.OrchestratorError(
+                    "upgrade requires exactly one project root"
+                )
+            output = upgrade.run_upgrade_check(
+                roots[0],
+                state_dir=args.state_dir,
+                host=args.host,
+            )
+            print_json(output)
+            return upgrade.exit_code(output, strict=args.strict)
         elif args.command == "bind":
             if len(roots) != 1:
                 raise core.OrchestratorError("bind requires exactly one project root")
@@ -829,6 +887,12 @@ def run_worker_cli_command(args: argparse.Namespace, root: Path) -> object:
             worker=args.worker,
             minimum_severity=args.severity,
             enabled_only=args.enabled_only,
+        )
+    if args.worker_command == "policy" and args.worker_policy_command == "export":
+        return worker_policy.export_bundled_policy(
+            args.name,
+            output=args.output,
+            replace=args.replace,
         )
     if args.worker_command == "tasks":
         return task_diagnostics.diagnose_tasks(

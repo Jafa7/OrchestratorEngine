@@ -21,6 +21,7 @@ MAX_POLICY_FILES = 8
 MAX_POLICY_METADATA_BYTES = 8 * 1024
 POLICY_RESERVED_KEYS = {"files"}
 POLICY_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+POLICY_EXPORT_KIND = "ORCHESTRATOR_BUNDLED_POLICY_EXPORT"
 
 QUALITY_EFFICIENT_POLICY = """# Quality-efficient worker policy
 
@@ -45,6 +46,10 @@ is needed to establish a correct result.
 ## Verification
 
 - Classify verification as structural, focused or full before running checks.
+- When `WORKER_TASK_INTENT` declares a verification level, treat that value as
+  the authoritative breadth for the dispatched task. Generic, copied or
+  reusable task text must not broaden it. If a current explicit user request
+  conflicts, report the conflict so the orchestrator can dispatch new intent.
 - Documentation/metadata-only work gets structural validation and no test
   suite unless generated output, packaging or test expectations changed.
 - Use focused owning-module checks while implementation is changing.
@@ -82,7 +87,7 @@ risk level. If blocked, return the blocker and durable evidence instead of
 polling, looping or inventing a result. Do not commit or push unless the task
 explicitly authorizes it.
 """
-QUALITY_EFFICIENT_POLICY_REVISION = 1
+QUALITY_EFFICIENT_POLICY_REVISION = 2
 BUNDLED_POLICY_SPECS = {
     "quality-efficient": {
         "revision": QUALITY_EFFICIENT_POLICY_REVISION,
@@ -133,6 +138,50 @@ def bundled_policy_status(
         }
     )
     return result
+
+
+def export_bundled_policy(
+    name: str,
+    *,
+    output: Path,
+    replace: bool = False,
+) -> dict[str, Any]:
+    """Export one bundled policy atomically without silent local replacement."""
+    spec = BUNDLED_POLICY_SPECS.get(name)
+    if spec is None:
+        available = ", ".join(sorted(BUNDLED_POLICY_SPECS)) or "<none>"
+        raise WorkerPolicyError(
+            f"unknown bundled policy {name!r}; available: {available}"
+        )
+    destination = output.expanduser().resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    content = str(spec["content"])
+    raw = content.encode("utf-8")
+    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_bytes(raw)
+        if replace:
+            os.replace(temporary, destination)
+        else:
+            try:
+                os.link(temporary, destination)
+            except FileExistsError as error:
+                raise WorkerPolicyError(
+                    f"policy export destination already exists: {destination}"
+                ) from error
+            temporary.unlink()
+    finally:
+        temporary.unlink(missing_ok=True)
+    return {
+        "schema_version": core.SCHEMA_VERSION,
+        "kind": POLICY_EXPORT_KIND,
+        "name": name,
+        "revision": spec["revision"],
+        "output_path": str(destination),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "bytes": len(raw),
+        "replace_requested": replace,
+    }
 
 
 def load_policies(config_path: Path, value: object) -> dict[str, dict[str, Any]]:
@@ -247,8 +296,20 @@ def snapshot_prompt(
     }
     intent_block = ""
     if intent is not None:
+        verification = intent.get("verification")
+        verification_directive = ""
+        if isinstance(verification, str):
+            verification_directive = (
+                "Verification level from this intent is authoritative: "
+                f"{verification}. Generic, copied, or reusable test commands in "
+                "the task input must not broaden it. If a current explicit user "
+                "request conflicts, report the conflict; the orchestrating agent "
+                "must dispatch an updated intent before broader verification.\n"
+            )
         intent_block = (
             "\nORCHESTRATOR_TASK_INTENT v1\n"
+            "This machine-readable intent records the dispatch decision.\n"
+            + verification_directive
             + json.dumps(intent, ensure_ascii=False, sort_keys=True, indent=2)
             + "\nEND_TASK_INTENT\n"
         )

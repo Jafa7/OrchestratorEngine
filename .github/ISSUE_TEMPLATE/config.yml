@@ -1,4 +1,4 @@
-blank_issues_enabled: true
+blank_issues_enabled: false
 contact_links:
   - name: OrchestratorEngine setup guide
     url: https://github.com/Jafa7/OrchestratorEngine/blob/main/docs/setup-guide.md

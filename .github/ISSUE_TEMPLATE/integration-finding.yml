@@ -7,7 +7,7 @@ body:
     id: adopter_project
     attributes:
       label: Adopter project
-      placeholder: "Paradigmarium"
+      placeholder: "example-project"
     validations:
       required: true
   - type: input
@@ -15,7 +15,7 @@ body:
     attributes:
       label: Recommended labels
       description: Add these labels if available.
-      placeholder: "project:paradigmarium, source:codex"
+      placeholder: "project:example-project, source:codex"
     validations:
       required: false
   - type: textarea

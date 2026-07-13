@@ -202,6 +202,33 @@ class InstallSmokeTests(unittest.TestCase):
                 text=True,
                 env=clean_env(),
             ).stdout
+            upgrade_check_help = subprocess.run(
+                [str(cli), "upgrade", "check", "--help"],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=clean_env(),
+            ).stdout
+            policy_export_help = subprocess.run(
+                [str(cli), "worker", "policy", "export", "--help"],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=clean_env(),
+            ).stdout
+            exported_policy = root / "exported-quality-efficient.md"
+            policy_export = self.run_cli(
+                cli,
+                project,
+                "worker",
+                "policy",
+                "export",
+                "--name",
+                "quality-efficient",
+                "--output",
+                str(exported_policy),
+            )
+            upgrade_check = self.run_cli(cli, project, "upgrade", "check")
             dispatched = self.run_cli(
                 cli,
                 project,
@@ -389,6 +416,7 @@ class InstallSmokeTests(unittest.TestCase):
             )
             report_draft_text = report_draft.read_text(encoding="utf-8")
             policy_exists = policy_path.is_file()
+            exported_policy_exists = exported_policy.is_file()
         self.assertEqual(bind["host"], "claude")
         self.assertEqual(version, f"orchestrator-engine {PROJECT_VERSION}")
         self.assertEqual(adoption["kind"], "ORCHESTRATOR_ADOPTION")
@@ -400,6 +428,14 @@ class InstallSmokeTests(unittest.TestCase):
         self.assertIn("--mode", worker_wait_help)
         self.assertIn("--path", artifact_resolve_help)
         self.assertIn("--reason", artifact_resolve_help)
+        self.assertIn("--strict", upgrade_check_help)
+        self.assertIn("--replace", policy_export_help)
+        self.assertEqual(
+            policy_export["kind"],
+            "ORCHESTRATOR_BUNDLED_POLICY_EXPORT",
+        )
+        self.assertTrue(exported_policy_exists)
+        self.assertEqual(upgrade_check["kind"], "ORCHESTRATOR_UPGRADE_CHECK")
         # Dispatch hands the descriptor to the supervisor, which claims it and
         # records `running` itself; the dispatcher never writes it again.
         self.assertEqual(dispatched["status"], "starting")

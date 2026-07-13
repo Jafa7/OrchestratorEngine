@@ -70,22 +70,76 @@ enough; Claude live wakeup avoids the manual return step as well.
 See the reproducible
 [measurement methodology](docs/coordination-efficiency.md).
 
-## Connecting the engine to your project
+## Quick start
 
-**If you are an AI agent** asked to set this up: follow
-[docs/setup-guide.md](docs/setup-guide.md) step by step. It contains every
-command, a check after each step, and a troubleshooting table. Do not improvise
-a different layout — the file contract is what makes deterministic delivery
-work.
+### Agent-assisted setup (recommended)
 
-**If you are a human**: paste this to the agent in the chat you orchestrate
-from:
+Paste this into the chat that will orchestrate the adopting project:
 
 ```text
 Connect OrchestratorEngine to this project.
 Repository: https://github.com/Jafa7/OrchestratorEngine
 Read docs/setup-guide.md in that repository and follow it exactly.
 I orchestrate from this chat; ask me anything the guide says to ask.
+```
+
+An AI agent should treat the [setup guide](docs/setup-guide.md) as the
+canonical procedure. It contains host-specific branches, checks after each
+step, strict-admission examples and troubleshooting. The shorter sequence
+below is only a human-readable preview.
+
+### Manual preview
+
+Install an immutable release, scaffold the project and bind the host chat:
+
+```bash
+python -m pip install \
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.5.0"
+orchestrator-engine --project-root /path/to/project adopt --host HOST
+orchestrator-engine --project-root /path/to/project bind --host HOST
+```
+
+Replace `HOST` with `codex`, `claude` or `vscode` and run `bind` from the chat
+that should own completions.
+
+Edit the generated `.orchestrator/workers.toml`, enabling only profiles whose
+CLI, model and non-interactive permission strategy have been verified. The
+complete catalog is [examples/workers.toml](examples/workers.toml).
+
+```bash
+orchestrator-engine --project-root /path/to/project worker diagnose --enabled-only
+```
+
+Choose verification breadth before dispatch and record it in task intent:
+
+```bash
+printf '%s\n' 'Perform the bounded smoke task.' > /tmp/orchestrator-smoke.md
+cat > /tmp/orchestrator-smoke-intent.json <<'JSON'
+{
+  "role": "implementation",
+  "risk": "low",
+  "verification": "structural",
+  "permissions": "restricted",
+  "authorizations": {
+    "commit": false,
+    "push": false,
+    "network": false
+  }
+}
+JSON
+orchestrator-engine --project-root /path/to/project worker run \
+  --worker WORKER --task-id SMOKE-1 \
+  --prompt-file /tmp/orchestrator-smoke.md \
+  --intent-file /tmp/orchestrator-smoke-intent.json
+```
+
+Start the host-specific delivery channel described in
+[docs/hosts.md](docs/hosts.md). Claude uses `watcher stream`, VS Code uses a
+callback service, and Codex Desktop uses durable history plus the local
+`worker wait` fallback rather than claiming live wakeup. Finish with:
+
+```bash
+orchestrator-engine --project-root /path/to/project status
 ```
 
 ## Goals
@@ -124,7 +178,9 @@ Per-host setup details: [docs/hosts.md](docs/hosts.md).
 
 Release and upgrade notes:
 [CHANGELOG.md](CHANGELOG.md), [LICENSE](LICENSE), and
-[docs/upgrade-guide.md](docs/upgrade-guide.md).
+[docs/upgrade-guide.md](docs/upgrade-guide.md). Adopting projects should use
+the [agent-ready upgrade checklist](docs/adopter-upgrade-checklist.md) after
+installing an immutable release.
 
 ## File layout inside an adopted project
 
@@ -186,128 +242,11 @@ different state directory, but the directory must still follow the
 OrchestratorEngine contract. Product-specific legacy layouts should be adapted
 by the product, not by OrchestratorEngine core.
 
-## Quick start
+## Operations and recovery
 
-Create the local orchestration layout in the project:
-
-```bash
-orchestrator-engine --project-root /path/to/project adopt --host vscode
-```
-
-Bind the project to the host chat (this quick start uses VS Code because its
-callback path can be exercised end to end):
-
-```bash
-orchestrator-engine --project-root /path/to/project bind --host vscode
-```
-
-Configure workers in `/path/to/project/.orchestrator/workers.toml`:
-
-```toml
-[policies.quality-efficient]
-files = ["policies/quality-efficient.md"]
-quality_priority = "correctness-first"
-context_strategy = "progressive"
-verification_strategy = "risk-based-final-gate"
-output_strategy = "compact-evidence"
-
-[workers.claude]
-enabled = true
-command = ["claude", "-p", "--model", "sonnet", "--effort", "high",
-           "--dangerously-skip-permissions"]
-prompt_via = "stdin"
-policy = "quality-efficient"
-expect_long_running = true
-permission_profile = "full"
-
-[workers.codex]
-enabled = true
-command = ["codex", "exec", "--json", "-m", "gpt-5.6-terra",
-           "-c", "model_reasoning_effort=\"high\"",
-           "-c", "approval_policy=\"never\"",
-           "-c", "sandbox_mode=\"danger-full-access\""]
-prompt_via = "arg"
-policy = "quality-efficient"
-expect_long_running = true
-permission_profile = "full"
-
-[workers.copilot]
-enabled = true
-command = ["copilot", "--model", "auto", "--effort", "high",
-           "--allow-all", "--no-ask-user", "--prompt"]
-prompt_via = "arg"
-policy = "quality-efficient"
-expect_long_running = true
-permission_profile = "full"
-```
-
-These three profiles are fully autonomous and should be enabled only for a
-trusted project. For fast/default/deep plus restricted and read-only examples,
-start from [examples/workers.toml](examples/workers.toml), then enable only the
-profiles supported by the installed CLIs and account.
-
-`adopt` creates the referenced correctness-first policy. Existing adopters can
-copy [examples/policies/quality-efficient.md](examples/policies/quality-efficient.md).
-The engine snapshots policy + task bytes before dispatch and records their
-hashes in task/evidence, so workers consistently use progressive context,
-risk-based verification and compact handoffs without an arbitrary token cap.
-See [worker behavior policies](docs/worker-policies.md) for the behavioral
-model, role overlays, audit contract and limitations.
-
-Check worker profiles before dispatch:
-
-```bash
-orchestrator-engine --project-root /path/to/project worker diagnose --enabled-only
-```
-
-An adopter may configure a bounded, non-AI `availability_probe` for a profile.
-Run it explicitly before dispatch when local quota or account tooling can
-provide a deterministic answer:
-
-```bash
-orchestrator-engine --project-root /path/to/project worker availability \
-  --worker codex
-orchestrator-engine --project-root /path/to/project worker run \
-  --worker codex --task-id PREFLIGHT-001 --prompt-file task-001.md \
-  --availability-mode require-available
-```
-
-`block-unavailable` preserves the legacy advisory behavior;
-`require-available` fails closed unless the adopter-owned probe returns
-`available`. Checked dispatches record only bounded status/hash metadata. The
-engine does not invent a provider quota API or spend model tokens polling.
-
-Start the VS Code delivery watcher (use `watcher stream` from Claude; for Codex,
-review durable history manually):
-
-```bash
-orchestrator-engine --project-root /path/to/project watcher \
-  --host vscode --action callback service start --interval-seconds 5
-```
-
-Dispatch a task from the host chat and end the turn:
-
-```bash
-orchestrator-engine --project-root /path/to/project worker run \
-  --worker claude --task-id TASK-001 --prompt-file task-001.md
-```
-
-When Codex Desktop cannot refresh the open chat, leave the user one compact
-terminal monitor instead of polling from the model:
-
-```bash
-orchestrator-engine --project-root /path/to/project worker wait \
-  --task-id TASK-001
-```
-
-The command updates one colored line without AI calls, rings the terminal bell
-when supported and tells the user when to return to the chat. Add `--json` for
-one bounded machine-readable result with no live display. It stops with a red
-`ACTION` message instead of waiting forever when the supervisor is dead, its
-heartbeat is stale or terminal result state is unreadable.
-
-Optional concurrency, intent and recovery controls stay deterministic and
-local. Limits live in `workers.toml`; operator actions are explicit:
+Optional concurrency, availability, intent and recovery controls stay
+deterministic and local. Limits live in `workers.toml`; operator actions are
+explicit:
 
 ```bash
 orchestrator-engine --project-root /path/to/project worker queue tick
@@ -484,6 +423,7 @@ Additional documentation:
 - [Host setup](docs/hosts.md)
 - [Codex in-turn continuation](docs/codex-in-turn-continuation.md)
 - [Worker behavior policies](docs/worker-policies.md)
+- [Adopter upgrade checklist](docs/adopter-upgrade-checklist.md)
 - [Project integration and legacy adoption](docs/project-adoption.md)
 
 ## License

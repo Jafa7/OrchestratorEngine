@@ -13,6 +13,9 @@ Output policy:
   identify the failure.
 - Run the requested structural, focused or full level without silently
   broadening it. A structural docs/metadata request runs no test suite.
+- When `WORKER_TASK_INTENT.verification` is present, it is the authoritative
+  requested level. Report a current explicit-user conflict instead of choosing
+  a broader level from copied prompt text.
 - A full suite verifies a finished candidate; do not use it as the
   intermediate edit-feedback loop.
 - Run the requested suite once. Do not repeat a passing suite to produce a

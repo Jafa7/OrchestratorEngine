@@ -1,9 +1,10 @@
 # Setup guide
 
 Audience: an AI agent (or a human) that was asked to connect OrchestratorEngine
-to an existing project. Follow the steps in order. Every step ends with a
-check; do not continue past a failing check — fix it or report the blocker to
-the user.
+to an existing project. This is the canonical setup procedure; the README
+Quick start is only a preview. Follow the steps in order. Every step ends with
+a check; do not continue past a failing check — fix it or report the blocker
+to the user.
 
 ## What you are setting up
 
@@ -51,25 +52,28 @@ below runs inside WSL.
 
 ## Step 1 — Install the engine
 
+For a reproducible adopter install, use an immutable release tag:
+
+```bash
+python -m pip install \
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.5.0"
+```
+
+GitHub Release archives and wheel/sdist assets are published with the tag;
+OrchestratorEngine is not currently published to PyPI. A source checkout is
+appropriate for engine contributors or an explicitly requested unreleased
+test:
+
 ```bash
 git clone https://github.com/Jafa7/OrchestratorEngine.git
 cd OrchestratorEngine
 python -m pip install .
 ```
 
-Use `python -m pip install -e .` if the user wants to track engine updates
-from git. For development and schema conformance tests, install
-`python -m pip install -e '.[test]'`. The package has zero runtime dependencies.
-
-For a reproducible install outside a source checkout, install the release tag:
-
-```bash
-python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.4.1"
-```
-
-GitHub Release archives and wheel/sdist assets are published with the tag;
-OrchestratorEngine is not currently published to PyPI.
+Use `python -m pip install -e .` only when the user intentionally wants the
+adopter to track that checkout. For engine development and schema conformance
+tests, install `python -m pip install -e '.[test]'`. The package has zero
+runtime dependencies.
 
 **Check:**
 
@@ -83,7 +87,7 @@ everywhere below — but prefer a real install: the worker supervisor re-execute
 the module with the same interpreter and must be able to import it without a
 manually exported `PYTHONPATH`.
 
-## Step 1.5 — Adopt the project layout
+## Step 2 — Adopt the project layout
 
 Run the create-only scaffolder in the project being connected:
 
@@ -117,7 +121,7 @@ git -C /path/to/project status --short -- .orchestrator
 Expect warnings until binding, workers and the delivery channel are configured.
 The Git command must not show runtime artifacts that would enter public Git.
 
-## Step 2 — Bind the host chat
+## Step 3 — Bind the host chat
 
 Binding tells the watcher which host target owns a completion. Run from
 anywhere, against the target project root.
@@ -172,7 +176,7 @@ current binding into the task's `wake_target`, so completed work is routed to
 the host target that launched it even if another chat rebinds the same project
 later.
 
-## Step 3 — Configure workers
+## Step 4 — Configure workers
 
 Create `/path/to/project/.orchestrator/workers.toml` with only the CLIs that
 are actually installed. Start from
@@ -180,8 +184,10 @@ are actually installed. Start from
 fast/default/deep catalog, then enable only verified profiles. **Model, effort
 and permission behavior are encoded in `command` via each CLI's own flags** —
 the engine does not interpret provider flags. Free-form metadata such as
-`capability`, `permission_profile`, `cost` and `recommended_for` is preserved
-in evidence and helps the orchestrating agent choose a profile. Define several
+`capability`, `cost` and `recommended_for` is preserved in evidence and helps
+the orchestrating agent choose a profile. `permission_profile` is advisory
+while intent enforcement is off, but becomes a deterministic admission input
+in `permissions` or `strict` mode. Define several
 profiles per CLI so the agent can match worker cost and permissions to task
 complexity at dispatch time:
 
@@ -244,13 +250,14 @@ Ask the user which profiles they want (model tiers, effort levels, timeouts)
 instead of inventing them.
 
 `adopt` creates `policies/quality-efficient.md` next to `workers.toml`. Assign
-it explicitly to AI profiles with `policy = "quality-efficient"`. If adopting
-an existing layout or copying `examples/workers.toml`, also copy
-[`examples/policies/quality-efficient.md`](../examples/policies/quality-efficient.md)
-to `.orchestrator/policies/quality-efficient.md`. The policy is
-correctness-first: it reduces repeated reads, broad exploration, intermediate
-full suites and oversized handoffs, while requiring deeper investigation for
-high-risk or uncertain work.
+it explicitly to AI profiles with `policy = "quality-efficient"`. If an
+existing adopter already has that file, do not replace it blindly. Export the
+installed reference with `worker policy export --name quality-efficient
+--output /tmp/quality-efficient.md`, compare it with the local file, and merge
+accepted changes deliberately. The policy is correctness-first: it reduces
+repeated reads, broad exploration, intermediate full suites and oversized
+handoffs, while requiring deeper investigation for high-risk or uncertain
+work.
 See [worker behavior policies](worker-policies.md) before adding project- or
 role-specific overlays.
 
@@ -321,7 +328,7 @@ uses the existing `permission_profile`. Treat these values as project-owned
 assertions for deterministic profile selection, not provider capability
 detection.
 
-## Step 4 — Configure verification workers
+## Step 5 — Configure verification workers
 
 Adopt the [risk-based verification policy](verification-policy.md) before
 configuring suites. Each project should define structural, focused and full
@@ -392,6 +399,13 @@ command = ["python3", "scripts/orchestrator_check_runner.py",
            "--suite", "fast"]
 prompt_via = "stdin"
 timeout_seconds = 3600
+permission_profile = "restricted"
+
+[workers.check-fast.admission]
+roles = ["verification"]
+max_risk = "medium"
+verification = ["focused"]
+authorizations = { commit = false, push = false, network = false }
 
 [workers.check-full]
 enabled = true
@@ -399,6 +413,13 @@ command = ["python3", "scripts/orchestrator_check_runner.py",
            "--suite", "full"]
 prompt_via = "stdin"
 timeout_seconds = 14400
+permission_profile = "restricted"
+
+[workers.check-full.admission]
+roles = ["verification"]
+max_risk = "high"
+verification = ["full"]
+authorizations = { commit = false, push = false, network = false }
 ```
 
 The prompt content is ignored by the reference runner, but keeping
@@ -408,19 +429,16 @@ The prompt content is ignored by the reference runner, but keeping
 **Check:**
 
 ```bash
-orchestrator-engine --project-root /path/to/project worker run \
-  --worker check-fast --task-id CHECK-SMOKE-1 --prompt-file /tmp/smoke-prompt.md
-
-cat /path/to/project/.orchestrator/checks/*/verification-result.json
-orchestrator-engine --project-root /path/to/project checks --severity warning
+orchestrator-engine --project-root /path/to/project worker list
+orchestrator-engine --project-root /path/to/project worker diagnose \
+  --worker check-fast --severity warning
 ```
 
-If the verification result reports `"status": "passed"`, the receiving agent
-should read only `verification-result.json` and `summary.txt`. `checks`
-summarizes all check results, failed command log paths and missing artifacts in
-one compact JSON report. If a check reports `"failed"` or `"errored"`, read
-`summary.txt` first, then inspect only the failed command logs referenced by
-the JSON result.
+Confirm the configured check profile has no warning or error diagnostic. Exit
+code `2` means the requested warning threshold found a diagnostic that must be
+reviewed before continuing. Its execution is tested in Step 7, after the
+delivery channel is ready, so its terminal signal does not sit pending during
+setup.
 
 Do not assign a model to merely wait for the suite. The check profile should
 run the deterministic project runner directly. For a passing suite no AI
@@ -435,7 +453,7 @@ running checks, keep compact summaries first, use durable artifact paths
 instead of full logs, and include tiny excerpts only when needed to identify a
 failure.
 
-## Step 5 — Start the delivery channel
+## Step 6 — Start the delivery channel
 
 ### Host vscode — push watcher service
 
@@ -487,7 +505,7 @@ Expect `"status": "fresh"` while the stream is armed and scanning. Run
 `watcher stream` with a pre-existing unseen signal (or after the smoke test
 below) and confirm it prints one line per signal.
 
-## Step 6 — End-to-end smoke test
+## Step 7 — End-to-end smoke test
 
 Add a throwaway worker to `workers.toml`:
 
@@ -496,19 +514,73 @@ Add a throwaway worker to `workers.toml`:
 enabled = true
 command = ["/bin/sh", "-c", "cat; echo smoke-done"]
 prompt_via = "stdin"
+permission_profile = "restricted"
+
+[workers.smoke.admission]
+roles = ["implementation"]
+max_risk = "low"
+verification = ["structural"]
+authorizations = { commit = false, push = false, network = false }
 ```
 
 Dispatch and verify:
 
 ```bash
 echo "smoke task" > /tmp/smoke-prompt.md
+cat > /tmp/smoke-intent.json <<'JSON'
+{
+  "role": "implementation",
+  "risk": "low",
+  "verification": "structural",
+  "permissions": "restricted",
+  "authorizations": {
+    "commit": false,
+    "push": false,
+    "network": false
+  }
+}
+JSON
 orchestrator-engine --project-root /path/to/project worker run \
-  --worker smoke --task-id SMOKE-1 --prompt-file /tmp/smoke-prompt.md
+  --worker smoke --task-id SMOKE-1 --prompt-file /tmp/smoke-prompt.md \
+  --intent-file /tmp/smoke-intent.json
 
-# within a few seconds:
+orchestrator-engine --project-root /path/to/project worker wait \
+  --task-id SMOKE-1
 cat /path/to/project/.orchestrator/tasks/SMOKE-1/result.json   # terminal_status: completed
 orchestrator-engine --project-root /path/to/project inbox      # contains SMOKE-1
 ```
+
+If Step 5 configured `check-fast`, exercise it now through the same channel:
+
+```bash
+printf '%s\n' 'Run the configured focused verification.' \
+  > /tmp/check-smoke-prompt.md
+cat > /tmp/check-smoke-intent.json <<'JSON'
+{
+  "role": "verification",
+  "risk": "low",
+  "verification": "focused",
+  "permissions": "restricted",
+  "authorizations": {
+    "commit": false,
+    "push": false,
+    "network": false
+  }
+}
+JSON
+orchestrator-engine --project-root /path/to/project worker run \
+  --worker check-fast --task-id CHECK-SMOKE-1 \
+  --prompt-file /tmp/check-smoke-prompt.md \
+  --intent-file /tmp/check-smoke-intent.json
+orchestrator-engine --project-root /path/to/project worker wait \
+  --task-id CHECK-SMOKE-1
+orchestrator-engine --project-root /path/to/project checks --severity warning
+```
+
+If the verification result reports `"status": "passed"`, the receiving agent
+should read only `verification-result.json` and `summary.txt`. If it reports
+`"failed"` or `"errored"`, read `summary.txt` first, then inspect only the
+failed command logs referenced by the JSON result.
 
 Then confirm the correct delivery behavior:
 
@@ -523,7 +595,7 @@ Then confirm the correct delivery behavior:
 Afterwards remove the `smoke` worker entry. Do not delete
 `.orchestrator/events/` or `inbox/signals/` — they are the audit trail.
 
-## Step 7 — Teach the orchestrating chat
+## Step 8 — Teach the orchestrating chat
 
 Add this to the adopted project's agent instructions file (`AGENTS.md`,
 `CLAUDE.md`, or `.github/copilot-instructions.md` — whichever the host reads):
@@ -542,10 +614,15 @@ To delegate a task to a CLI worker:
 2. Pick the profile matching the task: cheap/fast profiles for trivial checks
    and mechanical edits, deep/high-effort profiles for reviews, refactors and
    hard bugs. The user can override your choice in chat.
-3. Write the full task prompt to a file (e.g. `.orchestrator/prompts/<task-id>.md`).
-4. Dispatch: `orchestrator-engine --project-root <root> worker run \
-   --worker <profile> --task-id <TASK-ID> --prompt-file <file>`
-5. Do not perform AI polling. When ending a Codex turn, show the user this
+3. Classify verification as `structural`, `focused` or `full`, then write a
+   bounded `WORKER_TASK_INTENT` JSON file. Its `verification` value is the
+   authoritative breadth; generic or copied task text cannot broaden it. A
+   current explicit user conflict requires corrected intent before dispatch.
+4. Write the full task prompt to a file (e.g. `.orchestrator/prompts/<task-id>.md`).
+5. Dispatch: `orchestrator-engine --project-root <root> worker run \
+   --worker <profile> --task-id <TASK-ID> --prompt-file <file> \
+   --intent-file <intent-json>`
+6. Do not perform AI polling. When ending a Codex turn, show the user this
    command before the handoff:
 
    ```bash
@@ -600,8 +677,8 @@ hosts, or by ending the armed stream command for Claude).
 
 | Symptom | Cause / fix |
 |---|---|
-| `no binding found` on watcher start | Run Step 2; `callback` requires `binding.json`. |
-| `host claude does not support callback wakeups` | Correct — use `watcher stream` (Step 5, claude). |
+| `no binding found` on watcher start | Run Step 3; `callback` requires `binding.json`. |
+| `host claude does not support callback wakeups` | Correct — use `watcher stream` (Step 6, claude). |
 | Codex receipt stuck on `deferred` with a usage-limit message | Codex quota exhausted. Read event/result/evidence manually, then run `orchestrator-engine --project-root <root> watcher --host codex acknowledge --event-id <event-id> --reason "read manually"` or `watcher --host codex deferred retry --event-id <event-id> --reason "quota reset"` after quota resets. |
 | `watcher service status` shows `deferred_manual_required` | The watcher stopped retrying a callback that needs operator action. Run `watcher --host <host> deferred list`, inspect event/result/evidence, then `watcher --host <host> deferred retry --event-id ... --reason "..."` or `watcher --host <host> acknowledge --event-id ... --reason "..."`. |
 | Bare `watcher service status` disagrees with `doctor` | Host-scoped callback services use host-specific state files. Run `watcher --host <host> service status` for the active callback channel shown by `bind --status` or `doctor`. |
