@@ -73,7 +73,7 @@ Recommended labels:
 
 - report class: `runtime-report`, `integration-finding` or `core-bug`;
 - lifecycle: `triage`;
-- adopter project: `project:documentationengine`, `project:paradigmarium`;
+- adopter project: `project:example-project`;
 - source host: `source:codex`, `source:claude`, `source:vscode`.
 
 ## Read Reports
@@ -82,7 +82,7 @@ The OrchestratorEngine owner can list reports with:
 
 ```bash
 gh issue list --repo Jafa7/OrchestratorEngine --label triage
-gh issue list --repo Jafa7/OrchestratorEngine --label project:documentationengine
+gh issue list --repo Jafa7/OrchestratorEngine --label project:example-project
 gh issue view ISSUE_NUMBER --repo Jafa7/OrchestratorEngine
 ```
 

@@ -56,7 +56,7 @@ For a reproducible adopter install, use an immutable release tag:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.5.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.5.1"
 ```
 
 GitHub Release archives and wheel/sdist assets are published with the tag;
@@ -646,6 +646,19 @@ To delegate a task to a CLI worker:
    or poll repeatedly. See [Codex in-turn continuation](codex-in-turn-continuation.md).
    For parallel workers, repeat `--task-id` and use `--mode all` to wait for the
    full set or `--mode any` to return on the first terminal result.
+
+## Adopter-neutral public content
+
+Keep public product documentation, contracts, fixtures and examples
+adopter-neutral by default. Use synthetic project names, identifiers, paths
+and scenarios. Do not publish private adopter prompts, logs, documents,
+planning, roadmap content or runtime state, and do not present one adopter's
+workflow as a universal product rule.
+
+Use a real project name or project-specific behavior only when the user
+explicitly authorizes publication and the document is clearly labeled as an
+integration guide, compatibility profile or case study. Keep the generic
+contract in a separate canonical document.
 
 If setup or runtime diagnostics still look wrong, create a structured report
 for OrchestratorEngine instead of pasting full logs:

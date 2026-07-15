@@ -94,7 +94,7 @@ Install an immutable release, scaffold the project and bind the host chat:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.5.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.5.1"
 orchestrator-engine --project-root /path/to/project adopt --host HOST
 orchestrator-engine --project-root /path/to/project bind --host HOST
 ```
@@ -418,6 +418,7 @@ worker supervisor and stream watcher without `PYTHONPATH`.
 
 Additional documentation:
 
+- [Contributing and adopter-neutral public content](CONTRIBUTING.md)
 - [Setup guide (start here)](docs/setup-guide.md)
 - [Contracts](docs/contracts.md)
 - [Host setup](docs/hosts.md)

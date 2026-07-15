@@ -5,13 +5,17 @@ These instructions apply to every AI client working in this repository.
 ## Scope
 
 This repository provides a portable local orchestration layer for AI workers.
-Keep product-specific policy out of the core package. Paradigmarium,
-DocumentationEngine, Codex, Claude, Copilot and future clients must connect
-through explicit adapters and documented contracts.
+Keep adopter- and provider-specific policy out of the core package. Projects,
+hosts and worker providers must connect through explicit adapters and
+documented contracts.
 
 ## Working rules
 
-- Do not copy private planning documents from another project into this repo.
+- Keep public contracts, documentation, fixtures and examples adopter-neutral.
+  Use synthetic project names, identifiers, paths and scenarios unless the user
+  explicitly requests a clearly labeled integration guide, compatibility
+  profile or case study. Never copy private adopter material into this
+  repository. See `CONTRIBUTING.md` for the canonical public-content policy.
 - Public documentation and code comments must be written in English.
 - Preserve existing user changes.
 - Do not commit, push, merge, rebase or perform destructive Git operations

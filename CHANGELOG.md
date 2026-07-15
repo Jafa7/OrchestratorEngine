@@ -4,6 +4,18 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-15
+
+### Documentation
+
+- Added a canonical contributor policy for adopter-neutral public contracts,
+  fixtures, examples and documentation, with explicit boundaries for approved
+  integration guides, compatibility profiles and case studies.
+- Added a portable agent-instruction rule and upgrade audit so adopting
+  projects can apply the same privacy-safe synthetic-example policy.
+- Replaced remaining adopter-specific reporting examples with synthetic
+  project labels and included `CONTRIBUTING.md` in source distributions.
+
 ## [0.5.0] - 2026-07-13
 
 ### Added

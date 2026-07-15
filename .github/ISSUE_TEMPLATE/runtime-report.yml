@@ -35,7 +35,7 @@ body:
     attributes:
       label: Recommended labels
       description: Add these labels if available.
-      placeholder: "project:documentationengine, source:codex"
+      placeholder: "project:example-project, source:codex"
     validations:
       required: false
   - type: textarea

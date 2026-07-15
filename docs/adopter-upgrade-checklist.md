@@ -89,6 +89,12 @@ Generic or copied task text cannot broaden it. If a current explicit user
 request conflicts with the intent, stop and dispatch a corrected intent; do
 not silently choose either instruction.
 
+Also audit future-facing public documentation, fixtures and examples for
+adopter neutrality. Use synthetic names, identifiers, paths and scenarios by
+default. Real adopter details require explicit publication authorization and a
+clearly labeled integration guide, compatibility profile or case study. Do not
+rewrite historical durable artifacts during this audit.
+
 ## 5. Smoke the new dispatch contract
 
 Bind the current host chat, then dispatch one harmless bounded task with
@@ -115,8 +121,9 @@ Preserve durable .orchestrator events/tasks/results/evidence and all local
 policy customizations. Run doctor, worker diagnose and upgrade check; compare
 the bundled quality-efficient policy through worker policy export. Audit only
 future-facing agent instructions and reusable prompt templates for stale
-unconditional verification commands. Dispatch one harmless task with an
-explicit intent.verification and inspect its effective prompt/evidence.
+unconditional verification commands and public-content rules that expose or
+universalize one adopter's private workflow. Dispatch one harmless task with
+an explicit intent.verification and inspect its effective prompt/evidence.
 Report compact findings and exact commands. Do not commit or push unless the
 user explicitly authorizes it.
 ```
