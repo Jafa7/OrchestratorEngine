@@ -85,14 +85,16 @@ values, path layout or terminal status names require a schema/version bump.
 `schema_version`, `kind`, `host_count` and a stable `hosts` array. Every host
 item has `host`, `delivery_mode` and `live_refresh_support`. Current values
 are `session_stream` / `supported` for Claude, `ui_injection` /
-`best_effort` for VS Code, and `headless_app_server_turn` / `unsupported` for
-Codex Desktop. The latter means a `woken` Codex receipt confirms that a
-headless App Server turn completed; it never asserts that an already-open
-Desktop chat refreshed or received a live wakeup. Receipt fields use the same
-precise enums. `ui_injection` is a stable v0.1 protocol identifier for invoking
-the documented VS Code CLI, not a claim that host security is bypassed. The
-`woken` status is likewise retained for v0.1 compatibility and means completed
-headless history delivery when `host` is `codex`.
+`best_effort` for VS Code, and `session_queue` / `supported` for Codex Desktop.
+Codex declares `requirement: "codex queue"` plus a
+`headless_app_server_turn` / `unsupported` fallback. A queue receipt uses
+`status: "queued"` and records the CLI acknowledgement as `queue_message_id`;
+it confirms acceptance into the live session queue, not completion of the
+subsequent agent turn. Receipt fields use the actual selected delivery mode.
+`ui_injection` is a stable v0.1 protocol identifier for invoking the documented
+VS Code CLI, not a claim that host security is bypassed. The legacy `woken`
+status means completed headless history delivery when the Codex receipt has
+`delivery_mode: "headless_app_server_turn"`.
 
 ## Operator diagnostics
 
@@ -294,9 +296,9 @@ stored on the Windows side.
 
 Each delivery channel only consumes signals for hosts it can handle:
 
-- `watcher --action callback` can submit Codex history turns and handles VS
-  Code chat CLI delivery. Among callback adapters, only VS Code attempts live
-  UI delivery, and that support is `best_effort`.
+- `watcher --action callback` handles Codex live session queue delivery and VS
+  Code chat CLI delivery. Codex falls back to a durable headless history turn
+  when its configured launcher lacks the queue command.
 - `watcher stream` handles `claude` wake targets.
 
 Signals for other hosts are skipped without being marked seen, so a callback
@@ -408,8 +410,9 @@ resolved silently by the worker.
 
 ### Blocking worker wait
 
-`worker wait --task-id TASK-ID` is the human-facing fallback for hosts that
-cannot refresh an already-open chat. It reads only the task descriptor and
+`worker wait --task-id TASK-ID` is the human-facing terminal fallback when a
+live channel is unavailable or the host intentionally stays active. It reads
+only the task descriptor and
 terminal result, refreshes one compact TTY line, and exits when the task is
 terminal. Repeat `--task-id` to wait for a bounded set of up to 64 unique
 tasks. `--mode all` (the default) returns when every task is terminal;
@@ -618,9 +621,9 @@ a verification worker with `worker run`, then ends the current turn without
 polling. The worker terminal event carries the task's `wake_target`, so the
 result is routed through the channel selected by the dispatching host. Claude
 supports live stream wakeup, VS Code attempts best-effort UI delivery, and
-Codex Desktop requires durable history and manual review. This keeps long test
-suites from spending host-chat tokens while they are only waiting for local
-processes.
+current Codex CLIs queue the completion to the live Desktop task. This keeps
+long test suites from spending host-chat tokens while they are only waiting for
+local processes.
 
 Recommended path layout:
 
@@ -1191,6 +1194,16 @@ attempts, while recognized quota/usage-limit failures become
 signal file degrades to an entry in `action_errors` — it never takes the
 watcher down.
 
+An ambiguous Codex queue result (timeout, nonzero exit, or successful exit
+without the expected acknowledgement) becomes `deferred_manual_required`
+immediately.
+The queue may already contain the message, so automatic retry would risk a
+duplicate live turn. The adapter writes `status: "delivery_claimed"` before
+launching the queue process. If the watcher stops between launch and receipt
+finalization, that durable claim also becomes manual-required on the next
+scan. An explicit `deferred retry` releases the claim after the operator checks
+the target task.
+
 Deferred callback state is kept in `watcher-state.json` under
 `deferred_events`:
 
@@ -1260,7 +1273,7 @@ modified within the recent-activity grace window (30 seconds by default), the
 receipt is written as `deferred` (`reason: "thread_active"` or
 `"thread_recently_active"`) and the event remains retryable. This prevents a
 worker that finishes while the orchestrating turn is still running from
-creating a parallel headless turn for the same thread. The tradeoff is a short
+  creating a parallel headless turn for the same thread. The tradeoff is a short
 delivery delay when a worker finishes immediately after the user's turn writes
 to the rollout. Once a headless turn is started, it is watched for a short
 failure window (2 minutes): failures inside the window are classified by the
@@ -1273,19 +1286,18 @@ then updates the receipt (`turn_status`, `finalized_at`, optional
 `turn_error`). A turn the user interrupts is recorded as `interrupted` with
 `turn_status: "interrupted"` and is not retried.
 
-For Codex Desktop on Windows, receipt `status: "woken"` means the headless
-Codex App Server turn completed and was written to Codex thread storage. A
-still-running turn is `status: "submitted"`; it has not completed yet. Neither
-status proves that the already-open Desktop UI agent woke in the same live
-session. The receipt also records the desktop deep-link activation
-outcome (`activation: "requested"` or `"failed"`). Codex Desktop UI refresh is
-separate from history delivery: on Windows the adapter first asks the desktop
-app to open the thread, then sends a best-effort refresh pulse for
-already-loaded threads. Receipts record that attempt with `live_refresh` and
-`live_refresh_strategy`; failure to refresh the visible UI does not erase the
-delivered turn from Codex thread storage. Use Claude stream when supported live
-wakeup is required; VS Code chat remains a best-effort UI path, and Codex
-remains a normal CLI worker through `codex exec`.
+For a Codex CLI exposing `codex queue`, the watcher sends the deterministic
+wakeup to the snapshotted target thread through the shared live session daemon.
+The active host serializes it behind any current turn. Receipt
+`status: "queued"` means only that the CLI returned a matching message/thread
+acknowledgement. The receipt also records best-effort desktop deep-link focus;
+focus failure does not invalidate queue acceptance.
+
+If the capability probe does not find `codex queue --thread` and `--message`,
+the adapter uses the legacy headless App Server path described above. Its
+`woken` and `submitted` meanings remain unchanged, and its receipt explicitly
+uses `delivery_mode: "headless_app_server_turn"` and
+`live_refresh_support: "unsupported"`.
 
 Long-running headless turns do not starve health reporting: the watch loop
 keeps the heartbeat fresh from a background ticker while a scan is busy.

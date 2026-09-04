@@ -23,7 +23,17 @@ class HostCapabilityTests(unittest.TestCase):
                 host_capabilities.LIVE_REFRESH_SUPPORT,
             )
 
-    def test_codex_receipt_capability_does_not_claim_desktop_live_refresh(self) -> None:
+    def test_codex_capability_prefers_live_queue_and_declares_fallback(self) -> None:
         receipt = host_capabilities.receipt_fields("codex")
-        self.assertEqual(receipt["delivery_mode"], "headless_app_server_turn")
-        self.assertEqual(receipt["live_refresh_support"], "unsupported")
+        self.assertEqual(receipt["delivery_mode"], "session_queue")
+        self.assertEqual(receipt["live_refresh_support"], "supported")
+        self.assertEqual(receipt["requirement"], "codex queue")
+        self.assertEqual(
+            receipt["fallback_delivery_mode"], "headless_app_server_turn"
+        )
+
+        fallback = host_capabilities.receipt_fields(
+            "codex", delivery_mode="headless_app_server_turn"
+        )
+        self.assertEqual(fallback["delivery_mode"], "headless_app_server_turn")
+        self.assertEqual(fallback["live_refresh_support"], "unsupported")

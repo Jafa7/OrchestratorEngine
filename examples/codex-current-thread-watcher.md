@@ -1,12 +1,23 @@
-# Codex headless history delivery example
+# Codex live task delivery example
 
-> Legacy invocation retained for compatibility. New setups should use durable
-> inbox history and manual acknowledgement as documented in
-> [docs/setup-guide.md](../docs/setup-guide.md).
+Current Codex Desktop releases expose a session queue on the local CLI. Confirm
+the capability, bind from the task that should receive completions, and start a
+host-scoped watcher:
 
-This example submits a follow-up turn through a headless Codex App Server when
-a worker writes a terminal event. It can write the turn to thread history, but
-it does not reliably refresh or wake an already-open Codex Desktop chat.
+```bash
+codex queue --help
+orchestrator-engine --project-root /path/to/project bind --host codex
+orchestrator-engine --project-root /path/to/project watcher \
+  --host codex --action callback service start --interval-seconds 5
+```
+
+The queue serializes a completion message behind any active turn in the target
+task. Older CLIs automatically use the durable headless App Server fallback.
+
+## Legacy explicit target
+
+The historical current-thread action remains available when an operator needs
+to select the target id directly:
 
 ```bash
 orchestrator-engine --project-root /path/to/project watcher \
@@ -28,5 +39,6 @@ orchestrator-engine --project-root /path/to/project emit \
 Check watcher health:
 
 ```bash
-orchestrator-engine --project-root /path/to/project watcher service status
+orchestrator-engine --project-root /path/to/project watcher \
+  --host codex service status
 ```

@@ -11,7 +11,7 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release is `0.5.1` and the durable JSON contract schema version is
+The current release is `0.6.0` and the durable JSON contract schema version is
 `1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
@@ -19,7 +19,7 @@ PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.5.1"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.6.0"
 ```
 
 ## Schema Compatibility
@@ -105,6 +105,24 @@ To require a positive adopter-owned availability probe, configure
 of `WORKER_TASK_INTENT`, configure `intent_enforcement = "strict"` and add a
 `[workers.NAME.admission]` block. Do not set `enforce_intent` and
 `intent_enforcement` together.
+
+## Codex live session queue after v0.5.1
+
+Version 0.6.0 prefers `codex queue` for Codex Desktop callback delivery. After
+upgrading the engine and Codex CLI:
+
+1. Confirm `codex queue --help` exposes `--thread` and `--message`.
+2. Optionally run `bind --host codex` again if the Desktop launcher path
+   changed. The watcher can resolve a stale managed path automatically, while
+   rebinding refreshes the stored default for future task snapshots.
+3. Start or restart the host-scoped Codex callback service.
+4. Dispatch a harmless smoke task and confirm its receipt has
+   `status: "queued"`, `delivery_mode: "session_queue"` and
+   `queue_message_id`.
+
+Older Codex CLIs remain compatible through the durable headless App Server
+fallback. No state migration or deletion is required. Existing receipts keep
+their original semantics.
 
 ## Handoffs and completed-task acknowledgements after v0.3.1
 

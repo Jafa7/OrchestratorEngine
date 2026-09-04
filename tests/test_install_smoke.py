@@ -50,6 +50,7 @@ class InstallSmokeTests(unittest.TestCase):
                 timeout=30,
                 env=env,
             ).stdout.strip()
+            host_capabilities = self.run_cli(cli, project, "host-capabilities")
 
             adoption = self.run_cli(cli, project, "adopt", "--host", "claude")
 
@@ -419,6 +420,13 @@ class InstallSmokeTests(unittest.TestCase):
             exported_policy_exists = exported_policy.is_file()
         self.assertEqual(bind["host"], "claude")
         self.assertEqual(version, f"orchestrator-engine {PROJECT_VERSION}")
+        codex_capability = next(
+            item
+            for item in host_capabilities["hosts"]
+            if item["host"] == "codex"
+        )
+        self.assertEqual(codex_capability["delivery_mode"], "session_queue")
+        self.assertEqual(codex_capability["requirement"], "codex queue")
         self.assertEqual(adoption["kind"], "ORCHESTRATOR_ADOPTION")
         self.assertTrue(policy_exists)
         self.assertTrue(workers["workers"]["smoke"]["enabled"])

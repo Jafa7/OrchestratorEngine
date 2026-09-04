@@ -59,11 +59,12 @@ Run this from the Codex chat that owns future dispatches and verify the detected
 target. Use `--thread-id THREAD_ID` only as a fallback when auto-detection is
 unavailable or when binding a different chat explicitly.
 
-For Codex, use durable history and explicit manual acknowledgement instead of
-starting a callback watcher for live refresh. See [hosts.md](hosts.md) for
-Claude and VS Code hosts. The legacy invocation
+For Codex, confirm `codex queue --help` and start the host-scoped callback
+service. The watcher then queues the bounded follow-up to the snapshotted live
+task. See [hosts.md](hosts.md) for all host commands and the durable headless
+fallback used by older Codex CLIs. The legacy invocation
 `--action current-thread-callback --target-thread-id THREAD_ID` remains
-supported for headless history delivery only.
+supported for explicit compatibility workflows.
 
 For engine-version upgrades and watcher-state migration, see
 [upgrade-guide.md](upgrade-guide.md).

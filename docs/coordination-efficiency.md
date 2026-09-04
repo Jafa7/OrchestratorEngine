@@ -81,9 +81,9 @@ The generated JSON is the machine-readable result behind the checked-in SVG.
 
 | Scenario | Naive polling | Status reads | Context share | Reduction |
 | --- | ---: | ---: | ---: | ---: |
-| Long test | 655,360 B | 14,877 B | 2.27% | 97.73% |
-| AI worker | 2,621,440 B | 14,879 B | 0.57% | 99.43% |
-| Parallel workers | 3,932,160 B | 17,466 B | 0.44% | 99.56% |
+| Long test | 655,360 B | 13,984 B | 2.13% | 97.87% |
+| AI worker | 2,621,440 B | 13,986 B | 0.53% | 99.47% |
+| Parallel workers | 3,932,160 B | 16,573 B | 0.42% | 99.58% |
 
 Every scenario passed the selective-inspection quality guard. The smaller
 status reads come from carrying task state, diagnostics, sizes and artifact
@@ -91,17 +91,16 @@ paths instead of repeatedly embedding cumulative log bodies.
 
 ## Codex Desktop interpretation
 
-Codex Desktop on Windows does not currently provide reliable live wakeup for
-an already-open chat. This benchmark measures the useful optimization that
-remains when an agent does check state: each check can read a bounded status
-report instead of cumulative logs. The preferred manual fallback is now
-`worker wait`: it performs those filesystem checks outside the model, updates
-one terminal line and tells the user when to return to the chat.
+Current Codex Desktop releases expose `codex queue`, so a detached watcher can
+submit the completion to the live task without model polling. This benchmark
+still measures a separate optimization: every explicit state check reads a
+bounded status report instead of cumulative logs.
 
-The graph does not claim that `worker wait` creates Codex live wakeup. It
-eliminates intermediate model calls while the user still returns to the chat
-manually. Claude's live stream also avoids that manual return step, but that
-additional benefit is outside this four-check comparison.
+`worker wait` remains useful when the host task intentionally stays active or
+when the installed Codex CLI lacks the queue command. It moves filesystem
+checks outside the model, updates one terminal line and tells the user when the
+worker finishes. Live wakeup reduces manual coordination but does not change
+the measured byte ratios in this benchmark.
 
 ## Limitations
 

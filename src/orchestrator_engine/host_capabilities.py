@@ -8,7 +8,12 @@ from . import core
 
 KIND = "ORCHESTRATOR_HOST_CAPABILITIES"
 DELIVERY_MODES = frozenset(
-    {"session_stream", "ui_injection", "headless_app_server_turn"}
+    {
+        "session_stream",
+        "session_queue",
+        "ui_injection",
+        "headless_app_server_turn",
+    }
 )
 LIVE_REFRESH_SUPPORT = frozenset({"supported", "best_effort", "unsupported"})
 
@@ -22,8 +27,11 @@ _CAPABILITIES: dict[str, dict[str, Any]] = {
         "live_refresh_support": "best_effort",
     },
     "codex": {
-        "delivery_mode": "headless_app_server_turn",
-        "live_refresh_support": "unsupported",
+        "delivery_mode": "session_queue",
+        "live_refresh_support": "supported",
+        "requirement": "codex queue",
+        "fallback_delivery_mode": "headless_app_server_turn",
+        "fallback_live_refresh_support": "unsupported",
     },
 }
 
@@ -35,10 +43,22 @@ def for_host(host: str) -> dict[str, Any]:
         raise ValueError(f"unsupported host: {host}") from error
 
 
-def receipt_fields(host: str) -> dict[str, Any]:
+def receipt_fields(
+    host: str,
+    *,
+    delivery_mode: str | None = None,
+) -> dict[str, Any]:
     result = for_host(host)
     result.pop("host")
-    return result
+    if delivery_mode is None or delivery_mode == result["delivery_mode"]:
+        return result
+    fallback_mode = result.get("fallback_delivery_mode")
+    if delivery_mode != fallback_mode:
+        raise ValueError(f"unsupported {host} delivery mode: {delivery_mode}")
+    return {
+        "delivery_mode": fallback_mode,
+        "live_refresh_support": result["fallback_live_refresh_support"],
+    }
 
 
 def all_hosts() -> dict[str, Any]:

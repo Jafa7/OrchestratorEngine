@@ -1,17 +1,18 @@
 # Codex in-turn continuation
 
-Codex Desktop does not currently expose the app server of an already-open
-task to an external OrchestratorEngine watcher. A headless callback can write
-durable history, but it cannot reliably continue the visible agent.
+Current Codex Desktop releases expose `codex queue`, allowing an external
+OrchestratorEngine watcher to submit a message to the shared live task. This
+document covers the complementary case where the original agent turn remains
+active and should block directly on deterministic worker state.
 
 Codex App can still continue automatically while the original agent turn
 remains active. The host agent dispatches a detached CLI worker, waits through
 a blocking tool call, and resumes when that call returns. This is **in-turn
-continuation**, not detached live wakeup.
+continuation**, not detached queue delivery.
 
 ## Verified behavior
 
-Two local smoke tests established the current boundary:
+Earlier local smoke tests established the pre-queue boundary:
 
 1. A low-cost child agent blocked on `worker wait` after the parent turn ended.
    Codex displayed the child completion notification, but did not start a new
@@ -23,8 +24,9 @@ Two local smoke tests established the current boundary:
    message.
 
 Both tests used one deterministic filesystem wait, not repeated model status
-prompts. The second test proves automatic same-turn continuation. It does not
-prove that a completed turn can be woken externally.
+prompts. A later external `codex queue` smoke established detached live
+delivery: after the original turn ended, an external CLI process queued a
+message and the same Desktop task resumed without a manual user message.
 
 ## Selection order
 
@@ -35,9 +37,9 @@ Use the least expensive mechanism that preserves the required interaction:
 | A script can do the whole job | Run the script directly | None | Do not dispatch an AI worker |
 | Predictable wait fits one host tool call | Parent calls `worker wait --json` directly | None | Cheapest automatic continuation; parent task stays active |
 | Direct tool wait is too short, but native child waiting is available and bounded | Low-cost relay blocks on `worker wait`; parent blocks once on native agent wait | One extra low-cost child invocation; no status-prompt loop | Parent task stays active; host-specific |
-| Host provides real detached wakeup | End turn and use the host delivery channel | None until wakeup | Preferred for long work; currently supported by Claude stream |
+| Host provides real detached wakeup | End turn and use the host delivery channel | None until wakeup | Preferred for long work; supported by Codex session queue and Claude stream |
 | Duration is unknown, exceeds host wait limits, or the chat must remain usable | End turn and show terminal `worker wait` | None | User returns to Codex after terminal completion |
-| Audit/history delivery is sufficient | Headless Codex callback | A separate headless follow-up turn | Durable, but not live Desktop continuation |
+| Installed Codex CLI lacks `queue` | Headless Codex callback fallback | A separate headless follow-up turn | Durable, but not live Desktop continuation |
 
 Do not select a relay merely because a child model is cheaper. A direct
 deterministic wait avoids the child invocation entirely and is therefore the

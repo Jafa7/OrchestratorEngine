@@ -4,6 +4,33 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-05
+
+### Added
+
+- Codex Desktop live task delivery through the local `codex queue` command,
+  using each task's dispatch-time target snapshot and a bounded deterministic
+  wakeup message.
+- Queue receipts record `status: "queued"`, the acknowledged message id and
+  the actual delivery capability without claiming that the agent turn already
+  completed.
+
+### Changed
+
+- Codex callback services prefer the shared live session queue and retain the
+  headless App Server turn as an automatic compatibility fallback for older
+  CLIs.
+- Host capabilities and setup documentation distinguish live queue acceptance,
+  headless history completion and optional window focus.
+
+### Fixed
+
+- Ambiguous queue outcomes require manual review immediately instead of blind
+  automatic retry, preventing duplicate live wakeup messages when acceptance
+  cannot be proven.
+- Codex callbacks recover from stale versioned Windows launcher paths after a
+  Desktop app update while preserving the original task wake-target snapshot.
+
 ## [0.5.1] - 2026-07-15
 
 ### Documentation

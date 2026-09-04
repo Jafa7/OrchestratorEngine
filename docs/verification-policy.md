@@ -92,9 +92,10 @@ worker may inspect only the failed-command logs and return a short triage
 handoff. The host agent remains responsible for validating that diagnosis and
 deciding the fix; worker output is evidence, not authority.
 
-This saves coordination context even on Codex Desktop, where live wakeup is
-not currently reliable. If the chat turn ends, show the user `worker wait
---task-id TASK-ID`; its compact terminal refresh performs no model calls.
+This saves coordination context independently of the host wake mechanism. If
+the Codex chat turn ends, a current CLI can deliver completion through
+`codex queue`; `worker wait --task-id TASK-ID` remains the deterministic
+terminal fallback and performs no model calls.
 For bounded work, the parent may instead block directly on `worker wait --json`.
 Do not assign a relay subagent merely to run a test suite: a relay is only a
 host-control bridge when native agent waiting is required, while the detached

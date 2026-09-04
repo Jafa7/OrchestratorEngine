@@ -56,7 +56,7 @@ For a reproducible adopter install, use an immutable release tag:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.5.1"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.6.0"
 ```
 
 GitHub Release archives and wheel/sdist assets are published with the tag;
@@ -473,13 +473,39 @@ Expect `"status": "running"` and `"heartbeat_healthy": true` (heartbeat may
 take one interval to appear). Host-scoped callback services use separate
 state/service/heartbeat files and can coexist with Claude stream watches.
 
-### Host codex — history-only manual review
+### Host codex — live session queue
 
-Do **not** start a Codex callback watcher for live refresh. A completed headless
-App Server receipt is durable history, not proof that the open Desktop chat
-refreshed. Use `inbox` to locate the event/result/evidence artifacts, review
-them manually, then acknowledge the signal with `watcher --host codex
-acknowledge --event-id EVENT_ID --reason "..."`.
+First confirm that the Codex launcher selected by the binding exposes the live
+queue command:
+
+```bash
+codex queue --help
+```
+
+The help must include `--thread` and `--message`. In WSL, `bind --host codex`
+normally records the Windows `codex.exe` that owns the Desktop task. The
+watcher automatically resolves the current managed executable after Desktop
+updates; re-running bind is still useful to refresh the stored default.
+
+Start the host-scoped callback watcher:
+
+```bash
+orchestrator-engine --project-root /path/to/project watcher \
+  --host codex --action callback service start --interval-seconds 5
+```
+
+**Check:**
+
+```bash
+orchestrator-engine --project-root /path/to/project watcher \
+  --host codex service status
+```
+
+Expect `"status": "running"` and `"heartbeat_healthy": true`. A successful
+delivery receipt has `status: "queued"`, `delivery_mode: "session_queue"` and
+`queue_message_id`. It proves daemon acceptance, not completion of the queued
+agent turn. Older Codex CLIs fall back to durable headless history delivery;
+upgrade the CLI for live delivery.
 
 ### Host claude — stream watch, no service
 
@@ -584,10 +610,10 @@ failed command logs referenced by the JSON result.
 
 Then confirm the correct delivery behavior:
 
-- **codex** — review the durable inbox/event/result/evidence history manually.
-  If an explicitly configured history callback produces a `"status": "woken"`
-  receipt, it confirms only that its headless App Server turn completed; it
-  does not prove the visible Desktop chat refreshed.
+- **codex** — the bound Desktop task receives the queued follow-up after its
+  current turn ends. Confirm a `"status": "queued"` receipt and matching
+  `queue_message_id`. A `headless_app_server_turn` receipt identifies the
+  compatibility fallback and may require manual history review.
 - **vscode** — the chat view of the last active window receives the follow-up
   message; same receipt file.
 - **claude** — the armed stream prints the signal line and the chat wakes.
@@ -694,13 +720,14 @@ hosts, or by ending the armed stream command for Claude).
 | `host claude does not support callback wakeups` | Correct — use `watcher stream` (Step 6, claude). |
 | Codex receipt stuck on `deferred` with a usage-limit message | Codex quota exhausted. Read event/result/evidence manually, then run `orchestrator-engine --project-root <root> watcher --host codex acknowledge --event-id <event-id> --reason "read manually"` or `watcher --host codex deferred retry --event-id <event-id> --reason "quota reset"` after quota resets. |
 | `watcher service status` shows `deferred_manual_required` | The watcher stopped retrying a callback that needs operator action. Run `watcher --host <host> deferred list`, inspect event/result/evidence, then `watcher --host <host> deferred retry --event-id ... --reason "..."` or `watcher --host <host> acknowledge --event-id ... --reason "..."`. |
+| Codex receipt has `queue_delivery_ambiguous` | The queue process timed out, exited nonzero or returned no matching acknowledgement. Inspect the target task before manual retry: the message may already be queued, so automatic retry is intentionally disabled. |
 | Bare `watcher service status` disagrees with `doctor` | Host-scoped callback services use host-specific state files. Run `watcher --host <host> service status` for the active callback channel shown by `bind --status` or `doctor`. |
 | `watcher stream status` is `stale` or `not_started` | Re-arm `watcher stream` from the Claude chat. Re-arming is safe: the stream state keeps seen event ids, so already delivered signals are not repeated. |
 | `watcher stream status` is `erroring` | The stream loop is alive but the latest scan failed. Inspect `last_error`, fix the inbox/state issue, and keep the stream running; the status returns to `fresh` after a successful scan. |
-| Codex receipt `deferred` with `thread_active` or `thread_recently_active` | Normal guard: the worker finished while the target chat was still active or had just written to its rollout. End the orchestrating turn; watcher retries with backoff instead of submitting a parallel headless turn. The recent-activity grace window is short (30 seconds by default), so this trades a small delay for avoiding concurrent turns. |
-| Codex receipt `submitted` with `turn_status: "running"` | Normal for a long headless App Server turn; a background finalizer updates the receipt when it ends. `woken` is reserved for a completed turn and still does not prove the open Desktop chat refreshed. |
-| Codex receipt `woken` but window did not focus | Check `activation` field in the receipt; the deep link needs `powershell.exe` reachable (WSL interop) and the desktop app installed. |
-| Codex receipt `woken`, but no new visible Desktop turn | Expected limitation: it means a headless App Server turn completed, not that the open Desktop chat refreshed. Review durable event/result/evidence history manually and acknowledge it with the host-scoped command. |
+| Codex receipt `deferred` with `thread_active` or `thread_recently_active` | The CLI lacks `codex queue`, so the compatibility fallback guarded against a parallel headless turn. Upgrade Codex or end the active turn and let the retry proceed. |
+| Codex receipt `submitted` with `turn_status: "running"` | The compatibility fallback started a long headless App Server turn; a background finalizer updates the receipt when it ends. |
+| Codex receipt `queued` but window did not focus | Queue delivery is still valid. Check `activation`; the optional deep link needs `powershell.exe` reachable in WSL and the Desktop app installed. |
+| Codex receipt uses `headless_app_server_turn`, but no new visible Desktop turn | The installed launcher lacks the live queue capability. Upgrade Codex, re-run `bind --host codex` if the launcher changed, and review the durable history for this event manually. |
 | `code chat` exits non-zero | The reached `code` CLI may lack the documented `chat` subcommand, WSL interop may resolve the wrong wrapper, the chat provider may not be signed in, or no usable window may be active. Check `code --version`, the resolved executable and the host's official chat CLI behavior; delivery stays retryable. |
 | `worker run` → `task already exists` | Task ids are one-shot by design; pick a new id. |
 | Historical failed task keeps `status` or `worker tasks` noisy after a successful rerun | Preserve the task artifacts and write an operator resolution: `orchestrator-engine --project-root <root> worker resolve --task-id <old-task> --status superseded --superseded-by-task-id <new-task> --reason "successful rerun"`. Use `--status acknowledged` for a manually reviewed task that was not superseded by another task. |

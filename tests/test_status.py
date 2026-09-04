@@ -100,7 +100,7 @@ class StatusTests(unittest.TestCase):
             all(value == {"unchanged": True} for value in delta["components"].values())
         )
 
-    def test_status_reports_codex_history_only_delivery(self) -> None:
+    def test_status_reports_codex_live_queue_delivery(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             create_layout(root)
@@ -109,10 +109,10 @@ class StatusTests(unittest.TestCase):
             report = status.run_status(root)
 
         channel = report["components"]["wake_channel"]
-        self.assertEqual(channel["capabilities"]["live_refresh_support"], "unsupported")
-        self.assertIn("cannot refresh", channel["detail"])
-        self.assertIn("manual", channel["hint"])
-        self.assertIn("Do not start", channel["hint"])
+        self.assertEqual(channel["capabilities"]["live_refresh_support"], "supported")
+        self.assertEqual(channel["capabilities"]["delivery_mode"], "session_queue")
+        self.assertIn("callback service is not_started", channel["detail"])
+        self.assertIn("Start or repair", channel["hint"])
 
     def test_status_aggregates_compact_problem_summaries(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

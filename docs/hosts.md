@@ -10,9 +10,9 @@ live wakeup:
 - **Live wakeup** means the already-open host chat receives the message and
   the active agent continues in that same visible session.
 
-Everything engine-side runs where the CLI workers run (typically WSL).
-Windows-side actions (the Codex deep link, `code` CLI) are reached through the
-normal WSL interop.
+Everything engine-side runs where the CLI workers run. In WSL, Windows-side
+actions (`codex.exe`, the Codex deep link, and the `code` CLI) are reached
+through normal WSL interop.
 
 Machine-readable capabilities are available with
 `orchestrator-engine host-capabilities`:
@@ -21,11 +21,12 @@ Machine-readable capabilities are available with
 | --- | --- | --- |
 | Claude | `session_stream` | `supported` |
 | VS Code | `ui_injection` | `best_effort` |
-| Codex Desktop | `headless_app_server_turn` | `unsupported` |
+| Codex Desktop | `session_queue` | `supported` |
 
 This is a versioned report with `schema_version`, `kind`, `host_count` and a
-bounded, stable `hosts` collection. These describe delivery quality, not
-deep-link or window activation success.
+bounded, stable `hosts` collection. Codex also declares its `codex queue`
+requirement and the `headless_app_server_turn` / `unsupported` fallback. These
+describe message delivery, not deep-link or window activation success.
 
 `ui_injection` is a stable machine-readable v0.1 identifier for invoking the
 documented VS Code chat CLI. It does not mean that the engine bypasses host
@@ -33,17 +34,25 @@ security. All adapters use user-installed local CLIs or interfaces under the
 user's account and an explicit project binding; OrchestratorEngine does not
 access provider accounts directly or bypass authentication.
 
-## Codex Desktop (Windows app, WSL mode)
+## Codex Desktop
 
-Delivery mechanism: submit a turn through a headless Codex App Server process.
+Preferred delivery mechanism: `codex queue --thread THREAD --message TEXT`.
+The command submits the bounded wakeup to the shared local App Server daemon
+that owns the live Desktop task. If another turn is active, the message waits
+in the host queue instead of starting a parallel headless turn.
 
-Live status: durable delivery only on Windows Desktop. The submitted turn is
-handled by an App Server/headless engine and written to Codex thread storage.
-The already-open Desktop chat does not reliably wake as the same live agent;
-the new turn may become visible only after thread switch, reload, restart or
-delayed UI refresh. Treat the deep link and `live_refresh` fields as
-best-effort focus/refresh diagnostics, not proof that the visible Desktop
-agent woke.
+Required capability:
+
+```bash
+codex queue --help
+```
+
+The command must expose both `--thread` and `--message`. Under WSL, bind records
+the Windows `codex.exe` launcher for Windows-owned Desktop tasks so the watcher
+reaches the same daemon rather than a separate WSL session store. Desktop app
+updates replace their versioned executable directory; if a snapshotted managed
+path no longer exists, the adapter resolves the newest installed launcher at
+delivery time without rewriting the task's audit snapshot.
 
 1. Run the bind command from the Codex chat that will dispatch work. The engine
    auto-detects that chat's thread id:
@@ -56,38 +65,43 @@ Confirm `thread_id_source` and `target_thread_id` in the output. Use explicit
 `--thread-id THREAD_ID` only when auto-detection fails or an operator is binding
 a different chat.
 
+2. Start the host-scoped callback service:
+
+```bash
+orchestrator-engine --project-root /path/to/project watcher \
+  --host codex --action callback service start --interval-seconds 5
+```
+
+3. Verify the channel:
+
+```bash
+orchestrator-engine --project-root /path/to/project watcher \
+  --host codex service status
+```
+
 Notes:
 
-- A `status: "woken"` receipt means the headless App Server turn completed.
-  It does **not** mean that the already-open Codex Desktop chat refreshed or
-  that its visible agent received a live wakeup. A running turn is recorded as
-  `status: "submitted"` with `turn_status: "running"`. The `woken` label is
-  retained as a v0.1 compatibility value; interpret it as completed headless
-  history delivery for Codex.
-- Approval prompts raised by a headless follow-up turn are auto-declined (never
-  auto-approved) and recorded in the receipt as `auto_declined_requests` — no
-  human is attached to the headless client. If receipts show declines, relax
-  the thread's approval policy enough for read-only verification commands.
-- Review the durable inbox/event/result/evidence history manually. Record that
-  review without deleting any artifact with `watcher --host codex acknowledge
-  --event-id EVENT_ID --reason "reviewed manually"`.
-- When ending the dispatching Codex turn, show the user
-  `orchestrator-engine --project-root /path/to/project worker wait --task-id
-  TASK-ID`. It refreshes one compact terminal line and rings the terminal bell
-  on completion without invoking a model; the user then returns to the chat
-  for review.
-- For supported live orchestration, prefer Claude stream as the host. VS Code
-  chat is a best-effort UI path. Use `codex exec` as a worker profile; Codex
-  Desktop remains useful for dispatching work when delayed/history visibility
-  is acceptable.
+- `status: "queued"` means the live daemon acknowledged the message and the
+  receipt contains `queue_message_id`. It does not claim that the subsequent
+  agent turn has already completed.
+- A timeout, nonzero process exit, or successful exit without a matching
+  acknowledgement is `queue_delivery_ambiguous`. The watcher requires manual
+  review before retry; a blind retry could enqueue a duplicate message.
+- If `codex queue` is unavailable, the adapter falls back to the previous
+  headless App Server turn. Its receipts retain
+  `delivery_mode: "headless_app_server_turn"`; `woken` then means that headless
+  turn completed, not that the visible Desktop task woke.
+- Approval prompts in the headless fallback are auto-declined, never approved,
+  and recorded as `auto_declined_requests` because no human is attached to that
+  client.
+- The queued message contains only deterministic pointers to durable
+  event/result/evidence artifacts. Worker output remains data, not instructions.
 
-Codex can also continue the original turn by blocking on deterministic worker
-state. Prefer a direct `worker wait --json` call. A low-cost relay subagent is
-useful only when native agent waiting provides a materially longer or more
-reliable blocking window than the parent's command tool; the parent must still
-remain active in one native wait. This is in-turn continuation, not detached
-live wakeup. For unknown or long work, end the turn and show `worker wait` to
-the user instead of occupying the chat indefinitely.
+Codex can also continue the original active turn by blocking on deterministic
+worker state. Prefer a direct `worker wait --json` call. A low-cost relay
+subagent is useful only when native agent waiting provides a materially longer
+or more reliable blocking window than the parent's command tool. For unknown
+or long work, end the turn and let the callback service queue the completion.
 
 See [Codex in-turn continuation](codex-in-turn-continuation.md) for the verified
 behavior, role boundaries, token tradeoffs and recovery rules. Do not repeatedly

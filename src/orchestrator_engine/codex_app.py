@@ -1,4 +1,4 @@
-"""Codex App Server adapter for current-thread wakeups."""
+"""Codex session-queue and App Server adapters for thread wakeups."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import contextlib
 import json
 import os
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -29,6 +30,14 @@ FINALIZER_POLL_WINDOW_SECONDS = 3600
 # is still completing or saving the user's turn. Treat a freshly modified
 # rollout as active too, so the watcher does not submit a parallel headless turn.
 THREAD_RECENT_ACTIVITY_GRACE_SECONDS = 30.0
+QUEUE_PROBE_TIMEOUT_SECONDS = 15
+QUEUE_DELIVERY_TIMEOUT_SECONDS = 30
+QUEUE_OUTPUT_LIMIT_BYTES = 4096
+QUEUE_MESSAGE_LIMIT_BYTES = 16 * 1024
+QUEUE_ACK_PATTERN = re.compile(
+    r"Queued message (?P<message_id>[0-9A-Za-z-]+) "
+    r"for thread (?P<thread_id>[^.\s]+)\."
+)
 
 # Server->client requests raised by a headless turn (command approvals,
 # patch approvals, elicitations) would otherwise wait forever for a human who
@@ -66,6 +75,56 @@ DEEP_LINK_COMMAND = [
     "-NonInteractive",
     "-Command",
 ]
+
+
+def _bounded_process_output(completed: Any) -> str:
+    parts: list[str] = []
+    for name in ("stdout", "stderr"):
+        value = getattr(completed, name, "")
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", errors="replace")
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+    combined = "\n".join(parts)
+    encoded = combined.encode("utf-8")
+    if len(encoded) <= QUEUE_OUTPUT_LIMIT_BYTES:
+        return combined
+    return encoded[:QUEUE_OUTPUT_LIMIT_BYTES].decode("utf-8", errors="ignore")
+
+
+def probe_session_queue(
+    codex: str,
+    *,
+    runner=subprocess.run,
+) -> dict[str, Any]:
+    """Detect the side-effect-free Codex session queue capability."""
+
+    try:
+        completed = runner(
+            [codex, "queue", "--help"],
+            capture_output=True,
+            timeout=QUEUE_PROBE_TIMEOUT_SECONDS,
+            check=False,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        return {"available": False, "reason": f"queue probe failed: {error}"}
+    output = _bounded_process_output(completed)
+    available = (
+        completed.returncode == 0
+        and "--thread" in output
+        and "--message" in output
+    )
+    return {
+        "available": available,
+        "reason": None if available else "codex queue is unavailable",
+    }
+
+
+def activate_queued_thread_window(thread_id: str) -> dict[str, Any]:
+    """Focus a queued Desktop task without forcing a history reload."""
+
+    return activate_thread_window(thread_id, live_refresh=False)
 
 
 def activate_thread_window(
@@ -509,6 +568,28 @@ def default_windows_codex() -> str | None:
     return str(candidates[0]) if candidates else None
 
 
+def resolve_codex_launcher(
+    configured: str | None,
+    fallback: str,
+    *,
+    windows_locator=default_windows_codex,
+) -> str:
+    """Refresh a stale versioned Codex Desktop launcher after app updates."""
+
+    if not configured:
+        return fallback
+    path = Path(configured)
+    normalized = configured.replace("\\", "/").lower()
+    managed_windows_path = (
+        normalized.endswith("/codex.exe")
+        and "/appdata/local/openai/codex/bin/" in normalized
+    )
+    if not managed_windows_path or path.is_file():
+        return configured
+    current = windows_locator()
+    return current or configured
+
+
 def thread_status_type(response: dict[str, Any]) -> str | None:
     thread = response.get("thread")
     if not isinstance(thread, dict):
@@ -571,6 +652,216 @@ def build_current_thread_wakeup_message(
     return wakeup.build_wakeup_message(project_root, signal, event)
 
 
+def _existing_wakeup(
+    receipt_path: Path,
+    *,
+    event_id: str,
+) -> dict[str, Any] | None:
+    if not receipt_path.exists():
+        return None
+    existing = core.load_object(receipt_path)
+    if existing.get("status") == "delivery_claimed":
+        return {
+            "schema_version": core.SCHEMA_VERSION,
+            "kind": "CURRENT_THREAD_WAKEUP",
+            "event_id": event_id,
+            "task_id": existing.get("task_id"),
+            "target_thread_id": existing.get("target_thread_id"),
+            "status": "deferred",
+            **host_capabilities.receipt_fields("codex"),
+            "reason": (
+                "queue_delivery_ambiguous: a previous durable delivery claim "
+                "has no acknowledgement"
+            ),
+            "created_at": core.utc_now(),
+            "receipt": str(receipt_path),
+        }
+    if existing.get("status") not in {
+        "queued",
+        "woken",
+        "submitted",
+        "failed",
+        "interrupted",
+    }:
+        return None
+    return {
+        "schema_version": core.SCHEMA_VERSION,
+        "event_id": event_id,
+        "status": "skipped",
+        "reason": "already_woken",
+        "receipt": str(receipt_path),
+    }
+
+
+def queue_current_thread(
+    project_root: Path,
+    signal: dict[str, Any],
+    *,
+    target_thread_id: str,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    codex: str = "codex",
+    runner=subprocess.run,
+    activator=activate_queued_thread_window,
+) -> dict[str, Any]:
+    """Queue a bounded wakeup in the shared live Codex Desktop session."""
+
+    if not target_thread_id:
+        raise CodexAppError("target thread id is required")
+    event_id = signal.get("event_id")
+    event_path_value = signal.get("event_path")
+    if not isinstance(event_id, str) or not event_id:
+        raise CodexAppError("signal has invalid event_id")
+    if not isinstance(event_path_value, str) or not event_path_value:
+        raise CodexAppError("signal has invalid event_path")
+
+    project = project_root.expanduser().resolve()
+    receipt_path = thread_wakeup_receipt_path(
+        project,
+        event_id,
+        state_dir=state_dir,
+    )
+    existing = _existing_wakeup(receipt_path, event_id=event_id)
+    if existing is not None:
+        return existing
+
+    event_path = Path(event_path_value).expanduser().resolve()
+    event = core.verify_terminal_event(event_path)
+    message = build_current_thread_wakeup_message(project, signal, event)
+    if len(message.encode("utf-8")) > QUEUE_MESSAGE_LIMIT_BYTES:
+        raise CodexAppError("wakeup message exceeds queue size limit")
+
+    base_receipt = {
+        "schema_version": core.SCHEMA_VERSION,
+        "kind": "CURRENT_THREAD_WAKEUP",
+        "event_id": event_id,
+        "task_id": event["task_id"],
+        "target_thread_id": target_thread_id,
+        **host_capabilities.receipt_fields("codex"),
+        "created_at": core.utc_now(),
+    }
+    core.atomic_json(
+        receipt_path,
+        {
+            **base_receipt,
+            "status": "delivery_claimed",
+            "delivery_claimed_at": core.utc_now(),
+        },
+    )
+    try:
+        completed = runner(
+            [
+                codex,
+                "queue",
+                "--thread",
+                target_thread_id,
+                "--message",
+                message,
+            ],
+            capture_output=True,
+            timeout=QUEUE_DELIVERY_TIMEOUT_SECONDS,
+            check=False,
+            text=True,
+        )
+    except subprocess.TimeoutExpired as error:
+        receipt = {
+            **base_receipt,
+            "status": "deferred",
+            "reason": f"queue_delivery_ambiguous: {error}",
+        }
+        core.atomic_json(receipt_path, receipt)
+        return {**receipt, "receipt": str(receipt_path)}
+    except (OSError, subprocess.SubprocessError) as error:
+        receipt = {
+            **base_receipt,
+            "status": "deferred",
+            "reason": f"codex_queue_launch_failed: {error}",
+        }
+        core.atomic_json(receipt_path, receipt)
+        return {**receipt, "receipt": str(receipt_path)}
+
+    output = _bounded_process_output(completed)
+    if completed.returncode != 0:
+        detail = output or "no error detail"
+        receipt = {
+            **base_receipt,
+            "status": "deferred",
+            "reason": (
+                f"queue_delivery_ambiguous: exit {completed.returncode}: {detail}"
+            ),
+        }
+        core.atomic_json(receipt_path, receipt)
+        return {**receipt, "receipt": str(receipt_path)}
+
+    match = QUEUE_ACK_PATTERN.search(output)
+    if match is None or match.group("thread_id") != target_thread_id:
+        receipt = {
+            **base_receipt,
+            "status": "deferred",
+            "reason": (
+                "queue_delivery_ambiguous: success without a matching "
+                "acknowledgement"
+            ),
+        }
+        core.atomic_json(receipt_path, receipt)
+        return {**receipt, "receipt": str(receipt_path)}
+
+    receipt = {
+        **base_receipt,
+        "status": "queued",
+        "queue_message_id": match.group("message_id"),
+        "queue_acknowledged_at": core.utc_now(),
+    }
+    core.atomic_json(receipt_path, receipt)
+    try:
+        activation = activator(target_thread_id)
+    except Exception as error:
+        activation = {"activation": "failed", "activation_error": str(error)}
+    receipt.update(activation)
+    core.atomic_json(receipt_path, receipt)
+    return {**receipt, "receipt": str(receipt_path)}
+
+
+def wake_bound_thread(
+    project_root: Path,
+    signal: dict[str, Any],
+    *,
+    target_thread_id: str,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    codex: str = "codex",
+    queue_runner=subprocess.run,
+    queue_probe=None,
+    queue_activator=activate_queued_thread_window,
+    server_factory=AppServer,
+    **legacy_kwargs: Any,
+) -> dict[str, Any]:
+    """Prefer the live session queue and retain the App Server fallback."""
+
+    # A custom server factory is dependency injection for the legacy adapter.
+    # Keep that path deterministic for callers and tests that select it.
+    if queue_probe is not None or server_factory is AppServer:
+        probe = queue_probe or probe_session_queue
+        capability = probe(codex, runner=queue_runner)
+        if capability.get("available") is True:
+            return queue_current_thread(
+                project_root,
+                signal,
+                target_thread_id=target_thread_id,
+                state_dir=state_dir,
+                codex=codex,
+                runner=queue_runner,
+                activator=queue_activator,
+            )
+    return wake_current_thread(
+        project_root,
+        signal,
+        target_thread_id=target_thread_id,
+        state_dir=state_dir,
+        codex=codex,
+        server_factory=server_factory,
+        **legacy_kwargs,
+    )
+
+
 def wake_current_thread(
     project_root: Path,
     signal: dict[str, Any],
@@ -600,21 +891,9 @@ def wake_current_thread(
         event_id,
         state_dir=state_dir,
     )
-    if receipt_path.exists():
-        existing = core.load_object(receipt_path)
-        if existing.get("status") in {
-            "woken",
-            "submitted",
-            "failed",
-            "interrupted",
-        }:
-            return {
-                "schema_version": core.SCHEMA_VERSION,
-                "event_id": event_id,
-                "status": "skipped",
-                "reason": "already_woken",
-                "receipt": str(receipt_path),
-            }
+    existing = _existing_wakeup(receipt_path, event_id=event_id)
+    if existing is not None:
+        return existing
 
     event_path = Path(event_path_value).expanduser().resolve()
     event = core.verify_terminal_event(event_path)
@@ -651,7 +930,9 @@ def wake_current_thread(
                 "task_id": event["task_id"],
                 "target_thread_id": target_thread_id,
                 "status": "deferred",
-                **host_capabilities.receipt_fields("codex"),
+                **host_capabilities.receipt_fields(
+                    "codex", delivery_mode="headless_app_server_turn"
+                ),
                 "reason": "thread_active",
                 "created_at": core.utc_now(),
             }
@@ -665,7 +946,9 @@ def wake_current_thread(
                 "task_id": event["task_id"],
                 "target_thread_id": target_thread_id,
                 "status": "deferred",
-                **host_capabilities.receipt_fields("codex"),
+                **host_capabilities.receipt_fields(
+                    "codex", delivery_mode="headless_app_server_turn"
+                ),
                 "reason": f"thread_status_{status or 'unknown'}",
                 "created_at": core.utc_now(),
             }
@@ -684,7 +967,9 @@ def wake_current_thread(
                 "task_id": event["task_id"],
                 "target_thread_id": target_thread_id,
                 "status": "deferred",
-                **host_capabilities.receipt_fields("codex"),
+                **host_capabilities.receipt_fields(
+                    "codex", delivery_mode="headless_app_server_turn"
+                ),
                 "reason": "thread_recently_active",
                 "created_at": core.utc_now(),
                 **recent,
@@ -737,7 +1022,9 @@ def wake_current_thread(
             "event_id": event_id,
             "target_thread_id": target_thread_id,
             "status": "deferred",
-            **host_capabilities.receipt_fields("codex"),
+            **host_capabilities.receipt_fields(
+                "codex", delivery_mode="headless_app_server_turn"
+            ),
             "reason": str(error),
             "created_at": core.utc_now(),
         }
@@ -756,7 +1043,9 @@ def wake_current_thread(
             "task_id": event["task_id"],
             "target_thread_id": target_thread_id,
             "status": "woken" if turn_status == "completed" else "submitted",
-            **host_capabilities.receipt_fields("codex"),
+            **host_capabilities.receipt_fields(
+                "codex", delivery_mode="headless_app_server_turn"
+            ),
             "turn_id": turn_id,
             "turn_status": turn_status,
             "created_at": core.utc_now(),

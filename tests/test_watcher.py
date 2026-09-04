@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -1221,9 +1222,15 @@ class ServiceDiagnosticsTests(unittest.TestCase):
 
 
 class FakeCompleted:
-    def __init__(self, returncode: int = 0, stderr: bytes = b"") -> None:
+    def __init__(
+        self,
+        returncode: int = 0,
+        stderr: bytes | str = b"",
+        stdout: bytes | str = b"",
+    ) -> None:
         self.returncode = returncode
         self.stderr = stderr
+        self.stdout = stdout
 
 
 class VscodeChatTests(unittest.TestCase):
@@ -1273,6 +1280,267 @@ class VscodeChatTests(unittest.TestCase):
             )
         self.assertEqual(first["status"], "woken")
         self.assertEqual(second["status"], "skipped")
+
+
+class CodexSessionQueueTests(unittest.TestCase):
+    def test_stale_desktop_launcher_resolves_after_app_update(self) -> None:
+        stale = "/mnt/c/Users/user/AppData/Local/OpenAI/Codex/bin/old/codex.exe"
+        current = "/mnt/c/Users/user/AppData/Local/OpenAI/Codex/bin/new/codex.exe"
+
+        resolved = codex_app.resolve_codex_launcher(
+            stale,
+            "codex",
+            windows_locator=lambda: current,
+        )
+
+        self.assertEqual(resolved, current)
+
+    def test_custom_launcher_is_not_replaced(self) -> None:
+        resolved = codex_app.resolve_codex_launcher(
+            "/opt/codex-wrapper",
+            "codex",
+            windows_locator=lambda: "/mnt/c/current/codex.exe",
+        )
+
+        self.assertEqual(resolved, "/opt/codex-wrapper")
+
+    def test_probe_detects_queue_contract(self) -> None:
+        commands: list[list[str]] = []
+
+        def runner(command, **_kwargs):
+            commands.append(command)
+            return FakeCompleted(
+                stdout="Queue a message\n--thread <THREAD>\n--message <TEXT>\n"
+            )
+
+        result = codex_app.probe_session_queue("codex.exe", runner=runner)
+
+        self.assertTrue(result["available"])
+        self.assertEqual(commands, [["codex.exe", "queue", "--help"]])
+
+    def test_probe_reports_missing_queue_without_side_effects(self) -> None:
+        result = codex_app.probe_session_queue(
+            "old-codex",
+            runner=lambda *_args, **_kwargs: FakeCompleted(
+                returncode=2,
+                stderr="unrecognized subcommand 'queue'",
+            ),
+        )
+
+        self.assertFalse(result["available"])
+        self.assertEqual(result["reason"], "codex queue is unavailable")
+
+    def test_queue_writes_acknowledged_live_receipt_once(self) -> None:
+        commands: list[list[str]] = []
+
+        def runner(command, **_kwargs):
+            commands.append(command)
+            return FakeCompleted(
+                stdout=(
+                    "Queued message message-123 for thread thread-1.\n"
+                    "ignored trailing output"
+                )
+            )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-queue")
+            signal = core.inbox(root)[0]
+            receipt = codex_app.queue_current_thread(
+                root,
+                signal,
+                target_thread_id="thread-1",
+                codex="codex.exe",
+                runner=runner,
+                activator=lambda _thread_id: {"activation": "requested"},
+            )
+            duplicate = codex_app.queue_current_thread(
+                root,
+                signal,
+                target_thread_id="thread-1",
+                codex="codex.exe",
+                runner=runner,
+            )
+
+        self.assertEqual(receipt["status"], "queued")
+        self.assertEqual(receipt["delivery_mode"], "session_queue")
+        self.assertEqual(receipt["live_refresh_support"], "supported")
+        self.assertEqual(receipt["queue_message_id"], "message-123")
+        self.assertNotIn("ignored trailing output", receipt)
+        self.assertEqual(
+            commands[0][:4], ["codex.exe", "queue", "--thread", "thread-1"]
+        )
+        self.assertIn("LOCAL_AI_ORCHESTRATOR_WAKEUP v1", commands[0][-1])
+        self.assertEqual(duplicate["status"], "skipped")
+        self.assertEqual(len(commands), 1)
+
+    def test_queue_timeout_is_manual_required_without_retry(self) -> None:
+        def runner(command, **_kwargs):
+            raise subprocess.TimeoutExpired(command, 30)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-ambiguous")
+            signal = core.inbox(root)[0]
+            receipt = codex_app.queue_current_thread(
+                root,
+                signal,
+                target_thread_id="thread-1",
+                runner=runner,
+            )
+            deferred = watcher.build_deferred_record(
+                "event-ambiguous",
+                signal,
+                reason=receipt["reason"],
+                previous={},
+                now=1.0,
+            )
+
+        self.assertEqual(receipt["status"], "deferred")
+        self.assertEqual(deferred["status"], watcher.DEFER_STATUS_MANUAL_REQUIRED)
+        self.assertEqual(deferred["reason_code"], "queue_delivery_ambiguous")
+        self.assertNotIn("retry_after_at", deferred)
+
+    def test_queue_nonzero_exit_is_ambiguous_not_automatically_retried(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-queue-nonzero")
+            signal = core.inbox(root)[0]
+            receipt = codex_app.queue_current_thread(
+                root,
+                signal,
+                target_thread_id="thread-1",
+                runner=lambda *_args, **_kwargs: FakeCompleted(
+                    returncode=1,
+                    stderr="connection closed",
+                ),
+            )
+            deferred = watcher.build_deferred_record(
+                "event-queue-nonzero",
+                signal,
+                reason=receipt["reason"],
+                previous={},
+                now=1.0,
+            )
+
+        self.assertEqual(deferred["status"], watcher.DEFER_STATUS_MANUAL_REQUIRED)
+        self.assertNotIn("retry_after_at", deferred)
+
+    def test_activation_failure_does_not_invalidate_queue_acceptance(self) -> None:
+        def fail_activation(_thread_id: str) -> dict:
+            raise RuntimeError("focus unavailable")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-queue-focus")
+            receipt = codex_app.queue_current_thread(
+                root,
+                core.inbox(root)[0],
+                target_thread_id="thread-1",
+                runner=lambda *_args, **_kwargs: FakeCompleted(
+                    stdout="Queued message message-456 for thread thread-1."
+                ),
+                activator=fail_activation,
+            )
+
+        self.assertEqual(receipt["status"], "queued")
+        self.assertEqual(receipt["activation"], "failed")
+        self.assertEqual(receipt["activation_error"], "focus unavailable")
+
+    def test_durable_claim_prevents_retry_after_interrupted_delivery(self) -> None:
+        calls = 0
+
+        def interrupted_runner(*_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            raise KeyboardInterrupt
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-claimed")
+            signal = core.inbox(root)[0]
+            with self.assertRaises(KeyboardInterrupt):
+                codex_app.queue_current_thread(
+                    root,
+                    signal,
+                    target_thread_id="thread-1",
+                    runner=interrupted_runner,
+                )
+            receipt = codex_app.queue_current_thread(
+                root,
+                signal,
+                target_thread_id="thread-1",
+                runner=interrupted_runner,
+            )
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(receipt["status"], "deferred")
+        self.assertIn("previous durable delivery claim", receipt["reason"])
+
+    def test_manual_retry_releases_ambiguous_delivery_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-retry-claim")
+            state_path = watcher.default_state_path(root)
+            core.atomic_json(
+                state_path,
+                {
+                    "schema_version": core.SCHEMA_VERSION,
+                    "kind": watcher.STATE_KIND,
+                    "seen_event_ids": [],
+                    "acknowledged_events": {},
+                    "deferred_events": {
+                        "event-retry-claim": {
+                            "status": watcher.DEFER_STATUS_MANUAL_REQUIRED,
+                            "attempts": 1,
+                            "reason": "queue_delivery_ambiguous",
+                            "reason_code": "queue_delivery_ambiguous",
+                        }
+                    },
+                },
+            )
+            receipt_path = codex_app.thread_wakeup_receipt_path(
+                root, "event-retry-claim"
+            )
+            core.atomic_json(
+                receipt_path,
+                {
+                    "schema_version": core.SCHEMA_VERSION,
+                    "kind": "CURRENT_THREAD_WAKEUP",
+                    "event_id": "event-retry-claim",
+                    "status": "delivery_claimed",
+                },
+            )
+
+            watcher.retry_deferred_event(
+                root,
+                event_id="event-retry-claim",
+                state_path=state_path,
+            )
+            receipt = core.load_object(receipt_path)
+
+        self.assertEqual(receipt["status"], "deferred")
+        self.assertIn("retry_requested_at", receipt)
+
+    def test_bound_thread_falls_back_when_queue_is_unavailable(self) -> None:
+        reset_fake_server("idle")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-fallback")
+            receipt = codex_app.wake_bound_thread(
+                root,
+                core.inbox(root)[0],
+                target_thread_id="thread-1",
+                queue_probe=lambda *_args, **_kwargs: {"available": False},
+                server_factory=FakeThreadServer,
+                activator=lambda _thread_id: {"activation": "requested"},
+                recent_activity_checker=lambda *_args, **_kwargs: None,
+            )
+
+        self.assertEqual(receipt["status"], "woken")
+        self.assertEqual(receipt["delivery_mode"], "headless_app_server_turn")
+        self.assertEqual(receipt["live_refresh_support"], "unsupported")
+        self.assertEqual(FakeThreadServer.starts, 1)
 
 
 class CodexActivationTests(unittest.TestCase):

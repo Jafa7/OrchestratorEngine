@@ -12,8 +12,8 @@ completion delivery without engine-managed provider API keys.
 
 OrchestratorEngine is a small event-driven coordination layer for AI worker
 processes. A user orchestrates from a host chat (Claude Code / Claude for
-Windows, VS Code Copilot, or Codex Desktop with the limitation documented
-below), dispatches tasks to CLI workers, and ends the turn. Workers run
+Windows, VS Code Copilot, or Codex Desktop), dispatches tasks to CLI workers,
+and ends the turn. Workers run
 detached, write a terminal event to disk when they finish, and a local watcher
 routes the completion through the dispatching host's configured delivery
 channel — without engine-managed provider API keys or token-spending heartbeat
@@ -25,36 +25,35 @@ CLI workers (Claude, Codex, Copilot, or any other command-line worker).
 Long verification runs can use the same flow: run checks detached, keep full
 logs as artifacts, and return a compact pass/fail summary through that channel.
 
-Host delivery quality is provider-specific. Claude stream wakeups are the
-recommended live orchestration path today: the already-open Claude chat wakes
-and continues in that session. VS Code uses its chat CLI. Codex Desktop on
-Windows can receive durable delivery into thread history and best-effort
-window focus/refresh, but it does not currently provide a reliable live wakeup
-channel for the already-open Desktop agent. Codex remains fully supported as a
-CLI worker through `codex exec`.
+Host delivery quality is provider-specific. Claude uses its watched session
+stream, VS Code uses its chat CLI, and current Codex Desktop releases use
+`codex queue` to submit the bounded follow-up to the dispatching live task.
+Codex installations without that command retain the older durable headless
+App Server fallback. Codex is also fully supported as a CLI worker through
+`codex exec`.
 
-Codex can still resume automatically **within an already-active turn** by
+Codex can also resume automatically **within an already-active turn** by
 blocking once on deterministic worker state. The cheapest path is a direct
 `worker wait --json`; an optional low-cost relay subagent is only a host-control
 bridge when native agent waiting is more reliable than a direct command wait.
-This does not turn Codex Desktop history delivery into live wakeup. See
+This is complementary to detached live queue delivery. See
 [Codex in-turn continuation](docs/codex-in-turn-continuation.md).
 Parallel workers can share the same deterministic wait by repeating
 `--task-id` and selecting `--mode all` or `--mode any`.
 
 ## Measured coordination context reduction
 
-The graph below shows one practical benefit even when a host such as Codex
-Desktop cannot wake live: status checks can read compact task state instead of
-repeatedly loading growing worker logs. Lower is better.
+The graph below shows one practical benefit independent of the host delivery
+mechanism: status checks can read compact task state instead of repeatedly
+loading growing worker logs. Lower is better.
 
 ![Context read while checking background work](docs/assets/coordination-context.svg)
 
 | Scenario | Full-log polling | Status reads | Context read | Reduction |
 | --- | ---: | ---: | ---: | ---: |
-| Long test | 655.4 KB | 14.9 KB | 2.27% | 97.73% |
-| AI worker | 2.50 MB | 14.9 KB | 0.57% | 99.43% |
-| Three parallel workers | 3.75 MB | 17.5 KB | 0.44% | 99.56% |
+| Long test | 655.4 KB | 14.0 KB | 2.13% | 97.87% |
+| AI worker | 2.50 MB | 14.0 KB | 0.53% | 99.47% |
+| Three parallel workers | 3.75 MB | 16.6 KB | 0.42% | 99.58% |
 
 This is selective inspection, not output truncation. The status report keeps
 task states, diagnostics, log sizes and paths compact; complete stdout,
@@ -66,7 +65,7 @@ bytes as a provider-neutral proxy for context volume. It does not claim the
 same percentage of total token or engineering cost for every workflow. Codex
 agents can avoid those intermediate model calls by handing `worker wait` to
 the user's terminal or by using one bounded in-turn wait when the task is short
-enough; Claude live wakeup avoids the manual return step as well.
+enough; detached live wakeup avoids the manual return step as well.
 See the reproducible
 [measurement methodology](docs/coordination-efficiency.md).
 
@@ -94,7 +93,7 @@ Install an immutable release, scaffold the project and bind the host chat:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.5.1"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.6.0"
 orchestrator-engine --project-root /path/to/project adopt --host HOST
 orchestrator-engine --project-root /path/to/project bind --host HOST
 ```
@@ -134,9 +133,10 @@ orchestrator-engine --project-root /path/to/project worker run \
 ```
 
 Start the host-specific delivery channel described in
-[docs/hosts.md](docs/hosts.md). Claude uses `watcher stream`, VS Code uses a
-callback service, and Codex Desktop uses durable history plus the local
-`worker wait` fallback rather than claiming live wakeup. Finish with:
+[docs/hosts.md](docs/hosts.md). Claude uses `watcher stream`; VS Code and Codex
+Desktop use host-scoped callback services. Codex requires a CLI whose help
+exposes `codex queue`; older versions use the documented durable fallback.
+Finish with:
 
 ```bash
 orchestrator-engine --project-root /path/to/project status
@@ -168,9 +168,8 @@ orchestrator-engine --project-root /path/to/project status
    immediately; a detached supervisor runs the worker CLI and emits a terminal
    event on exit.
 3. **Deliver**: a watcher service (`--action callback`) sends a follow-up to
-   VS Code, while Claude watches `watcher stream`. Codex App Server turns are
-   history-only and do not refresh the already-open Desktop chat. Callback
-   services can be scoped with `watcher --host vscode` so
+   VS Code or the bound Codex Desktop task, while Claude watches
+   `watcher stream`. Callback services can be scoped by host so
    multiple host channels can share one inbox without consuming each other's
    signals.
 
@@ -378,10 +377,9 @@ responsibility of the adopting project to retire.
 ## Follow-up message contract
 
 A terminal event produces a short deterministic follow-up message. Depending
-on the bound host, it is submitted to a headless Codex App Server and stored
-in thread history, sent to VS Code chat, or emitted as a JSON stream line for
-Claude. Codex Desktop history delivery does not refresh or wake an already-open
-Desktop chat.
+on the bound host, it is queued to the live Codex task, sent to VS Code chat,
+or emitted as a JSON stream line for Claude. Older Codex CLIs fall back to a
+headless App Server turn stored in thread history.
 
 ```text
 LOCAL_AI_ORCHESTRATOR_WAKEUP v1

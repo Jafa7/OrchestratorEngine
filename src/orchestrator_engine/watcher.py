@@ -32,6 +32,7 @@ QUOTA_REASON_MARKERS = (
     "purchase more credits",
     "try again at",
 )
+MANUAL_REQUIRED_REASON_MARKERS = ("queue_delivery_ambiguous",)
 SERVICE_KIND = "LOCAL_AI_ORCHESTRATOR_WATCHER_SERVICE"
 STATE_KIND = "LOCAL_AI_ORCHESTRATOR_WATCHER_STATE"
 ACKNOWLEDGEMENT_KIND = "LOCAL_AI_ORCHESTRATOR_WATCHER_ACKNOWLEDGEMENT"
@@ -45,8 +46,11 @@ class WatcherError(RuntimeError):
 def _wake_codex(project, signal, *, binding, state_dir, codex, server_factory):
     # Desktop threads live in the Windows-side store; the binding records
     # which codex launcher can actually reach the bound thread.
-    bound_codex = binding.get("codex_command") or codex
-    return codex_app.wake_current_thread(
+    bound_codex = codex_app.resolve_codex_launcher(
+        binding.get("codex_command"),
+        codex,
+    )
+    return codex_app.wake_bound_thread(
         project,
         signal,
         target_thread_id=str(binding["target_thread_id"]),
@@ -524,6 +528,8 @@ def defer_reason_code(reason: str) -> str:
     normalized = reason.strip().lower()
     if normalized in RETRYABLE_GUARD_REASON_CODES:
         return normalized
+    if any(marker in normalized for marker in MANUAL_REQUIRED_REASON_MARKERS):
+        return "queue_delivery_ambiguous"
     if any(marker in normalized for marker in QUOTA_REASON_MARKERS):
         return "quota_or_usage_limit"
     return "callback_failed"
@@ -535,6 +541,11 @@ def deferred_operator_action(status: str, reason_code: str) -> str:
             return (
                 "Read the event/result/evidence manually, then acknowledge "
                 "the event or retry after quota resets."
+            )
+        if reason_code == "queue_delivery_ambiguous":
+            return (
+                "Inspect the target Codex task before retrying: the queue command "
+                "may have been accepted without returning an acknowledgement."
             )
         return (
             "Inspect the callback failure, read event/result/evidence if "
@@ -553,7 +564,10 @@ def build_deferred_record(
 ) -> dict[str, Any]:
     attempts = int(previous.get("attempts", 0)) + 1
     reason_code = defer_reason_code(reason)
-    manual_required = reason_code == "quota_or_usage_limit" or (
+    manual_required = reason_code in {
+        "quota_or_usage_limit",
+        "queue_delivery_ambiguous",
+    } or (
         reason_code not in RETRYABLE_GUARD_REASON_CODES
         and attempts >= DEFER_MAX_ATTEMPTS
     )
@@ -715,6 +729,19 @@ def retry_deferred_event(
         DEFER_STATUS_RETRYABLE,
         str(previous.get("reason_code") or "callback_failed"),
     )
+    wakeup_receipt = (
+        core.inbox_root(project, state_dir=state_dir)
+        / "thread-wakeups"
+        / f"{event_id}.json"
+    )
+    with contextlib.suppress(OSError, RuntimeError, ValueError):
+        delivery = core.load_object(wakeup_receipt)
+        if delivery.get("status") == "delivery_claimed":
+            delivery.update(
+                status="deferred",
+                retry_requested_at=requested_at,
+            )
+            core.atomic_json(wakeup_receipt, delivery)
     state["deferred_events"] = deferred_events
     state["updated_at"] = requested_at
     core.atomic_json(state_file, state)
