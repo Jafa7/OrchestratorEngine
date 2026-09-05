@@ -70,7 +70,7 @@ Run it from a source checkout:
 ```bash
 PYTHONPATH=src python3 benchmarks/coordination_context.py \
   --write-svg docs/assets/coordination-context.svg \
-  > docs/assets/coordination-context.json
+  --write-json docs/assets/coordination-context.json
 ```
 
 The generated JSON is the machine-readable result behind the checked-in SVG.
@@ -81,9 +81,9 @@ The generated JSON is the machine-readable result behind the checked-in SVG.
 
 | Scenario | Naive polling | Status reads | Context share | Reduction |
 | --- | ---: | ---: | ---: | ---: |
-| Long test | 655,360 B | 13,984 B | 2.13% | 97.87% |
-| AI worker | 2,621,440 B | 13,986 B | 0.53% | 99.47% |
-| Parallel workers | 3,932,160 B | 16,573 B | 0.42% | 99.58% |
+| Long test | 655,360 B | 16,572 B | 2.53% | 97.47% |
+| AI worker | 2,621,440 B | 16,574 B | 0.63% | 99.37% |
+| Parallel workers | 3,932,160 B | 19,161 B | 0.49% | 99.51% |
 
 Every scenario passed the selective-inspection quality guard. The smaller
 status reads come from carrying task state, diagnostics, sizes and artifact

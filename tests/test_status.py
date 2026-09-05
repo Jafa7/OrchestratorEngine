@@ -6,15 +6,18 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from orchestrator_engine import (
     binding,
     cli,
     core,
+    local_checks,
     status,
     task_resolution,
     verification,
     workers,
+    workstreams,
 )
 
 
@@ -87,6 +90,87 @@ def write_failed_check(root: Path) -> None:
 
 
 class StatusTests(unittest.TestCase):
+    def test_status_reports_workstream_needing_user_attention(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            create_layout(root)
+            write_worker_config(root)
+            binding.write_binding(root, host="codex", target_thread_id="thread-1")
+            workstreams.start_workstream(root, workstream_id="W", goal="Goal")
+            workstreams.checkpoint_workstream(
+                root,
+                workstream_id="W",
+                checkpoint_id="C1",
+                decision="needs_user",
+                summary="A product decision is required.",
+            )
+            report = status.run_status(root)
+
+        component = report["components"]["workstreams"]
+        self.assertEqual(component["status"], "warn")
+        self.assertEqual(component["attention_count"], 1)
+        self.assertTrue(
+            any(issue.get("source") == "workstreams" for issue in report["issues"])
+        )
+
+    def test_ci_monitor_summary_marks_crashed_monitor_as_error(self) -> None:
+        summary = status.summarize_ci_monitors(
+            {
+                "monitor_count": 1,
+                "status_counts": {"crashed": 1},
+                "conclusion_counts": {"failure": 1},
+                "monitors": [
+                    {
+                        "monitor_id": "gha-dead",
+                        "status": "crashed",
+                        "failure_kind": "supervisor_not_alive",
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(summary["status"], "error")
+        self.assertEqual(summary["problem_monitor_count"], 1)
+        self.assertEqual(summary["conclusion_counts"], {"failure": 1})
+
+    def test_status_reports_crashed_local_check_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            create_layout(root)
+            write_worker_config(root)
+            directory = local_checks.check_dir(
+                root, "CHECK-DEAD", state_dir=".orchestrator"
+            )
+            directory.mkdir(parents=True)
+            core.atomic_json(
+                directory / "check.json",
+                {
+                    "schema_version": 1,
+                    "kind": local_checks.CHECK_KIND,
+                    "check_id": "CHECK-DEAD",
+                    "suite": "full",
+                    "status": "running",
+                    "execution": "detached",
+                    "supervisor_identity": {"pid": 123},
+                },
+            )
+            with mock.patch.object(
+                status.local_checks.worker_lease,
+                "identity_state",
+                return_value={"state": "gone", "identity_verified": True},
+            ):
+                report = status.run_status(root)
+
+        component = report["components"]["local_check_runtime"]
+        self.assertEqual(component["status"], "error")
+        self.assertEqual(component["problem_count"], 1)
+        self.assertTrue(
+            any(
+                issue.get("source") == "local_check_runtime"
+                for issue in report["issues"]
+            )
+        )
+
     def test_status_cursor_omits_unchanged_component_bodies(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

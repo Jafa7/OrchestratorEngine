@@ -1,0 +1,1 @@
+{"schema_version":1,"kind":"ORCHESTRATOR_FOLLOWUP_SIGNAL","event_id":"event-ci-1","project_id":"fixture","source_kind":"github_actions","operation_id":"gha-1","event_path":"/tmp/event.json","terminal_status":"completed","result_path":"/tmp/result.json","evidence_path":"/tmp/evidence.json","created_at":"2026-09-05T12:00:00.000+00:00","requires":"ORCHESTRATOR_FOLLOWUP"}

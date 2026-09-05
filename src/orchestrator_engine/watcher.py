@@ -362,7 +362,7 @@ def notify_signal(
             "schema_version": core.SCHEMA_VERSION,
             "kind": "LOCAL_AI_ORCHESTRATOR_NOTIFICATION",
             "event_id": event_id,
-            "task_id": signal["task_id"],
+            **core.subject_fields(signal),
             "terminal_status": signal["terminal_status"],
             "signal_path": signal.get("signal_path"),
             "created_at": core.utc_now(),
@@ -517,6 +517,21 @@ def pending_signal_count(
     return count
 
 
+def signal_not_before_timestamp(signal: dict[str, Any]) -> float | None:
+    value = signal.get("not_before")
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise WatcherError("signal not_before must be a timestamp string")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise WatcherError("signal not_before is not a valid timestamp") from error
+    if parsed.tzinfo is None:
+        raise WatcherError("signal not_before must include a timezone")
+    return parsed.timestamp()
+
+
 def deferred_status(item: dict[str, Any]) -> str:
     status = item.get("status")
     if status in {DEFER_STATUS_RETRYABLE, DEFER_STATUS_MANUAL_REQUIRED}:
@@ -578,7 +593,7 @@ def build_deferred_record(
         "reason": reason,
         "reason_code": reason_code,
         "event_id": event_id,
-        "task_id": signal.get("task_id"),
+        **core.subject_fields(signal),
         "terminal_status": signal.get("terminal_status"),
         "event_path": signal.get("event_path"),
         "signal_path": signal.get("signal_path"),
@@ -593,6 +608,15 @@ def build_deferred_record(
         )
         record["retry_after_at"] = now + delay
     return record
+
+
+def receipt_subject_fields(*values: dict[str, Any] | None) -> dict[str, Any]:
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        with contextlib.suppress(core.OrchestratorError):
+            return core.subject_fields(value)
+    return {"task_id": None}
 
 
 def unix_timestamp_to_iso(value: object) -> str | None:
@@ -629,6 +653,9 @@ def deferred_event_summaries(
             {
                 "event_id": event_id,
                 "task_id": item.get("task_id") or signal.get("task_id"),
+                "operation_id": item.get("operation_id")
+                or signal.get("operation_id"),
+                "source_kind": item.get("source_kind") or signal.get("source_kind"),
                 "terminal_status": item.get("terminal_status")
                 or signal.get("terminal_status"),
                 "status": status,
@@ -749,7 +776,7 @@ def retry_deferred_event(
         "schema_version": core.SCHEMA_VERSION,
         "kind": "LOCAL_AI_ORCHESTRATOR_WATCHER_DEFERRED_RETRY",
         "event_id": event_id,
-        "task_id": previous.get("task_id"),
+        **receipt_subject_fields(previous),
         "status": "retry_scheduled",
         "previous_status": previous_status,
         "new_status": DEFER_STATUS_RETRYABLE,
@@ -817,12 +844,13 @@ def acknowledge_signal(
         raise WatcherError(f"event is not pending or deferred: {event_id}")
     else:
         acknowledged_at = core.utc_now()
+        subject = receipt_subject_fields(previous, signal)
         acknowledgement = {
             "schema_version": core.SCHEMA_VERSION,
             "kind": ACKNOWLEDGEMENT_KIND,
             "event_id": event_id,
             "host": host,
-            "task_id": (previous or {}).get("task_id") or (signal or {}).get("task_id"),
+            **subject,
             "status": ACKNOWLEDGED_STATUS,
             "reason": reason.strip(),
             "acknowledged_at": acknowledged_at,
@@ -985,6 +1013,19 @@ def scan_once(
         for signal in signals:
             event_id = signal.get("event_id")
             if not isinstance(event_id, str) or event_id in seen:
+                continue
+            try:
+                not_before = signal_not_before_timestamp(signal)
+            except WatcherError as error:
+                action_errors.append(
+                    {
+                        "event_id": event_id,
+                        "project_root": str(project),
+                        "error": str(error),
+                    }
+                )
+                continue
+            if not_before is not None and not_before > current_time:
                 continue
             try:
                 host = signal_host(signal, fallback_binding=bound)

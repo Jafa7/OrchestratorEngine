@@ -13,12 +13,20 @@ def build_wakeup_message(
     signal: dict[str, Any],
     event: dict[str, Any],
 ) -> str:
+    subject = (
+        [f"task_id: {event['task_id']}"]
+        if isinstance(event.get("task_id"), str)
+        else [
+            f"source: {event['source_kind']}",
+            f"operation_id: {event['operation_id']}",
+        ]
+    )
     return "\n".join(
         [
             WAKEUP_HEADER,
             f"project: {project_root}",
             f"event_id: {event['event_id']}",
-            f"task_id: {event['task_id']}",
+            *subject,
             f"terminal_status: {event['terminal_status']}",
             f"event: {signal['event_path']}",
             f"evidence: {event['evidence_path']}",

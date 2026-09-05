@@ -123,8 +123,8 @@ class AdoptionTests(unittest.TestCase):
             vscode = adoption.adopt_project(root, host="vscode")
 
         self.assertIn("watcher stream", " ".join(claude["next_steps"]))
-        self.assertIn(" inbox", " ".join(codex["next_steps"]))
-        self.assertNotIn("service start", " ".join(codex["next_steps"]))
+        self.assertIn("--host codex", " ".join(codex["next_steps"]))
+        self.assertIn("service start", " ".join(codex["next_steps"]))
         self.assertIn("--host vscode", " ".join(vscode["next_steps"]))
         self.assertIn("service start", " ".join(vscode["next_steps"]))
 

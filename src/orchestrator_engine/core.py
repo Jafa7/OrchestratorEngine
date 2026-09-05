@@ -23,6 +23,15 @@ TERMINAL_STATUSES = {
     "invalid_result",
     "cancelled",
 }
+FOLLOWUP_TERMINAL_STATUSES = {
+    "completed",
+    "failed",
+    "cancelled",
+    "timed_out",
+    "action_required",
+    "unavailable",
+    "ambiguous",
+}
 
 
 class OrchestratorError(RuntimeError):
@@ -82,6 +91,26 @@ def terminal_event_id(project_root: Path, *, task_id: str) -> str:
             f"orchestrator-engine://terminal/{project_id(project_root)}/{task_id}",
         )
     )
+
+
+def followup_event_id(
+    project_root: Path,
+    *,
+    source_kind: str,
+    operation_id: str,
+) -> str:
+    """Return the stable terminal event id for a non-worker operation."""
+
+    identity = json.dumps(
+        {
+            "operation_id": operation_id,
+            "project_id": project_id(project_root),
+            "source_kind": source_kind,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
 
 
 def load_object(path: Path) -> dict[str, Any]:
@@ -246,16 +275,113 @@ def write_terminal_event(
     }
 
 
+def write_followup_event(
+    project_root: Path,
+    *,
+    operation_id: str,
+    source_kind: str,
+    terminal_status: str,
+    result_path: Path,
+    evidence_path: Path,
+    state_dir: str = DEFAULT_STATE_DIR,
+    event_id: str | None = None,
+    wake_target: dict[str, Any] | None = None,
+    emit_signal: bool = True,
+    not_before: str | None = None,
+) -> dict[str, Any]:
+    """Write a provider-neutral terminal event and optional follow-up signal."""
+
+    if not operation_id:
+        raise OrchestratorError("operation_id is required")
+    if not source_kind:
+        raise OrchestratorError("source_kind is required")
+    if terminal_status not in FOLLOWUP_TERMINAL_STATUSES:
+        raise OrchestratorError(f"unsupported follow-up status: {terminal_status}")
+    project = project_root.expanduser().resolve()
+    result = ensure_file(result_path, field="result")
+    evidence = ensure_file(evidence_path, field="evidence")
+    event_id = event_id or followup_event_id(
+        project,
+        source_kind=source_kind,
+        operation_id=operation_id,
+    )
+    event_path = event_path_for(project, event_id, state_dir=state_dir)
+    signal_path = signal_path_for(project, event_id, state_dir=state_dir)
+    event = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "ORCHESTRATOR_TERMINAL",
+        "event_id": event_id,
+        "project_id": project_id(project),
+        "source_kind": source_kind,
+        "operation_id": operation_id,
+        "terminal_status": terminal_status,
+        "result_path": str(result),
+        "result_sha256": sha256_file(result),
+        "evidence_path": str(evidence),
+        "evidence_sha256": sha256_file(evidence),
+        "created_at": utc_now(),
+    }
+    signal = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "ORCHESTRATOR_FOLLOWUP_SIGNAL",
+        "event_id": event_id,
+        "project_id": project_id(project),
+        "source_kind": source_kind,
+        "operation_id": operation_id,
+        "event_path": str(event_path),
+        "terminal_status": terminal_status,
+        "result_path": str(result),
+        "evidence_path": str(evidence),
+        "created_at": event["created_at"],
+        "requires": "ORCHESTRATOR_FOLLOWUP",
+    }
+    if wake_target is not None:
+        event["wake_target"] = wake_target
+        signal["wake_target"] = wake_target
+    if not_before is not None:
+        try:
+            parsed = datetime.fromisoformat(not_before.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise OrchestratorError(
+                "not_before must be an ISO-8601 timestamp"
+            ) from error
+        if parsed.tzinfo is None:
+            raise OrchestratorError("not_before must include a timezone")
+        normalized = parsed.astimezone(UTC).isoformat(timespec="milliseconds")
+        event["not_before"] = normalized
+        signal["not_before"] = normalized
+    atomic_json(event_path, event)
+    if emit_signal:
+        atomic_json(signal_path, signal)
+    return {
+        "event": event,
+        "event_path": str(event_path),
+        "signal_path": str(signal_path) if emit_signal else None,
+        "signal_emitted": emit_signal,
+    }
+
+
 def verify_terminal_event(event_path: Path) -> dict[str, Any]:
     event = load_object(event_path.expanduser().resolve())
     if not is_supported_schema_version(event.get("schema_version")):
         raise OrchestratorError("unsupported terminal event schema")
-    if event.get("kind") != "WORKER_TERMINAL":
+    kind = event.get("kind")
+    if kind not in {"WORKER_TERMINAL", "ORCHESTRATOR_TERMINAL"}:
         raise OrchestratorError("unsupported terminal event kind")
-    for key in ("event_id", "project_id", "task_id"):
+    identity_keys = (
+        ("event_id", "project_id", "task_id")
+        if kind == "WORKER_TERMINAL"
+        else ("event_id", "project_id", "source_kind", "operation_id")
+    )
+    for key in identity_keys:
         if not isinstance(event.get(key), str) or not event[key]:
             raise OrchestratorError(f"terminal event has invalid {key}")
-    if event.get("terminal_status") not in TERMINAL_STATUSES:
+    allowed_statuses = (
+        TERMINAL_STATUSES
+        if kind == "WORKER_TERMINAL"
+        else FOLLOWUP_TERMINAL_STATUSES
+    )
+    if event.get("terminal_status") not in allowed_statuses:
         raise OrchestratorError("terminal event has invalid terminal_status")
     for path_key, hash_key in (
         ("result_path", "result_sha256"),
@@ -271,6 +397,22 @@ def verify_terminal_event(event_path: Path) -> dict[str, Any]:
         if sha256_file(path) != expected:
             raise OrchestratorError(f"terminal artifact hash mismatch: {path}")
     return event
+
+
+def subject_fields(value: dict[str, Any]) -> dict[str, str]:
+    """Return the public subject identity shared by events, signals and receipts."""
+
+    task_id = value.get("task_id")
+    if isinstance(task_id, str) and task_id:
+        return {"task_id": task_id}
+    operation_id = value.get("operation_id")
+    source_kind = value.get("source_kind")
+    if isinstance(operation_id, str) and operation_id:
+        fields = {"operation_id": operation_id}
+        if isinstance(source_kind, str) and source_kind:
+            fields["source_kind"] = source_kind
+        return fields
+    raise OrchestratorError("terminal artifact has no valid subject identity")
 
 
 def inbox(
@@ -315,6 +457,33 @@ def survey_schema_versions(
     )
     candidates.extend(
         sorted((state_root(project, state_dir=state_dir) / "tasks").glob("*/*.json"))
+    )
+    candidates.extend(
+        sorted(
+            (state_root(project, state_dir=state_dir) / "monitors").glob("*/*/*.json")
+        )
+    )
+    candidates.extend(
+        sorted(
+            (state_root(project, state_dir=state_dir) / "checks").glob("*/*.json")
+        )
+    )
+    history = state_root(project, state_dir=state_dir) / "check-history.json"
+    if history.is_file():
+        candidates.append(history)
+    candidates.extend(
+        sorted(
+            (state_root(project, state_dir=state_dir) / "workstreams").glob(
+                "*/*.json"
+            )
+        )
+    )
+    candidates.extend(
+        sorted(
+            (state_root(project, state_dir=state_dir) / "workstreams").glob(
+                "*/checkpoints/*.json"
+            )
+        )
     )
     supported: list[dict[str, Any]] = []
     unsupported: list[dict[str, Any]] = []

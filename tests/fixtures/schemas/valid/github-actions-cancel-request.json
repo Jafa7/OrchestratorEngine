@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "kind": "GITHUB_ACTIONS_MONITOR_CANCEL_REQUEST",
+  "monitor_id": "gha-123-a1-example",
+  "reason": "operator requested local cancellation",
+  "requested_at": "2026-09-05T10:05:00.000+00:00"
+}

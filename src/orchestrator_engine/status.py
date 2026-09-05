@@ -13,10 +13,13 @@ from . import (
     __version__,
     core,
     diagnostics,
+    github_actions,
     host_capabilities,
+    local_checks,
     task_diagnostics,
     verification,
     worker_diagnostics,
+    workstreams,
 )
 
 STATUS_KIND = "ORCHESTRATOR_STATUS_REPORT"
@@ -53,18 +56,33 @@ def run_status(
     )
     wake_channel = summarize_wake_channel(doctor)
     worker_profiles = summarize_worker_profiles(doctor)
+    ci_monitors = summarize_ci_monitors(
+        github_actions.monitor_status(project, state_dir=state_dir)
+    )
+    workstream_summary = summarize_workstreams(
+        workstreams.workstream_status(project, state_dir=state_dir)
+    )
+    local_check_runtime = summarize_local_check_runtime(
+        local_checks.check_status(project, state_dir=state_dir)
+    )
     components = {
         "doctor": summarize_doctor(doctor),
         "worker_profiles": worker_profiles,
         "wake_channel": wake_channel,
         "worker_tasks": summarize_worker_tasks(tasks),
         "checks": summarize_checks(checks),
+        "local_check_runtime": local_check_runtime,
+        "ci_monitors": ci_monitors,
+        "workstreams": workstream_summary,
     }
     issues = collect_issues(
         doctor=doctor,
         tasks=tasks,
         checks=checks,
+        local_check_runtime=local_check_runtime,
         wake_channel=wake_channel,
+        ci_monitors=ci_monitors,
+        workstreams=workstream_summary,
     )
     worst = worst_component_severity(components.values())
     report = {
@@ -326,6 +344,107 @@ def summarize_checks(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def summarize_ci_monitors(report: dict[str, Any]) -> dict[str, Any]:
+    monitors = report.get("monitors", [])
+    if not isinstance(monitors, list):
+        monitors = []
+    problems = [
+        item
+        for item in monitors
+        if isinstance(item, dict)
+        and item.get("status")
+        in {
+            "failed",
+            "cancelled",
+            "timed_out",
+            "unavailable",
+            "ambiguous",
+            "crashed",
+            "stalled",
+            "invalid",
+        }
+    ]
+    severe = any(
+        item.get("status") in {"failed", "crashed", "stalled", "invalid"}
+        for item in problems
+    )
+    severity = "error" if severe else "warning" if problems else None
+    return {
+        "status": status_from_severity(severity),
+        "worst_severity": severity,
+        "monitor_count": report.get("monitor_count", 0),
+        "status_counts": report.get("status_counts", {}),
+        "conclusion_counts": report.get("conclusion_counts", {}),
+        "problem_monitor_count": len(problems),
+        "problem_monitors": problems,
+    }
+
+
+def summarize_local_check_runtime(report: dict[str, Any]) -> dict[str, Any]:
+    checks = report.get("checks", [])
+    if not isinstance(checks, list):
+        checks = []
+    problems = [
+        item
+        for item in checks
+        if isinstance(item, dict) and item.get("status") in {"crashed", "stalled"}
+    ]
+    invalid = report.get("invalid", [])
+    if not isinstance(invalid, list):
+        invalid = []
+    severity = "error" if problems or invalid else None
+    return {
+        "status": status_from_severity(severity),
+        "worst_severity": severity,
+        "check_count": report.get("check_count", 0),
+        "status_counts": report.get("status_counts", {}),
+        "problem_count": len(problems),
+        "problem_checks": problems,
+        "invalid_count": len(invalid),
+        "invalid": invalid,
+    }
+
+
+def summarize_workstreams(report: dict[str, Any]) -> dict[str, Any]:
+    streams = report.get("workstreams", [])
+    if not isinstance(streams, list):
+        streams = []
+    attention = []
+    for item in streams:
+        if not isinstance(item, dict) or item.get("status") not in {
+            "needs_user",
+            "blocked",
+        }:
+            continue
+        attention.append(
+            {
+                "workstream_id": item.get("workstream_id"),
+                "status": item.get("status"),
+                "continuation_count": item.get("continuation_count"),
+                "max_continuations": item.get("max_continuations"),
+                "latest_checkpoint_id": item.get("latest_checkpoint_id"),
+                "latest_checkpoint_path": item.get("latest_checkpoint_path"),
+            }
+        )
+    invalid_count = int(report.get("invalid_count", 0))
+    severity = (
+        "error"
+        if invalid_count
+        or any(item.get("status") == "blocked" for item in attention)
+        else "warning" if attention else None
+    )
+    return {
+        "status": status_from_severity(severity),
+        "worst_severity": severity,
+        "workstream_count": report.get("workstream_count", 0),
+        "status_counts": report.get("status_counts", {}),
+        "attention_count": len(attention),
+        "attention_workstreams": attention,
+        "invalid_count": invalid_count,
+        "invalid": report.get("invalid", []),
+    }
+
+
 def check_large_log_summaries(
     checks: dict[str, Any],
     large_log_bytes: int,
@@ -386,7 +505,10 @@ def collect_issues(
     doctor: dict[str, Any],
     tasks: dict[str, Any],
     checks: dict[str, Any],
+    local_check_runtime: dict[str, Any],
     wake_channel: dict[str, Any],
+    ci_monitors: dict[str, Any],
+    workstreams: dict[str, Any],
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     for item in doctor.get("checks", []):
@@ -412,6 +534,93 @@ def collect_issues(
         )
     issues.extend(diagnostic_issues("worker_tasks", tasks.get("tasks", {})))
     issues.extend(diagnostic_issues("checks", checks.get("checks", {})))
+    for check in local_check_runtime.get("problem_checks", []):
+        if not isinstance(check, dict):
+            continue
+        issues.append(
+            {
+                "source": "local_check_runtime",
+                "severity": "error",
+                "check_id": check.get("check_id"),
+                "message": f"Local check runtime status is {check.get('status')}.",
+                "suggested_action": (
+                    "Run check reap, inspect the compact result and evidence, "
+                    "then use a new check id for any deliberate rerun."
+                ),
+            }
+        )
+    for invalid in local_check_runtime.get("invalid", []):
+        if not isinstance(invalid, dict):
+            continue
+        issues.append(
+            {
+                "source": "local_check_runtime",
+                "severity": "error",
+                "name": invalid.get("path"),
+                "message": invalid.get("error"),
+                "suggested_action": (
+                    "Inspect the durable descriptor; do not delete it merely "
+                    "to make aggregate status clean."
+                ),
+            }
+        )
+    for monitor in ci_monitors.get("problem_monitors", []):
+        if not isinstance(monitor, dict):
+            continue
+        monitor_status = monitor.get("status")
+        issues.append(
+            {
+                "source": "ci_monitors",
+                "severity": (
+                    "error"
+                    if monitor_status in {"failed", "crashed", "stalled", "invalid"}
+                    else "warning"
+                ),
+                "name": monitor.get("monitor_id"),
+                "message": (
+                    f"GitHub Actions monitor status is {monitor_status}; "
+                    f"failure_kind={monitor.get('failure_kind')}"
+                ),
+                "suggested_action": (
+                    monitor.get("suggested_action")
+                    or "Inspect ci status and bounded evidence; retry only after "
+                    "resolving the reported cause."
+                ),
+            }
+        )
+    for workstream in workstreams.get("attention_workstreams", []):
+        if not isinstance(workstream, dict):
+            continue
+        workstream_status = workstream.get("status")
+        issues.append(
+            {
+                "source": "workstreams",
+                "severity": (
+                    "error" if workstream_status == "blocked" else "warning"
+                ),
+                "name": workstream.get("workstream_id"),
+                "message": f"Workstream status is {workstream_status}.",
+                "suggested_action": (
+                    "Resolve the recorded condition, then explicitly resume "
+                    "the workstream from its owning host chat."
+                ),
+            }
+        )
+    for invalid in workstreams.get("invalid", []):
+        if not isinstance(invalid, dict):
+            continue
+        issues.append(
+            {
+                "source": "workstreams",
+                "severity": "error",
+                "name": invalid.get("path"),
+                "message": invalid.get("error"),
+                "suggested_action": (
+                    "Inspect the durable descriptor; do not delete it merely "
+                    "to make aggregate status clean."
+                ),
+            }
+        )
     return issues
 
 
@@ -650,6 +859,26 @@ def append_component_details(
             f"count=`{component.get('worker_count')}`, "
             f"enabled=`{component.get('enabled_count')}`, "
             f"profile_warnings=`{component.get('warning_count')}`"
+        )
+    elif component_name == "ci_monitors":
+        lines.append(
+            "  - monitors: "
+            f"count=`{component.get('monitor_count')}`, "
+            f"problems=`{component.get('problem_monitor_count')}`"
+        )
+    elif component_name == "local_check_runtime":
+        lines.append(
+            "  - local check runtime: "
+            f"count=`{component.get('check_count')}`, "
+            f"problems=`{component.get('problem_count')}`, "
+            f"invalid=`{component.get('invalid_count')}`"
+        )
+    elif component_name == "workstreams":
+        lines.append(
+            "  - workstreams: "
+            f"count=`{component.get('workstream_count')}`, "
+            f"attention=`{component.get('attention_count')}`, "
+            f"invalid=`{component.get('invalid_count')}`"
         )
 
 

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_WORKSTREAM",
+  "workstream_id": "ROADMAP-1",
+  "project_id": "project-123",
+  "goal": "Finish the accepted roadmap.",
+  "status": "active",
+  "continuation_count": 1,
+  "max_continuations": 8,
+  "delay_seconds": 10.0,
+  "max_wall_seconds": 14400,
+  "created_at": "2026-09-05T10:00:00.000+00:00",
+  "updated_at": "2026-09-05T10:10:00.000+00:00"
+}

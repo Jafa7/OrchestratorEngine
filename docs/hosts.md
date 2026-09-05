@@ -1,7 +1,8 @@
 # Host setup
 
-OrchestratorEngine routes worker completions back to the host target the user
-orchestrates from. Each host has a different delivery mechanism; the binding
+OrchestratorEngine routes worker and deterministic external-operation
+completions back to the host target the user orchestrates from. Each host has a
+different delivery mechanism; the binding
 contract tells the watcher which one to use. Distinguish durable delivery from
 live wakeup:
 

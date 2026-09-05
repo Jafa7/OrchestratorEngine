@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-engine://schemas/workstream-result",
+  "title": "Agent workstream continuation result",
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_WORKSTREAM_CONTINUATION",
+  "type": "object",
+  "required": ["schema_version", "kind", "workstream_id", "checkpoint_id", "status", "summary", "next_action", "not_before"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "ORCHESTRATOR_WORKSTREAM_CONTINUATION"},
+    "workstream_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"},
+    "checkpoint_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"},
+    "status": {"const": "ready"},
+    "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+    "next_action": {"type": "string", "minLength": 1, "maxLength": 4000},
+    "not_before": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": false
+}

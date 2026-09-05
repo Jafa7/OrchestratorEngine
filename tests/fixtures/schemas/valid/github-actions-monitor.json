@@ -1,0 +1,1 @@
+{"schema_version":1,"kind":"GITHUB_ACTIONS_MONITOR","monitor_id":"gha-1","source_kind":"github_actions","status":"running","hostname":"github.com","repository":"example/project","run_id":123,"attempt":1,"expected_head_sha":"abcdef1","wake_policy":"always","timeout_seconds":3600,"monitor_dir":"/tmp/monitor","created_at":"2026-09-05T12:00:00.000+00:00"}

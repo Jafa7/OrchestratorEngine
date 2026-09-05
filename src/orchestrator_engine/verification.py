@@ -10,7 +10,16 @@ from . import core, worker_diagnostics
 
 VERIFICATION_RESULT_KIND = "ORCHESTRATOR_VERIFICATION_RESULT"
 CHECKS_STATUS_KIND = "ORCHESTRATOR_CHECKS_STATUS"
-CHECK_STATUSES = {"passed", "failed", "errored", "cancelled", "missing", "unknown"}
+CHECK_STATUSES = {
+    "starting",
+    "running",
+    "passed",
+    "failed",
+    "errored",
+    "cancelled",
+    "missing",
+    "unknown",
+}
 UNSUCCESSFUL_STATUSES = {"failed", "errored", "cancelled"}
 DEFAULT_LARGE_LOG_BYTES = 1024 * 1024
 
@@ -122,6 +131,9 @@ def summarize_check(
     try:
         result = core.load_object(result_path)
     except (OSError, core.OrchestratorError) as error:
+        active = active_check_summary(check_dir, result_path)
+        if active is not None:
+            return active
         diagnostics.append(
             diagnostic(
                 code="verification_result_unreadable",
@@ -212,6 +224,47 @@ def summarize_check(
             "commands": command_summaries,
             "failed_commands": failed_commands,
             "artifacts": {name: str(path) for name, path in artifacts.items()},
+        }
+    )
+    return summary
+
+
+def active_check_summary(check_dir: Path, result_path: Path) -> dict[str, Any] | None:
+    if result_path.exists():
+        return None
+    descriptor_path = check_dir / "check.json"
+    if not descriptor_path.is_file():
+        return None
+    try:
+        descriptor = core.load_object(descriptor_path)
+    except (OSError, core.OrchestratorError):
+        return None
+    status = descriptor.get("status")
+    if descriptor.get("kind") != "ORCHESTRATOR_LOCAL_CHECK" or status not in {
+        "starting",
+        "running",
+    }:
+        return None
+    summary = base_summary(
+        directory_check_id=check_dir.name,
+        check_id=str(descriptor.get("check_id") or check_dir.name),
+        status=str(status),
+        result_path=result_path,
+        check_dir=check_dir,
+        diagnostics=[],
+    )
+    summary.update(
+        {
+            "suite": descriptor.get("suite"),
+            "execution": descriptor.get("execution"),
+            "started_at": descriptor.get("started_at"),
+            "descriptor_path": str(descriptor_path),
+            "command_count": None,
+            "failed_command_count": 0,
+            "commands": [],
+            "failed_commands": [],
+            "artifacts": {"descriptor": str(descriptor_path)},
+            "log_sizes": {},
         }
     )
     return summary

@@ -17,7 +17,9 @@ from . import (
     codex_app,
     core,
     diagnostics,
+    github_actions,
     host_capabilities,
+    local_checks,
     schemas,
     status,
     task_diagnostics,
@@ -28,6 +30,7 @@ from . import (
     worker_diagnostics,
     worker_policy,
     workers,
+    workstreams,
 )
 
 
@@ -530,6 +533,168 @@ def build_parser() -> argparse.ArgumentParser:
         help="Verification log size that should be considered too large for chat.",
     )
 
+    check = subparsers.add_parser(
+        "check",
+        help="Plan and execute deterministic local verification suites.",
+    )
+    check_subparsers = check.add_subparsers(dest="check_command", required=True)
+    check_plan = check_subparsers.add_parser(
+        "plan",
+        help="Recommend foreground or detached execution from duration evidence.",
+    )
+    check_plan.add_argument("--suite", required=True)
+    check_plan.add_argument(
+        "--long-threshold-seconds",
+        type=float,
+        default=local_checks.DEFAULT_LONG_THRESHOLD_SECONDS,
+    )
+    check_run = check_subparsers.add_parser(
+        "run",
+        help="Run a configured suite using explicit or planned execution.",
+    )
+    check_run.add_argument("--check-id", required=True)
+    check_run.add_argument("--suite", required=True)
+    check_run.add_argument(
+        "--execution",
+        choices=sorted(local_checks.EXECUTION_MODES),
+        default="auto",
+    )
+    check_run.add_argument(
+        "--wake-policy",
+        choices=sorted(local_checks.WAKE_POLICIES),
+        default="auto",
+    )
+    check_run.add_argument(
+        "--long-threshold-seconds",
+        type=float,
+        default=local_checks.DEFAULT_LONG_THRESHOLD_SECONDS,
+    )
+    check_status = check_subparsers.add_parser(
+        "status",
+        help="Read compact first-class local check runtime state.",
+    )
+    check_status.add_argument("--check-id")
+    check_reap = check_subparsers.add_parser(
+        "reap",
+        help="Finalize detached checks whose recorded supervisor is gone.",
+    )
+    check_reap.add_argument("--check-id")
+    check_supervise = check_subparsers.add_parser(
+        "supervise",
+        help="Internal: execute one detached local check.",
+    )
+    check_supervise.add_argument("--check-id", required=True)
+
+    workstream = subparsers.add_parser(
+        "workstream",
+        help="Record bounded agent continuation checkpoints.",
+    )
+    workstream_subparsers = workstream.add_subparsers(
+        dest="workstream_command", required=True
+    )
+    workstream_start = workstream_subparsers.add_parser(
+        "start",
+        help="Start a bounded workstream and snapshot the current host target.",
+    )
+    workstream_start.add_argument("--workstream-id", required=True)
+    workstream_start.add_argument("--goal", required=True)
+    workstream_start.add_argument(
+        "--delay-seconds",
+        type=float,
+        default=workstreams.DEFAULT_DELAY_SECONDS,
+    )
+    workstream_start.add_argument(
+        "--max-continuations",
+        type=int,
+        default=workstreams.DEFAULT_MAX_CONTINUATIONS,
+    )
+    workstream_start.add_argument(
+        "--max-wall-seconds",
+        type=int,
+        default=workstreams.DEFAULT_MAX_WALL_SECONDS,
+    )
+    workstream_checkpoint = workstream_subparsers.add_parser(
+        "checkpoint",
+        help="Record an explicit continuation or stop decision.",
+    )
+    workstream_checkpoint.add_argument("--workstream-id", required=True)
+    workstream_checkpoint.add_argument("--checkpoint-id", required=True)
+    workstream_checkpoint.add_argument(
+        "--decision", choices=sorted(workstreams.DECISIONS), required=True
+    )
+    workstream_checkpoint.add_argument("--summary", required=True)
+    workstream_checkpoint.add_argument("--next-action")
+    workstream_checkpoint.add_argument(
+        "--waiting-on",
+        help="External task, check or CI operation expected to wake the chat.",
+    )
+    workstream_checkpoint.add_argument(
+        "--ready",
+        action="store_true",
+        help=(
+            "Assert that the next action is in scope, needs no user decision "
+            "and has no unfinished external prerequisite."
+        ),
+    )
+    workstream_status = workstream_subparsers.add_parser(
+        "status",
+        help="Read compact durable workstream state.",
+    )
+    workstream_status.add_argument("--workstream-id")
+    workstream_resume = workstream_subparsers.add_parser(
+        "resume",
+        help="Explicitly return a non-complete workstream to active state.",
+    )
+    workstream_resume.add_argument("--workstream-id", required=True)
+
+    ci = subparsers.add_parser(
+        "ci",
+        help="Monitor external CI runs without model polling.",
+    )
+    ci_subparsers = ci.add_subparsers(dest="ci_command", required=True)
+    ci_watch = ci_subparsers.add_parser(
+        "watch",
+        help="Start a detached exact-run GitHub Actions monitor.",
+    )
+    ci_watch.add_argument("--repo", required=True)
+    ci_watch.add_argument("--run-id", required=True)
+    ci_watch.add_argument("--hostname", default="github.com")
+    ci_watch.add_argument("--attempt")
+    ci_watch.add_argument("--expected-head-sha")
+    ci_watch.add_argument("--gh-command")
+    ci_watch.add_argument("--timeout-seconds", type=float)
+    ci_watch.add_argument(
+        "--wake-policy",
+        choices=sorted(github_actions.WAKE_POLICIES),
+        default="always",
+    )
+    ci_status = ci_subparsers.add_parser(
+        "status",
+        help="Read compact GitHub Actions monitor status.",
+    )
+    ci_status.add_argument("--monitor-id")
+    ci_cancel = ci_subparsers.add_parser(
+        "cancel",
+        help="Cancel local monitoring without cancelling the GitHub run.",
+    )
+    ci_cancel.add_argument("--monitor-id", required=True)
+    ci_cancel.add_argument("--reason", required=True)
+    ci_retry = ci_subparsers.add_parser(
+        "retry",
+        help="Retry a terminal monitor after operator review.",
+    )
+    ci_retry.add_argument("--monitor-id", required=True)
+    ci_retry.add_argument("--reason", required=True)
+    ci_subparsers.add_parser(
+        "reap",
+        help="Finalize monitors whose detached supervisor is proven gone.",
+    )
+    ci_supervise = ci_subparsers.add_parser(
+        "supervise",
+        help="Internal: supervise one detached GitHub Actions monitor.",
+    )
+    ci_supervise.add_argument("--monitor-id", required=True)
+
     watcher_parser = subparsers.add_parser(
         "watcher",
         help="Scan the inbox and act on unseen terminal signals.",
@@ -711,6 +876,27 @@ def main(argv: list[str] | None = None) -> int:
             return worker_diagnostics.exit_code_for_worst(
                 output.get("worst_severity") if isinstance(output, dict) else None
             )
+        elif args.command == "check":
+            if len(roots) != 1:
+                raise core.OrchestratorError("check requires exactly one project root")
+            output = run_local_check_command(args, roots[0])
+            print_json(output)
+            if (
+                args.check_command in {"run", "supervise"}
+                and output.get("status") in {"failed", "errored", "cancelled"}
+            ):
+                return 1
+        elif args.command == "workstream":
+            if len(roots) != 1:
+                raise core.OrchestratorError(
+                    "workstream requires exactly one project root"
+                )
+            print_json(run_workstream_command(args, roots[0]))
+        elif args.command == "ci":
+            if len(roots) != 1:
+                raise core.OrchestratorError("ci requires exactly one project root")
+            output = run_ci_command(args, roots[0])
+            print_json(output)
         elif args.command == "doctor":
             if len(roots) != 1:
                 raise core.OrchestratorError("doctor requires exactly one project root")
@@ -868,6 +1054,126 @@ def run_bind_command(args: argparse.Namespace, root: Path) -> object:
     if detection_source:
         result["thread_id_source"] = detection_source
     return result
+
+
+def run_workstream_command(args: argparse.Namespace, root: Path) -> object:
+    if args.workstream_command == "start":
+        return workstreams.start_workstream(
+            root,
+            workstream_id=args.workstream_id,
+            goal=args.goal,
+            state_dir=args.state_dir,
+            delay_seconds=args.delay_seconds,
+            max_continuations=args.max_continuations,
+            max_wall_seconds=args.max_wall_seconds,
+        )
+    if args.workstream_command == "checkpoint":
+        return workstreams.checkpoint_workstream(
+            root,
+            workstream_id=args.workstream_id,
+            checkpoint_id=args.checkpoint_id,
+            decision=args.decision,
+            summary=args.summary,
+            next_action=args.next_action,
+            waiting_on=args.waiting_on,
+            ready=args.ready,
+            state_dir=args.state_dir,
+        )
+    if args.workstream_command == "resume":
+        return workstreams.resume_workstream(
+            root,
+            workstream_id=args.workstream_id,
+            state_dir=args.state_dir,
+        )
+    return workstreams.workstream_status(
+        root,
+        workstream_id=args.workstream_id,
+        state_dir=args.state_dir,
+    )
+
+
+def run_local_check_command(args: argparse.Namespace, root: Path) -> dict:
+    if args.check_command == "plan":
+        return local_checks.plan_check(
+            root,
+            suite=args.suite,
+            state_dir=args.state_dir,
+            long_threshold_seconds=args.long_threshold_seconds,
+        )
+    if args.check_command == "run":
+        return local_checks.start_check(
+            root,
+            check_id=args.check_id,
+            suite=args.suite,
+            state_dir=args.state_dir,
+            execution=args.execution,
+            wake_policy=args.wake_policy,
+            long_threshold_seconds=args.long_threshold_seconds,
+        )
+    if args.check_command == "supervise":
+        return local_checks.supervise_check(
+            root,
+            check_id=args.check_id,
+            state_dir=args.state_dir,
+        )
+    if args.check_command == "reap":
+        return local_checks.reap_checks(
+            root,
+            check_id=args.check_id,
+            state_dir=args.state_dir,
+        )
+    return local_checks.check_status(
+        root,
+        check_id=args.check_id,
+        state_dir=args.state_dir,
+    )
+
+
+def run_ci_command(args: argparse.Namespace, root: Path) -> object:
+    if args.ci_command == "watch":
+        return github_actions.start_monitor(
+            root,
+            repository=args.repo,
+            run_id=args.run_id,
+            state_dir=args.state_dir,
+            hostname=args.hostname,
+            attempt=args.attempt,
+            expected_head_sha=args.expected_head_sha,
+            gh_command=args.gh_command,
+            timeout_seconds=args.timeout_seconds,
+            wake_policy=args.wake_policy,
+        )
+    if args.ci_command == "status":
+        return github_actions.monitor_status(
+            root,
+            state_dir=args.state_dir,
+            monitor_id=args.monitor_id,
+        )
+    if args.ci_command == "cancel":
+        return github_actions.cancel_monitor(
+            root,
+            monitor_id=args.monitor_id,
+            reason=args.reason,
+            state_dir=args.state_dir,
+        )
+    if args.ci_command == "retry":
+        return github_actions.retry_monitor(
+            root,
+            monitor_id=args.monitor_id,
+            reason=args.reason,
+            state_dir=args.state_dir,
+        )
+    if args.ci_command == "reap":
+        return github_actions.reap_monitors(root, state_dir=args.state_dir)
+    if args.ci_command == "supervise":
+        return github_actions.supervise_monitor(
+            root,
+            monitor_id=args.monitor_id,
+            state_dir=args.state_dir,
+        )
+    raise github_actions.GitHubActionsError(
+        f"unsupported ci command: {args.ci_command}"
+    )
 
 
 def run_worker_cli_command(args: argparse.Namespace, root: Path) -> object:

@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_WORKSTREAM_CONTINUATION",
+  "workstream_id": "ROADMAP-1",
+  "checkpoint_id": "phase-1",
+  "status": "ready",
+  "summary": "The first phase is verified.",
+  "next_action": "Implement the second phase.",
+  "not_before": "2026-09-05T10:10:10.000+00:00"
+}

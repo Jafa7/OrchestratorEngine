@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-engine://schemas/workstream-evidence",
+  "title": "Agent workstream continuation evidence",
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_WORKSTREAM_EVIDENCE",
+  "type": "object",
+  "required": ["schema_version", "kind", "workstream_id", "checkpoint_id", "ready_declared", "checkpoint_path", "created_at"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "ORCHESTRATOR_WORKSTREAM_EVIDENCE"},
+    "workstream_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"},
+    "checkpoint_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"},
+    "ready_declared": {"const": true},
+    "checkpoint_path": {"type": "string", "pattern": "^/"},
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": false
+}

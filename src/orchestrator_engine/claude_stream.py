@@ -184,6 +184,8 @@ def format_signal_line(signal: dict[str, Any]) -> str:
         "kind": "LOCAL_AI_ORCHESTRATOR_SIGNAL",
         "event_id": signal.get("event_id"),
         "task_id": signal.get("task_id"),
+        "operation_id": signal.get("operation_id"),
+        "source_kind": signal.get("source_kind"),
         "terminal_status": signal.get("terminal_status"),
         "event_path": signal.get("event_path"),
         "result_path": signal.get("result_path"),

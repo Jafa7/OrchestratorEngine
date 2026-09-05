@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "kind": "GITHUB_ACTIONS_MONITOR_SUPERVISOR_LAUNCH",
+  "monitor_id": "gha-123-a1-example",
+  "supervisor_pid": 4321,
+  "supervisor_identity": {
+    "source": "linux-proc-stat",
+    "pid": 4321,
+    "start_ticks": 123456
+  },
+  "launched_at": "2026-09-05T10:00:00.000+00:00"
+}

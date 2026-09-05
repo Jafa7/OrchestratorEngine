@@ -11,9 +11,11 @@ Stable names are `worker-task`, `worker-result`, `worker-evidence`,
 `worker-output-manifest`,
 `worker-queue-entry`, `worker-cancel-request`, `worker-control-ack`,
 `worker-task-intent`, `worker-dispatch-claim`, `terminal-event`, `inbox-signal`,
-`binding`, `wake-target`, `verification-result`, `task-resolution`, and
-`artifact-resolution`. They are included in wheels and source distributions
-and require no runtime dependency.
+`binding`, `wake-target`, `verification-result`, `followup-terminal-event`,
+`followup-signal`, `github-actions-monitor`, `github-actions-evidence`,
+`github-actions-supervisor-launch`, `github-actions-cancel-request`,
+`task-resolution`, and `artifact-resolution`. They are included in wheels and
+source distributions and require no runtime dependency.
 `orchestrator-engine schemas` lists names; pass one name to print its schema.
 Catalog and schema output include `schema_version` and `kind`.
 
@@ -36,6 +38,10 @@ depend on these behaviors:
   `ok`, `warn`, `error` or `skipped` status.
 - Terminal events are written under `.orchestrator/events/` and paired with
   inbox signals under `.orchestrator/inbox/signals/`.
+- Deterministic non-worker operations use `ORCHESTRATOR_TERMINAL` and
+  `ORCHESTRATOR_FOLLOWUP_SIGNAL`; worker operations retain
+  `WORKER_TERMINAL` and `LOCAL_AI_WORKER_FINISHED` unchanged. Both signal
+  forms use the same watcher, delivery receipts and host adapters.
 - Event, signal, binding, worker task, watcher state, heartbeat, service and
   receipt documents are JSON objects with `schema_version: 1` and stable
   `kind` values.
@@ -160,6 +166,12 @@ It returns `ORCHESTRATOR_STATUS_REPORT` with:
   historical task outcomes.
 - `components.checks` — verification check status counts plus only failed or
   diagnostic-bearing checks.
+- `components.local_check_runtime` — first-class local check process state,
+  including crashed, stalled or unreadable descriptors that require
+  `check reap` or operator inspection.
+- `components.ci_monitors` — monitor status and CI conclusion counts plus
+  bounded details for unavailable, ambiguous, timed-out, crashed, stalled or
+  invalid monitors.
 - `issues[]` — flattened operator actions collected from the component
   diagnostics.
 
@@ -610,27 +622,44 @@ severity and are surfaced through aggregate status/report visibility fields.
 
 ## Verification result
 
-Long-running checks should run as detached workers instead of keeping a host
-chat open while output streams. A project may use any native runner as long as
-it writes a compact machine-readable result and durable logs. The bundled
-`examples/check_runner.py` is a portable reference implementation, not core
-runtime logic.
+First-class local checks execute adopter-declared argv directly, without a
+model or shell. Define suites in `.orchestrator/checks.toml`, inspect the
+duration plan, then run with a unique check id:
 
-The intended control flow is dispatch/end-turn/follow-up: the host chat starts
-a verification worker with `worker run`, then ends the current turn without
-polling. The worker terminal event carries the task's `wake_target`, so the
-result is routed through the channel selected by the dispatching host. Claude
-supports live stream wakeup, VS Code attempts best-effort UI delivery, and
-current Codex CLIs queue the completion to the live Desktop task. This keeps
-long test suites from spending host-chat tokens while they are only waiting for
-local processes.
+```bash
+orchestrator-engine --project-root /path/to/project check plan --suite full
+orchestrator-engine --project-root /path/to/project check run \
+  --check-id FINAL-1 --suite full --execution auto --wake-policy auto
+```
+
+The planner fingerprints the exact suite, verification level, argv, cwd,
+required flags and command timeouts. A configured duration estimate takes
+priority; otherwise it uses the median of at most ten successful samples for
+that fingerprint. Estimates strictly greater than 30 seconds and unknown
+`full` suites run detached. Unknown structural or focused suites run in the
+foreground once. Failed samples do not lower the estimate.
+
+`wake-policy auto` resolves to `always` for detached execution and `never` for
+foreground execution. A detached descriptor snapshots the dispatching host's
+`wake_target`; rebinding the project later does not redirect its completion.
+`check status` is compact and read-only. `check reap` mutates only non-terminal
+descriptors whose recorded supervisor identity is proven gone: it recovers
+already-written terminal artifacts when possible, otherwise records an
+`errored` result and terminal event. It never deletes logs or reruns commands.
+
+Projects may still use any native runner that writes this verification result
+contract. The bundled `examples/check_runner.py` remains a portable reference
+and `checks` remains the legacy-compatible read-only result inspector.
 
 Recommended path layout:
 
+- `.orchestrator/checks/<check_id>/check.json`
 - `.orchestrator/checks/<check_id>/verification-result.json`
+- `.orchestrator/checks/<check_id>/evidence.json`
 - `.orchestrator/checks/<check_id>/summary.txt`
 - `.orchestrator/checks/<check_id>/full.log`
 - `.orchestrator/checks/<check_id>/<command-label>.log`
+- `.orchestrator/check-history.json`
 
 Reference JSON shape:
 
@@ -689,8 +718,9 @@ analysis worker after a failed check to summarize only the referenced failure
 logs. That triage is a separate task with separate evidence; it must not
 replace the original verification result or the host agent's review.
 
-`checks` is the read-only status command for verification artifacts. It does
-not run commands or mutate check directories.
+`checks` is the read-only, runner-neutral status command for verification
+artifacts. It does not run commands or mutate check directories. `check
+status` additionally reports first-class supervisor lifecycle state.
 
 ```bash
 orchestrator-engine --project-root /path/to/project checks --severity warning
@@ -755,6 +785,121 @@ Known check diagnostic codes:
 Exit codes match other diagnostic commands: `0` for no diagnostics or `info`
 only, `2` for warnings, `3` for errors and `1` for CLI/runtime failures such
 as an unknown `--check-id` filter.
+
+## GitHub Actions exact-run monitor
+
+`ci watch` starts a local detached monitor and returns immediately. It is an
+explicit GitHub adapter, not provider-specific policy in the orchestration
+core. The adapter invokes the adopter-installed and already authenticated
+`gh` executable with argv and never reads or stores a GitHub token.
+
+Configuration is local adopter state:
+
+```toml
+# .orchestrator/integrations.toml
+[integrations.github_actions]
+enabled = true
+gh_command = "gh"
+allowed_hosts = ["github.com"]
+allowed_repositories = ["EXAMPLE/PROJECT"]
+```
+
+Repository allowlisting is mandatory and has no wildcard form. Hostnames
+default to `github.com`; GitHub Enterprise hosts must also be added explicitly
+to `allowed_hosts`. A machine-specific
+Windows executable may be configured with a WSL path such as
+`/mnt/c/Program Files/GitHub CLI/gh.exe`; it remains local state and should not
+be committed as a portable project default.
+
+Start one exact monitor:
+
+```bash
+orchestrator-engine --project-root /path/to/project ci watch \
+  --repo EXAMPLE/PROJECT --run-id 123456 \
+  --expected-head-sha abcdef123456 \
+  --wake-policy always
+```
+
+`--run-id` is a positive decimal GitHub database ID. `--attempt` can pin a
+rerun attempt. `--expected-head-sha` is strongly recommended because it makes
+a stale or incorrect run fail closed as `ambiguous`. A monitor with the same
+derived ID is idempotent. After reviewing an unavailable or ambiguous monitor,
+use `ci retry --monitor-id ID --reason TEXT`; the retry inherits the exact
+run identity and policy, refreshes the configured local `gh` executable, and
+records durable lineage under a new operation ID.
+
+`--timeout-seconds` is optional. With no timeout, the detached local process
+may wait for a legitimately long CI run. `ci cancel --monitor-id ID --reason
+TEXT` stops only the local monitor process group; it never cancels or reruns
+the GitHub workflow. `ci status [--monitor-id ID]` reads compact local state.
+If status reports `crashed`, run `ci reap`: it finalizes only monitors whose
+recorded supervisor identity is proven gone, stops a recorded orphaned watch
+process identity-safely, and emits normal terminal evidence. Inspect that
+evidence before using `ci retry`. A stale monitor with no provable process
+identity is reported as `stalled` and is not signalled or reaped speculatively.
+
+The monitor performs a bounded `gh run view --json ...` first. An already
+terminal run completes immediately. Otherwise it executes `gh run watch`
+locally and always performs a final bounded `run view`; final terminal GitHub
+state is authoritative even when the watch command exits non-zero. Two result
+axes remain separate:
+
+- `monitor_status` describes observation: `completed`, `failed`, `cancelled`,
+  `timed_out`, `unavailable` or `ambiguous`;
+- `ci_conclusion` preserves GitHub's conclusion, including `success`,
+  `failure`, `cancelled`, `timed_out`, `action_required`, `neutral`, `skipped`
+  and `startup_failure` when returned.
+
+Authentication, run-not-found, network, malformed-output and identity errors
+are recorded as monitor failures and are never reported as failed CI. The
+adapter stores hashes, sizes and redacted bounded tails rather than sending CI
+output to the host chat. Complete CI logs stay on GitHub and are fetched only
+when targeted diagnosis is required.
+
+The durable files are:
+
+- `.orchestrator/monitors/github-actions/<monitor_id>/monitor.json`;
+- `.orchestrator/monitors/github-actions/<monitor_id>/supervisor-launch.json`;
+- `.orchestrator/monitors/github-actions/<monitor_id>/evidence.json`;
+- optional `cancel-request.json` for a durable local cancellation request;
+- `.orchestrator/checks/<monitor_id>/verification-result.json` and
+  `summary.txt`;
+- one generic terminal event, plus an inbox signal when the wake policy
+  selects that outcome.
+
+`always` wakes for every terminal observation. `on-failure` and
+`action-required` remain quiet for confirmed success while preserving the
+result and event. Queue acceptance by a host still means delivery acceptance,
+not completion of the subsequent agent turn.
+
+## Bounded workstream checkpoints
+
+Path:
+
+- `.orchestrator/workstreams/<workstream_id>/workstream.json`
+- `.orchestrator/workstreams/<workstream_id>/checkpoints/<checkpoint_id>.json`
+
+`workstream start` snapshots the active host binding and sets explicit limits
+for automatic continuations. `workstream checkpoint` records one of
+`continue`, `waiting_external`, `needs_user`, `blocked`, `complete` or
+`paused`. Only `continue` can emit a generic follow-up signal, and it requires
+both a concrete `next_action` and the explicit `ready` declaration.
+`waiting_external` requires a bounded `waiting_on` operation identity and
+emits no duplicate timer wakeup.
+
+A continuation signal carries an optional `not_before` timestamp. Watchers
+must leave the signal unseen until that time. This schedules local delivery
+without model polling and preserves normal per-host retry and acknowledgement
+semantics after the signal becomes due.
+
+Checkpoint IDs are immutable idempotency keys. Automatic continuation stops
+closed when either the workstream continuation count or wall-time limit is
+reached. Stopped states require explicit `workstream resume`; `complete` is
+irreversible. No checkpoint authorizes commit, push, merge, release,
+publication, destructive operations or scope expansion.
+
+See [workstream-continuation.md](workstream-continuation.md) for the operator
+workflow and agent decision rules.
 
 ## Worker tasks
 

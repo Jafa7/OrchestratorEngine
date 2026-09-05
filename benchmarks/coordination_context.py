@@ -289,12 +289,17 @@ def render_svg(report: dict[str, Any]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--write-svg", type=Path)
+    parser.add_argument("--write-json", type=Path)
     args = parser.parse_args()
     report = run_benchmark()
     if args.write_svg is not None:
         args.write_svg.parent.mkdir(parents=True, exist_ok=True)
         args.write_svg.write_text(render_svg(report), encoding="utf-8")
-    print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+    report_text = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)
+    if args.write_json is not None:
+        args.write_json.parent.mkdir(parents=True, exist_ok=True)
+        args.write_json.write_text(report_text + "\n", encoding="utf-8")
+    print(report_text)
     return 0
 
 

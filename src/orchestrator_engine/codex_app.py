@@ -666,6 +666,8 @@ def _existing_wakeup(
             "kind": "CURRENT_THREAD_WAKEUP",
             "event_id": event_id,
             "task_id": existing.get("task_id"),
+            "operation_id": existing.get("operation_id"),
+            "source_kind": existing.get("source_kind"),
             "target_thread_id": existing.get("target_thread_id"),
             "status": "deferred",
             **host_capabilities.receipt_fields("codex"),
@@ -734,7 +736,7 @@ def queue_current_thread(
         "schema_version": core.SCHEMA_VERSION,
         "kind": "CURRENT_THREAD_WAKEUP",
         "event_id": event_id,
-        "task_id": event["task_id"],
+        **core.subject_fields(event),
         "target_thread_id": target_thread_id,
         **host_capabilities.receipt_fields("codex"),
         "created_at": core.utc_now(),
@@ -927,7 +929,7 @@ def wake_current_thread(
                 "schema_version": core.SCHEMA_VERSION,
                 "kind": "CURRENT_THREAD_WAKEUP",
                 "event_id": event_id,
-                "task_id": event["task_id"],
+                **core.subject_fields(event),
                 "target_thread_id": target_thread_id,
                 "status": "deferred",
                 **host_capabilities.receipt_fields(
@@ -943,7 +945,7 @@ def wake_current_thread(
                 "schema_version": core.SCHEMA_VERSION,
                 "kind": "CURRENT_THREAD_WAKEUP",
                 "event_id": event_id,
-                "task_id": event["task_id"],
+                **core.subject_fields(event),
                 "target_thread_id": target_thread_id,
                 "status": "deferred",
                 **host_capabilities.receipt_fields(
@@ -964,7 +966,7 @@ def wake_current_thread(
                 "schema_version": core.SCHEMA_VERSION,
                 "kind": "CURRENT_THREAD_WAKEUP",
                 "event_id": event_id,
-                "task_id": event["task_id"],
+                **core.subject_fields(event),
                 "target_thread_id": target_thread_id,
                 "status": "deferred",
                 **host_capabilities.receipt_fields(
@@ -1040,7 +1042,7 @@ def wake_current_thread(
             "schema_version": core.SCHEMA_VERSION,
             "kind": "CURRENT_THREAD_WAKEUP",
             "event_id": event_id,
-            "task_id": event["task_id"],
+            **core.subject_fields(event),
             "target_thread_id": target_thread_id,
             "status": "woken" if turn_status == "completed" else "submitted",
             **host_capabilities.receipt_fields(

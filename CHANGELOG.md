@@ -4,6 +4,45 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-05
+
+### Added
+
+- Detached exact-run GitHub Actions monitoring through the locally
+  authenticated `gh` CLI, with repository allowlisting, optional run-attempt
+  and commit-SHA checks, bounded evidence, compact `checks` integration and
+  dispatch-time host wakeup.
+- Provider-neutral `ORCHESTRATOR_TERMINAL` and
+  `ORCHESTRATOR_FOLLOWUP_SIGNAL` contracts let deterministic external
+  operations reuse the existing watcher without pretending to be AI workers.
+- CI wake policies can deliver every terminal result or remain quiet on a
+  successful run while preserving its durable result and audit event.
+- Identity-safe recovery for crashed GitHub Actions monitors through `ci reap`,
+  plus bounded-at-read `gh run view` capture and machine-readable launch and
+  cancellation records.
+- Explicit bounded workstream checkpoints with delayed, idempotent continuation
+  wakeups and fail-closed `needs_user`, `blocked`, `paused` and completion
+  states. Ending a chat turn alone never authorizes continuation.
+- A documented external-tool matrix makes optional `gh`, Codex, Claude,
+  Copilot and VS Code CLI prerequisites explicit without letting core install
+  tools or manage credentials.
+- First-class local `check plan/run/status/reap` commands choose foreground or
+  detached execution from configured estimates or bounded successful-run
+  history, using a 30-second default threshold and detached wakeups without
+  model polling.
+- Detached local checks persist their supervisor identity before returning;
+  aggregate status exposes crashed/stalled runtimes and `check reap` recovers
+  durable terminal artifacts or records an explicit error without rerunning.
+- Local check output stays complete in durable logs; successful JSON evidence
+  records hashes and sizes without copying output tails, while failures retain
+  only bounded diagnostic excerpts.
+
+### Security
+
+- GitHub monitoring uses argv execution without a shell, never requests or
+  persists authentication tokens, redacts common token forms, bounds captured
+  output and fails closed for repositories outside adopter-owned configuration.
+
 ## [0.6.0] - 2026-09-05
 
 ### Added

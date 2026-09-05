@@ -56,7 +56,7 @@ For a reproducible adopter install, use an immutable release tag:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.6.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.7.0"
 ```
 
 GitHub Release archives and wheel/sdist assets are published with the tag;
@@ -328,7 +328,7 @@ uses the existing `permission_profile`. Treat these values as project-owned
 assertions for deterministic profile selection, not provider capability
 detection.
 
-## Step 5 — Configure verification workers
+## Step 5 — Configure verification
 
 Adopt the [risk-based verification policy](verification-policy.md) before
 configuring suites. Each project should define structural, focused and full
@@ -338,15 +338,16 @@ not automatically a focused suite: it is focused only when it covers the
 touched behavior without running unrelated tests.
 
 For long test suites, do not keep the host chat open while tests stream
-output. Run checks as detached workers that write a compact verification
-result, then let the configured host channel deliver the follow-up.
+output. Prefer the first-class deterministic check runtime, which writes a
+compact verification result and lets the configured host channel deliver the
+follow-up without invoking an AI worker.
 
-Operational rule: dispatch the check worker from the chat that needs the
-answer, then end that turn. Do not run `pytest`, `ruff` or similar long checks
-directly in the host chat unless the user explicitly asked for an immediate
-foreground run. The `worker run` descriptor snapshots this chat as
-`wake_target`, so the completion is routed to the host target that launched the
-check even when several chats share the same project.
+Operational rule: start the check from the chat that needs the answer, then end
+that turn when the plan selects detached execution. Do not run `pytest`, `ruff`
+or similar long checks directly in the host chat unless the user explicitly
+asked for an immediate foreground run. The local check descriptor snapshots
+this chat as `wake_target`, so completion is routed to the target that launched
+the check even when several chats share the same project.
 
 Use focused checks while implementation is still changing. Dispatch the full
 suite only after the work is otherwise complete and needs final verification.
@@ -364,6 +365,8 @@ Example project config:
 ```toml
 # /path/to/project/.orchestrator/checks.toml
 [suites.fast]
+verification = "focused"
+expected_duration_seconds = 10
 
 [[suites.fast.commands]]
 label = "unit"
@@ -375,6 +378,8 @@ label = "ruff"
 argv = ["ruff", "check", "."]
 
 [suites.full]
+verification = "full"
+expected_duration_seconds = 60
 
 [[suites.full.commands]]
 label = "unit"
@@ -389,6 +394,25 @@ argv = ["ruff", "check", "."]
 label = "diff-check"
 argv = ["git", "diff", "--check"]
 ```
+
+Inspect the plan and launch the suite with a unique id:
+
+```bash
+orchestrator-engine --project-root /path/to/project check plan --suite full
+orchestrator-engine --project-root /path/to/project check run \
+  --check-id FINAL-1 --suite full
+```
+
+In `auto` mode, a configured or measured duration strictly greater than 30
+seconds runs detached. Unknown full gates also run detached; unknown focused or
+structural suites run once in the foreground to establish history. Successful
+output stays in durable logs and the wakeup carries only compact result paths.
+Use `check status` for lifecycle state and `check reap` only when a recorded
+detached supervisor is reported crashed or stalled.
+
+The worker profiles below are a compatibility option for projects that must
+keep an existing project-specific runner behind `worker run`. New adopters do
+not need an AI worker merely to execute deterministic checks.
 
 Example worker profiles:
 
@@ -445,6 +469,51 @@ run the deterministic project runner directly. For a passing suite no AI
 triage is needed. For a failure, an optional low-cost analysis worker may read
 only the referenced failed-command logs and prepare a bounded handoff for the
 host agent, which verifies the diagnosis before changing code.
+
+### Optional: monitor GitHub Actions without model polling
+
+This feature requires the adopter-installed GitHub CLI. Install `gh` from its
+official documentation, then verify both the executable and authentication:
+
+```bash
+gh --version
+gh auth status --hostname github.com
+```
+
+See [external-tools.md](external-tools.md) for all optional external commands.
+
+If the project uses GitHub Actions, create the local integration config. Keep
+machine-specific executable paths private and require an explicit repository
+allowlist:
+
+```toml
+# /path/to/project/.orchestrator/integrations.toml
+[integrations.github_actions]
+enabled = true
+gh_command = "gh"
+allowed_hosts = ["github.com"]
+allowed_repositories = ["EXAMPLE/PROJECT"]
+```
+
+Confirm `gh auth status` yourself; OrchestratorEngine never requests or stores
+the token. After pushing a commit and obtaining its exact run ID, dispatch the
+monitor from the chat that should continue the work:
+
+```bash
+orchestrator-engine --project-root /path/to/project ci watch \
+  --repo EXAMPLE/PROJECT --run-id 123456 \
+  --expected-head-sha abcdef123456 --wake-policy always
+```
+
+End the host turn after the descriptor is returned. Local `gh` polling uses no
+model tokens. The monitor snapshots the current binding, writes bounded
+verification evidence, and the existing watcher returns the terminal result
+to that chat. Use `--wake-policy on-failure` when a passing check requires no
+agent continuation. Use `ci status` for a compact check; if a supervisor is
+reported as `crashed`, run `ci reap`, inspect its bounded recovery evidence,
+and retry only with an explicit reason after fixing the cause. See
+[contracts.md](contracts.md#github-actions-exact-run-monitor) for attempts,
+status, cancellation and failure classification.
 
 Use the prompt templates in [`examples/prompts`](../examples/prompts) for
 review, implementation, verification and adopter-report workers. They encode

@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_CHECK_DURATION_HISTORY",
+  "entries": {
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": [
+      {
+        "check_id": "CHECK-1",
+        "status": "passed",
+        "duration_seconds": 29.5,
+        "finished_at": "2026-09-05T10:01:00.000+00:00"
+      }
+    ]
+  },
+  "updated_at": "2026-09-05T10:01:00.000+00:00"
+}

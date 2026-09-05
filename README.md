@@ -24,6 +24,9 @@ Supported host/worker combinations are symmetric: any host chat can manage any
 CLI workers (Claude, Codex, Copilot, or any other command-line worker).
 Long verification runs can use the same flow: run checks detached, keep full
 logs as artifacts, and return a compact pass/fail summary through that channel.
+GitHub Actions runs can also be monitored by exact run ID through the local
+authenticated `gh` CLI, so CI completion can resume the dispatching chat
+without model polling or engine-managed GitHub credentials.
 
 Host delivery quality is provider-specific. Claude uses its watched session
 stream, VS Code uses its chat CLI, and current Codex Desktop releases use
@@ -51,9 +54,9 @@ loading growing worker logs. Lower is better.
 
 | Scenario | Full-log polling | Status reads | Context read | Reduction |
 | --- | ---: | ---: | ---: | ---: |
-| Long test | 655.4 KB | 14.0 KB | 2.13% | 97.87% |
-| AI worker | 2.50 MB | 14.0 KB | 0.53% | 99.47% |
-| Three parallel workers | 3.75 MB | 16.6 KB | 0.42% | 99.58% |
+| Long test | 655.4 KB | 16.6 KB | 2.53% | 97.47% |
+| AI worker | 2.62 MB | 16.6 KB | 0.63% | 99.37% |
+| Three parallel workers | 3.93 MB | 19.2 KB | 0.49% | 99.51% |
 
 This is selective inspection, not output truncation. The status report keeps
 task states, diagnostics, log sizes and paths compact; complete stdout,
@@ -93,7 +96,7 @@ Install an immutable release, scaffold the project and bind the host chat:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.6.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.7.0"
 orchestrator-engine --project-root /path/to/project adopt --host HOST
 orchestrator-engine --project-root /path/to/project bind --host HOST
 ```
@@ -151,6 +154,8 @@ orchestrator-engine --project-root /path/to/project status
 - Avoid token-spending heartbeat prompts.
 - Keep provider integrations at explicit adapter boundaries.
 - Provide service-style watcher control: start, status, stop and restart.
+- Monitor allowlisted external checks locally and wake only on configured
+  terminal outcomes.
 
 ## Non-goals
 
@@ -173,6 +178,27 @@ orchestrator-engine --project-root /path/to/project status
    multiple host channels can share one inbox without consuming each other's
    signals.
 
+Deterministic sources can use the same delivery path. For example, `ci watch`
+runs a detached GitHub Actions monitor, writes a verification result, and emits
+a provider-neutral follow-up signal when its wake policy requires one. The
+watcher does not interpret CI logs and no model is used while waiting. Monitor
+status is compact; `ci reap` safely finalizes a monitor only when its recorded
+supervisor identity is proven gone.
+
+Local suites can use `check plan` and `check run`. The planner fingerprints
+the declared argv/cwd contract and uses a configured estimate or the median of
+up to ten successful runs. In `auto` mode, estimates over 30 seconds and
+unknown `full` gates run detached; known short checks stay foreground. Passing
+output remains in durable logs while compact result metadata retains its size
+and SHA-256 instead of copying the log into chat.
+
+An agent can also record an explicit bounded phase checkpoint. A
+`workstream checkpoint --decision continue --ready` signal is delivered after
+its configured delay; `needs_user`, `waiting_external`, `blocked`, `complete`
+and `paused` never wake the chat automatically. Ending a turn by itself is not
+continuation authorization. See
+[docs/workstream-continuation.md](docs/workstream-continuation.md).
+
 Per-host setup details: [docs/hosts.md](docs/hosts.md).
 
 Release and upgrade notes:
@@ -189,6 +215,7 @@ target project:
 ```text
 .orchestrator/
   workers.toml
+  integrations.toml
   policies/
     quality-efficient.md
   prompts/
@@ -210,10 +237,29 @@ target project:
       supervisor.log
   checks/
     <check_id>/
+      check.json
+      evidence.json
       verification-result.json
       summary.txt
       full.log
       <command-label>.log
+  check-history.json
+  monitors/
+    github-actions/
+      <monitor_id>/
+        monitor.json
+        supervisor-launch.json
+        evidence.json
+        full.log
+        supervisor.log
+        cancel-request.json  # only after an operator cancellation request
+  workstreams/
+    <workstream_id>/
+      workstream.json
+      checkpoints/
+        <checkpoint_id>.json
+        <checkpoint_id>.result.json
+        <checkpoint_id>.evidence.json
   inbox/
     binding.json
     signals/
@@ -345,9 +391,20 @@ orchestrator-engine --project-root /path/to/project emit \
 
 For long checks, use the verification result contract documented in
 [docs/contracts.md](docs/contracts.md#verification-result). The portable
-reference runner is [examples/check_runner.py](examples/check_runner.py).
-Use `orchestrator-engine --project-root /path/to/project checks` to read a
-compact status report before opening full logs.
+reference runner is [examples/check_runner.py](examples/check_runner.py), and
+the first-class runtime uses `check plan/run/status/reap`. Use the legacy-compatible
+`checks` reader to inspect compact verification results before opening logs.
+
+```bash
+orchestrator-engine --project-root /path/to/project check plan --suite full
+orchestrator-engine --project-root /path/to/project check run \
+  --check-id FINAL-1 --suite full
+```
+
+Optional host, worker and integration CLIs are adopter-installed tools. See
+[docs/external-tools.md](docs/external-tools.md) for the feature matrix and
+verification commands. In particular, `ci watch` requires an authenticated
+GitHub CLI (`gh`); the engine never installs it or manages its credentials.
 
 `worker diagnose` also compares the bundled `quality-efficient` policy hash
 with the selected project-local copy. It reports differences for explicit

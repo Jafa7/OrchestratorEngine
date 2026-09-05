@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_LOCAL_CHECK_EVIDENCE",
+  "check_id": "CHECK-1",
+  "suite": "full",
+  "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "execution": "detached",
+  "wake_policy": "always",
+  "plan": {"recommended_execution": "detached"},
+  "result_path": "/tmp/project/.orchestrator/checks/CHECK-1/verification-result.json",
+  "result_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "summary_path": "/tmp/project/.orchestrator/checks/CHECK-1/summary.txt",
+  "summary_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "full_log_path": "/tmp/project/.orchestrator/checks/CHECK-1/full.log",
+  "full_log_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "recorded_at": "2026-09-05T10:01:00.000+00:00"
+}

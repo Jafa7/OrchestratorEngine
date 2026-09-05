@@ -116,6 +116,32 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(first["new_count"], 1)
         self.assertEqual(second["new_count"], 0)
 
+    def test_record_skips_signal_until_not_before(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            result = root / "result.json"
+            evidence = root / "evidence.json"
+            result.write_text('{"status":"ok"}', encoding="utf-8")
+            evidence.write_text('{"ready":true}', encoding="utf-8")
+            future = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
+            emitted = core.write_followup_event(
+                root,
+                operation_id="continuation-1",
+                source_kind="workstream_checkpoint",
+                terminal_status="completed",
+                result_path=result,
+                evidence_path=evidence,
+                not_before=future,
+            )
+            state = root / "watcher-state.json"
+            scan = watcher.scan_once([root], state_path=state, action="record")
+            watcher_state = watcher.load_state(state)
+
+        self.assertEqual(scan["new_count"], 0)
+        self.assertNotIn(
+            emitted["event"]["event_id"], watcher_state["seen_event_ids"]
+        )
+
     def test_notify_writes_durable_notification(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -504,6 +530,64 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(deferred["attempts"], 5)
         self.assertNotIn("retry_after_at", deferred)
         self.assertEqual(deferred["retry_reason"], "quota reset")
+
+    def test_generic_followup_keeps_subject_through_retry_and_acknowledgement(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            result = root / "result.json"
+            evidence = root / "evidence.json"
+            result.write_text("{}", encoding="utf-8")
+            evidence.write_text("{}", encoding="utf-8")
+            binding.write_binding(root, host="vscode")
+            emitted = core.write_followup_event(
+                root,
+                operation_id="gha-123",
+                source_kind="github_actions",
+                terminal_status="failed",
+                result_path=result,
+                evidence_path=evidence,
+                event_id="event-generic",
+            )
+            state_path = watcher.default_host_state_path(root, host="vscode")
+            signal = core.inbox(root)[0]
+            deferred = watcher.build_deferred_record(
+                "event-generic",
+                signal,
+                reason="callback unavailable",
+                previous={},
+                now=1000.0,
+            )
+            deferred["status"] = watcher.DEFER_STATUS_MANUAL_REQUIRED
+            core.atomic_json(
+                state_path,
+                {
+                    "schema_version": 1,
+                    "kind": watcher.STATE_KIND,
+                    "seen_event_ids": [],
+                    "deferred_events": {"event-generic": deferred},
+                    "acknowledged_events": {},
+                },
+            )
+            retry = watcher.retry_deferred_event(
+                root,
+                event_id="event-generic",
+                state_path=state_path,
+                reason="operator retry",
+            )
+            acknowledgement = watcher.acknowledge_signal(
+                root,
+                event_id="event-generic",
+                host="vscode",
+                reason="reviewed manually",
+            )
+
+        self.assertEqual(emitted["event"]["operation_id"], "gha-123")
+        self.assertEqual(retry["operation_id"], "gha-123")
+        self.assertEqual(retry["source_kind"], "github_actions")
+        self.assertEqual(acknowledgement["operation_id"], "gha-123")
+        self.assertEqual(acknowledgement["source_kind"], "github_actions")
 
     def test_service_start_writes_state_and_command(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-engine://schemas/workstream-checkpoint",
+  "title": "Agent workstream checkpoint",
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_WORKSTREAM_CHECKPOINT",
+  "type": "object",
+  "required": ["schema_version", "kind", "workstream_id", "checkpoint_id", "sequence", "decision", "requested_decision", "summary", "created_at"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "ORCHESTRATOR_WORKSTREAM_CHECKPOINT"},
+    "workstream_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"},
+    "checkpoint_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"},
+    "sequence": {"type": "integer", "minimum": 1},
+    "decision": {"enum": ["continue", "waiting_external", "needs_user", "blocked", "complete", "paused"]},
+    "requested_decision": {"enum": ["continue", "waiting_external", "needs_user", "blocked", "complete", "paused"]},
+    "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+    "next_action": {"type": "string", "minLength": 1, "maxLength": 4000},
+    "waiting_on": {"type": "string", "minLength": 1, "maxLength": 4000},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 4000},
+    "not_before": {"type": "string", "format": "date-time"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "event_id": {"type": "string", "minLength": 1},
+    "event_path": {"type": "string", "pattern": "^/"},
+    "signal_path": {"type": "string", "pattern": "^/"},
+    "wake_target": {"$ref": "orchestrator-engine://schemas/wake-target"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"decision": {"const": "continue"}}},
+      "then": {"required": ["next_action", "not_before", "event_id", "event_path", "signal_path"]}
+    },
+    {
+      "if": {"properties": {"decision": {"const": "waiting_external"}}},
+      "then": {"required": ["waiting_on"]}
+    }
+  ],
+  "additionalProperties": true
+}

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-engine://schemas/local-check-evidence",
+  "title": "First-class local check evidence",
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_LOCAL_CHECK_EVIDENCE",
+  "type": "object",
+  "required": ["schema_version", "kind", "check_id", "suite", "fingerprint", "execution", "wake_policy", "plan", "result_path", "result_sha256", "summary_path", "summary_sha256", "recorded_at"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "ORCHESTRATOR_LOCAL_CHECK_EVIDENCE"},
+    "check_id": {"type": "string", "minLength": 1},
+    "suite": {"type": "string", "minLength": 1},
+    "fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "execution": {"enum": ["foreground", "detached"]},
+    "wake_policy": {"enum": ["always", "on-failure", "never"]},
+    "plan": {"type": "object"},
+    "result_path": {"type": "string", "pattern": "^/"},
+    "result_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "summary_path": {"type": "string", "pattern": "^/"},
+    "summary_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "full_log_path": {"type": "string", "pattern": "^/"},
+    "full_log_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "error": {"type": "string", "maxLength": 1000},
+    "wake_target": {"$ref": "orchestrator-engine://schemas/wake-target"}
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-engine://schemas/check-duration-history",
+  "title": "Bounded local check duration history",
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_CHECK_DURATION_HISTORY",
+  "type": "object",
+  "required": ["schema_version", "kind", "entries"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "ORCHESTRATOR_CHECK_DURATION_HISTORY"},
+    "entries": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "maxItems": 10,
+        "items": {
+          "type": "object",
+          "required": ["check_id", "status", "duration_seconds", "finished_at"],
+          "properties": {
+            "check_id": {"type": "string", "minLength": 1},
+            "status": {"enum": ["passed", "failed", "errored", "cancelled"]},
+            "duration_seconds": {"type": "number", "minimum": 0},
+            "finished_at": {"type": "string", "format": "date-time"}
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "updated_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": false
+}

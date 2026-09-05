@@ -141,10 +141,9 @@ def next_steps(project: Path, *, host: str | None) -> list[str]:
             "--host vscode --action callback service start"
         )
     elif host == "codex":
-        steps.append(f"orchestrator-engine --project-root {root} inbox")
         steps.append(
-            "review Codex durable history manually; do not start a callback "
-            "service expecting live Desktop refresh"
+            f"orchestrator-engine --project-root {root} watcher "
+            "--host codex --action callback service start"
         )
     else:
         steps.append("bind a host, then configure its documented delivery channel")

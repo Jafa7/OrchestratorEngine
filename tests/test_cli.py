@@ -13,6 +13,49 @@ from orchestrator_engine import binding, cli, core, watcher, workers
 
 
 class CliTests(unittest.TestCase):
+    def test_workstream_cli_requires_ready_for_continue(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            binding.write_binding(root, host="codex", target_thread_id="thread-1")
+            start_out = io.StringIO()
+            with contextlib.redirect_stdout(start_out):
+                start_code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "workstream",
+                        "start",
+                        "--workstream-id",
+                        "W",
+                        "--goal",
+                        "Finish the roadmap.",
+                    ]
+                )
+            error_out = io.StringIO()
+            with contextlib.redirect_stderr(error_out):
+                checkpoint_code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "workstream",
+                        "checkpoint",
+                        "--workstream-id",
+                        "W",
+                        "--checkpoint-id",
+                        "C1",
+                        "--decision",
+                        "continue",
+                        "--summary",
+                        "Phase complete.",
+                        "--next-action",
+                        "Continue.",
+                    ]
+                )
+
+        self.assertEqual(start_code, 0)
+        self.assertEqual(checkpoint_code, 1)
+        self.assertIn("--ready", error_out.getvalue())
+
     def test_worker_run_availability_options_are_mutually_exclusive(self) -> None:
         parser = cli.build_parser()
         with self.assertRaises(SystemExit):

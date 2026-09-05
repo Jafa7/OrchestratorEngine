@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-engine://schemas/followup-terminal-event",
+  "title": "Provider-neutral terminal follow-up event",
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_TERMINAL",
+  "type": "object",
+  "required": ["schema_version", "kind", "event_id", "project_id", "source_kind", "operation_id", "terminal_status", "result_path", "result_sha256", "evidence_path", "evidence_sha256", "created_at"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "ORCHESTRATOR_TERMINAL"},
+    "event_id": {"type": "string", "minLength": 1},
+    "project_id": {"type": "string", "minLength": 1},
+    "source_kind": {"type": "string", "minLength": 1},
+    "operation_id": {"type": "string", "minLength": 1},
+    "terminal_status": {"enum": ["completed", "failed", "cancelled", "timed_out", "action_required", "unavailable", "ambiguous"]},
+    "result_path": {"type": "string", "pattern": "^/"},
+    "result_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "evidence_path": {"type": "string", "pattern": "^/"},
+    "evidence_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "not_before": {"type": "string", "format": "date-time"},
+    "wake_target": {"$ref": "orchestrator-engine://schemas/wake-target"}
+  },
+  "additionalProperties": true
+}

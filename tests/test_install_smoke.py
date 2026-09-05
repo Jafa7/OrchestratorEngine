@@ -33,6 +33,40 @@ class InstallSmokeTests(unittest.TestCase):
             project = root / "adopted-project"
             project.mkdir()
 
+            fake_gh = root / "GitHub CLI" / "gh"
+            fake_gh.parent.mkdir()
+            fake_gh.write_text(
+                "\n".join(
+                    [
+                        f"#!{python}",
+                        "import json",
+                        "import sys",
+                        "if sys.argv[1:3] == ['run', 'view']:",
+                        "    print(json.dumps({",
+                        "        'attempt': 1, 'conclusion': 'success',",
+                        "        'createdAt': '2026-09-05T10:00:00Z',",
+                        "        'databaseId': 123, 'event': 'push',",
+                        "        'headBranch': 'main',",
+                        "        'headSha': 'abcdef123456',",
+                        "        'startedAt': '2026-09-05T10:00:01Z',",
+                        "        'status': 'completed',",
+                        "        'updatedAt': '2026-09-05T10:01:00Z',",
+                        (
+                            "        'url': 'https://github.com/Example/Project/"
+                            "actions/runs/123',"
+                        ),
+                        "        'workflowDatabaseId': 7,",
+                        "        'workflowName': 'CI'",
+                        "    }))",
+                        "    raise SystemExit(0)",
+                        "raise SystemExit(9)",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+
             env = clean_env()
             subprocess.run(
                 [str(python), "-m", "pip", "install", str(REPO_ROOT)],
@@ -132,6 +166,36 @@ class InstallSmokeTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            integrations_path = project / ".orchestrator" / "integrations.toml"
+            integrations_path.write_text(
+                "\n".join(
+                    [
+                        "[integrations.github_actions]",
+                        "enabled = true",
+                        f"gh_command = {json.dumps(str(fake_gh))}",
+                        'allowed_repositories = ["Example/Project"]',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            checks_config = project / ".orchestrator" / "checks.toml"
+            checks_config.write_text(
+                "\n".join(
+                    [
+                        "[suites.smoke]",
+                        'verification = "focused"',
+                        "expected_duration_seconds = 1",
+                        "",
+                        "[[suites.smoke.commands]]",
+                        'label = "installed-cli"',
+                        f"argv = [{json.dumps(str(python))}, "
+                        '"-c", "print(\'first-class-check-ok\')"]',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
             prompt = root / "smoke-prompt.md"
             prompt.write_text("smoke task\n", encoding="utf-8")
             intent = root / "smoke-intent.json"
@@ -174,6 +238,98 @@ class InstallSmokeTests(unittest.TestCase):
                 self.fail(f"missing file: {path}")
 
             bind = self.run_cli(cli, project, "bind", "--host", "claude")
+            workstream_start = self.run_cli(
+                cli,
+                project,
+                "workstream",
+                "start",
+                "--workstream-id",
+                "INSTALL-WORKSTREAM",
+                "--goal",
+                "Exercise the installed checkpoint contract.",
+            )
+            workstream_checkpoint = self.run_cli(
+                cli,
+                project,
+                "workstream",
+                "checkpoint",
+                "--workstream-id",
+                "INSTALL-WORKSTREAM",
+                "--checkpoint-id",
+                "phase-1",
+                "--decision",
+                "paused",
+                "--summary",
+                "Install smoke checkpoint complete.",
+            )
+            workstream_status = self.run_cli(
+                cli,
+                project,
+                "workstream",
+                "status",
+                "--workstream-id",
+                "INSTALL-WORKSTREAM",
+            )
+            local_check_plan = self.run_cli(
+                cli,
+                project,
+                "check",
+                "plan",
+                "--suite",
+                "smoke",
+            )
+            local_check_run = self.run_cli(
+                cli,
+                project,
+                "check",
+                "run",
+                "--check-id",
+                "INSTALL-FIRST-CLASS",
+                "--suite",
+                "smoke",
+                "--execution",
+                "foreground",
+                "--wake-policy",
+                "never",
+            )
+            local_check_status = self.run_cli(
+                cli,
+                project,
+                "check",
+                "status",
+                "--check-id",
+                "INSTALL-FIRST-CLASS",
+            )
+            local_check_reap = self.run_cli(
+                cli,
+                project,
+                "check",
+                "reap",
+                "--check-id",
+                "INSTALL-FIRST-CLASS",
+            )
+            ci_monitor = self.run_cli(
+                cli,
+                project,
+                "ci",
+                "watch",
+                "--repo",
+                "Example/Project",
+                "--run-id",
+                "123",
+                "--expected-head-sha",
+                "abcdef1",
+            )
+            wait_file(Path(ci_monitor["monitor_dir"]) / "evidence.json")
+            ci_status = self.run_cli(
+                cli,
+                project,
+                "ci",
+                "status",
+                "--monitor-id",
+                ci_monitor["monitor_id"],
+            )
+            ci_reap = self.run_cli(cli, project, "ci", "reap")
             workers = self.run_cli(cli, project, "worker", "list")
             worker_diagnostics = self.run_cli(
                 cli,
@@ -191,6 +347,27 @@ class InstallSmokeTests(unittest.TestCase):
             ).stdout
             worker_wait_help = subprocess.run(
                 [str(cli), "worker", "wait", "--help"],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=clean_env(),
+            ).stdout
+            ci_watch_help = subprocess.run(
+                [str(cli), "ci", "watch", "--help"],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=clean_env(),
+            ).stdout
+            workstream_checkpoint_help = subprocess.run(
+                [str(cli), "workstream", "checkpoint", "--help"],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=clean_env(),
+            ).stdout
+            local_check_help = subprocess.run(
+                [str(cli), "check", "run", "--help"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -419,6 +596,13 @@ class InstallSmokeTests(unittest.TestCase):
             policy_exists = policy_path.is_file()
             exported_policy_exists = exported_policy.is_file()
         self.assertEqual(bind["host"], "claude")
+        self.assertEqual(workstream_start["status"], "active")
+        self.assertEqual(workstream_checkpoint["decision"], "paused")
+        self.assertEqual(workstream_status["status_counts"], {"paused": 1})
+        self.assertEqual(local_check_plan["recommended_execution"], "foreground")
+        self.assertEqual(local_check_run["status"], "passed")
+        self.assertEqual(local_check_status["status_counts"], {"passed": 1})
+        self.assertEqual(local_check_reap["reaped_count"], 0)
         self.assertEqual(version, f"orchestrator-engine {PROJECT_VERSION}")
         codex_capability = next(
             item
@@ -434,6 +618,10 @@ class InstallSmokeTests(unittest.TestCase):
         self.assertEqual(worker_diagnostics["diagnostic_count"], 0)
         self.assertIn("--availability-mode", worker_run_help)
         self.assertIn("--mode", worker_wait_help)
+        self.assertIn("--expected-head-sha", ci_watch_help)
+        self.assertIn("--wake-policy", ci_watch_help)
+        self.assertIn("--ready", workstream_checkpoint_help)
+        self.assertIn("--execution", local_check_help)
         self.assertIn("--path", artifact_resolve_help)
         self.assertIn("--reason", artifact_resolve_help)
         self.assertIn("--strict", upgrade_check_help)
@@ -468,14 +656,22 @@ class InstallSmokeTests(unittest.TestCase):
         self.assertEqual(verification["status"], "passed")
         self.assertEqual(checks_status["kind"], "ORCHESTRATOR_CHECKS_STATUS")
         self.assertEqual(checks_status["checks"]["INSTALL-CHECK"]["status"], "passed")
+        self.assertEqual(ci_status["kind"], "GITHUB_ACTIONS_MONITOR_STATUS")
+        self.assertEqual(ci_status["monitors"][0]["ci_conclusion"], "success")
+        self.assertEqual(ci_reap["kind"], "GITHUB_ACTIONS_MONITOR_REAP_REPORT")
+        self.assertEqual(ci_reap["reaped_count"], 0)
         self.assertIn(aggregate_status_result.returncode, {0, 2})
         self.assertEqual(aggregate_status["kind"], "ORCHESTRATOR_STATUS_REPORT")
         self.assertIn("worker_tasks", aggregate_status["components"])
         self.assertIn("[runtime-report][InstallSmoke]", report_draft_text)
-        inbox_task_ids = {row["task_id"] for row in inbox[str(project)]}
+        inbox_task_ids = {row.get("task_id") for row in inbox[str(project)]}
+        inbox_operation_ids = {
+            row.get("operation_id") for row in inbox[str(project)]
+        }
         self.assertIn("SMOKE-1", inbox_task_ids)
         self.assertIn("SMOKE-FAIL", inbox_task_ids)
         self.assertIn("SMOKE-CHECK", inbox_task_ids)
+        self.assertIn(ci_monitor["monitor_id"], inbox_operation_ids)
         self.assertEqual(stream_stderr, "")
         stream_task_ids = {line["task_id"] for line in lines}
         self.assertTrue(stream_task_ids & {"SMOKE-1", "SMOKE-FAIL", "SMOKE-CHECK"})

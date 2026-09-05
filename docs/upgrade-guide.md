@@ -11,7 +11,7 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release is `0.6.0` and the durable JSON contract schema version is
+The current release is `0.7.0` and the durable JSON contract schema version is
 `1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
@@ -19,7 +19,7 @@ PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.6.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.7.0"
 ```
 
 ## Schema Compatibility
@@ -123,6 +123,31 @@ upgrading the engine and Codex CLI:
 Older Codex CLIs remain compatible through the durable headless App Server
 fallback. No state migration or deletion is required. Existing receipts keep
 their original semantics.
+
+## Deterministic external operations after v0.6.0
+
+Version 0.7.0 adds three opt-in surfaces without changing existing worker or
+watcher behavior:
+
+- `check plan/run/status/reap` executes suites declared in the adopter-local
+  `.orchestrator/checks.toml`. Existing project-specific check workers and
+  verification artifacts remain readable through `checks`.
+- `ci watch/status/cancel/reap/retry` monitors one exact allowlisted GitHub
+  Actions run through an adopter-installed and authenticated `gh` CLI. No
+  integration is active until `.orchestrator/integrations.toml` explicitly
+  enables it and allowlists the repository.
+- `workstream start/checkpoint/status/resume` records bounded continuation
+  decisions. It never infers continuation from an ending turn and never reads
+  project roadmaps.
+
+Run `adopt` to create any missing base directories and bundled worker policy
+without overwriting local config. Create `.orchestrator/checks.toml` from the
+setup guide only when using first-class local checks, and copy
+`examples/integrations.toml` only when enabling GitHub monitoring. Review each
+local file before enabling it. No durable state rewrite is required. Long
+local checks should use a unique check id; successful timing history is keyed
+by the exact suite fingerprint and can be discarded only under the adopter's
+normal local-state retention policy.
 
 ## Handoffs and completed-task acknowledgements after v0.3.1
 

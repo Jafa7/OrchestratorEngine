@@ -1,0 +1,8 @@
+# Copy this file to .orchestrator/integrations.toml and keep it project-local.
+# Machine-specific executable paths should not be committed as portable defaults.
+
+[integrations.github_actions]
+enabled = false
+gh_command = "gh"
+allowed_hosts = ["github.com"]
+allowed_repositories = ["EXAMPLE/PROJECT"]

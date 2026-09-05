@@ -72,6 +72,23 @@ that unrun checks passed.
 
 ## Long-running checks
 
+The default long-check threshold is strictly greater than 30 seconds. Use a
+configured `expected_duration_seconds` until measured history exists; after a
+successful run, `check plan` uses the median of up to ten successful samples
+for the exact suite fingerprint. Failed fast runs never make a full gate look
+cheap. An unknown `full` gate is detached, while an unknown structural or
+focused suite may run foreground once to establish evidence.
+
+```bash
+orchestrator-engine --project-root /path/to/project check plan --suite full
+orchestrator-engine --project-root /path/to/project check run \
+  --check-id FINAL-1 --suite full --execution auto --wake-policy auto
+```
+
+`wake-policy auto` means no follow-up for foreground execution and one
+follow-up for a detached terminal result. This avoids waking an already active
+chat for a short command.
+
 Run long suites through a detached check runner when available:
 
 1. Select `focused` or `full` before dispatch; do not let the check worker
@@ -91,6 +108,13 @@ fails and the bounded evidence is not self-explanatory, a low-cost analysis
 worker may inspect only the failed-command logs and return a short triage
 handoff. The host agent remains responsible for validating that diagnosis and
 deciding the fix; worker output is evidence, not authority.
+
+For a GitHub Actions gate, use `ci watch` with the exact run ID and expected
+commit SHA instead of asking an agent to revisit the Actions page. The local
+`gh` process waits without model tokens, stores a compact verification result,
+and wakes the dispatching chat only under the selected wake policy. A confirmed
+success needs no CI log read; a failure starts with the result and summary,
+then only the failed job evidence needed for diagnosis.
 
 This saves coordination context independently of the host wake mechanism. If
 the Codex chat turn ends, a current CLI can deliver completion through
