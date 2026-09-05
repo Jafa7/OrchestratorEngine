@@ -818,7 +818,12 @@ foreground execution. A detached descriptor snapshots the dispatching host's
 `check status` is compact and read-only. `check reap` mutates only non-terminal
 descriptors whose recorded supervisor identity is proven gone: it recovers
 already-written terminal artifacts when possible, otherwise records an
-`errored` result and terminal event. It never deletes logs or reruns commands.
+`errored` result and terminal event. A detached supervisor records the active
+command's process identity and process group. Reaping stops and verifies that
+group before finalization; an unavailable identity or surviving group leaves
+the check non-terminal with an explicit diagnostic. Unsupported descriptor
+schema versions are never mutated. Reaping never deletes logs or reruns
+commands.
 
 Projects may still use any native runner that writes this verification result
 contract. The bundled `examples/check_runner.py` remains a portable reference
@@ -1159,6 +1164,8 @@ Path:
 
 - `.orchestrator/workstreams/<workstream_id>/workstream.json`
 - `.orchestrator/workstreams/<workstream_id>/checkpoints/<checkpoint_id>.json`
+- `.orchestrator/workstreams/<workstream_id>/artifacts/results/<checkpoint_id>.json`
+- `.orchestrator/workstreams/<workstream_id>/artifacts/evidence/<checkpoint_id>.json`
 
 `workstream start` snapshots the active host binding and sets explicit limits
 for automatic continuations. `workstream checkpoint` records one of
@@ -1181,7 +1188,11 @@ Later `paused`, `needs_user`, `blocked`, `complete`, `waiting_external` or
 replacement `continue` checkpoints revoke an older timer signal. New
 continuation operation identities use the unambiguous
 `workstream:<workstream_id>:<checkpoint_id>` form; legacy events remain
-readable.
+readable. Generated result and evidence files live outside the checkpoint
+namespace; legacy colocated artifacts remain readable during reconciliation.
+Every mutating workstream command reconciles interrupted transitions under the
+same per-workstream lock before accepting a new transition. Reconciliation
+isolates an invalid workstream and continues processing other workstreams.
 
 Automatic continuation stops closed when either the shared automatic-resume
 count or wall-time limit is reached. Both `continue` and `waiting_external`
@@ -1332,7 +1343,10 @@ compatible. When a limit is full, `worker run` stores `status: "queued"` and a
 FIFO entry under `.orchestrator/queue/pending/`; no provider process starts.
 Admission is serialized with a POSIX `flock`. `worker queue tick` admits as many
 entries as current global and profile slots permit. A finishing supervisor also
-runs the same idempotent tick, so normal queue progress needs no polling daemon.
+runs the same idempotent tick. Watcher scans invoke it while pending entries
+exist, so a retry whose `not_before` becomes due progresses even when no other
+worker finishes. This is deterministic local scheduling and does not invoke a
+model.
 
 `worker cancel --task-id ID --mode graceful|forced --reason TEXT` is durable.
 Queued cancellation atomically moves the queue entry to `queue/cancelled` and
@@ -1663,6 +1677,9 @@ scan. An explicit `deferred retry` releases the claim after the operator checks
 the target task. Delivery receipt decisions are protected by a process-wide
 file lock, so concurrent watcher consumers cannot submit the same event twice.
 Watcher service start and stop use the same serialized lifecycle rule.
+`watcher service restart` holds that lock across both operations and inherits
+the stored action, interval, state path and legacy target for omitted options.
+An explicit CLI option still overrides its stored counterpart.
 
 Deferred callback state is kept in `watcher-state.json` under
 `deferred_signals`; `deferred_events` remains its event-ID-only compatibility

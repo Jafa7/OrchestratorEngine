@@ -4,6 +4,26 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-06
+
+### Fixed
+
+- Made detached local checks own and stop active command process groups before
+  reaping, and reject unsupported descriptor schemas on mutation.
+- Made Claude stream delivery retryable when writing to the host channel fails;
+  successful delivery is deduplicated by stable event ID.
+- Classified unavailable Linux process identity as `unknown` instead of
+  confirmed process exit, and made identity-safe waits fail closed.
+- Watcher scans now advance pending worker queue entries, including delayed
+  retries after their deterministic `not_before` timestamp becomes due.
+- Made workstream transitions reconcile before mutation, kept completed streams
+  terminal, migrated legacy continuation authorization once, separated
+  checkpoint and generated-artifact namespaces, and isolated reconciliation
+  failures per workstream. Schema surveys include the new artifact directories.
+- `watcher service restart` now inherits an existing service's action,
+  interval, state path and legacy target when those options are omitted, and
+  holds one lifecycle lock across stop and start.
+
 ## [1.0.1] - 2026-09-05
 
 ### Fixed

@@ -295,6 +295,29 @@ class CoreTests(unittest.TestCase):
             {str(task), str(result), str(evidence)},
         )
 
+    def test_survey_schema_versions_includes_workstream_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            artifact = (
+                core.state_root(root)
+                / "workstreams"
+                / "W"
+                / "artifacts"
+                / "results"
+                / "C1.json"
+            )
+            core.atomic_json(
+                artifact,
+                {
+                    "schema_version": core.SCHEMA_VERSION,
+                    "kind": "ORCHESTRATOR_WORKSTREAM_CONTINUATION",
+                },
+            )
+            survey = core.survey_schema_versions(root)
+
+        self.assertEqual(survey["supported_count"], 1)
+        self.assertEqual(survey["supported"][0]["path"], str(artifact))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -445,11 +445,19 @@ authorizations = { commit = false, push = false, network = false }
                 max_attempts=2,
                 delay_seconds=60,
             )
+            retry_path = Path(retried["descriptor_path"])
+            due = core.load_object(retry_path)
+            due["retry_lineage"]["not_before"] = "2000-01-01T00:00:00+00:00"
+            core.atomic_json(retry_path, due)
+            tick = workers.queue_tick(root, popen_factory=FakePopen)
+            admitted = core.load_object(retry_path)
 
         self.assertEqual(retried["task_id"], "T-RETRY-a2")
         self.assertEqual(retried["retry_lineage"]["attempt"], 2)
         self.assertEqual(retried["retry_lineage"]["max_attempts"], 2)
         self.assertEqual(retried["status"], "queued")
+        self.assertEqual(tick["admitted_task_ids"], ["T-RETRY-a2"])
+        self.assertEqual(admitted["status"], "starting")
 
 
 class WorkerWaitTests(unittest.TestCase):

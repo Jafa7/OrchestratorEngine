@@ -21,6 +21,22 @@ from orchestrator_engine import (
 
 
 class CliTests(unittest.TestCase):
+    @patch("orchestrator_engine.cli.watcher.restart_service")
+    def test_watcher_restart_leaves_stored_action_implicit(
+        self, restart_service: object
+    ) -> None:
+        restart_service.return_value = {"status": "running"}
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = cli.main(
+                ["watcher", "--host", "codex", "service", "restart"]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output.getvalue())["status"], "running")
+        self.assertIsNone(restart_service.call_args.kwargs["action"])
+        self.assertIsNone(restart_service.call_args.kwargs["interval_seconds"])
+
     @patch("orchestrator_engine.cli.github_actions.start_monitor")
     def test_ci_watch_accepts_full_sha_discovery(self, start_monitor: object) -> None:
         start_monitor.return_value = {"status": "starting"}

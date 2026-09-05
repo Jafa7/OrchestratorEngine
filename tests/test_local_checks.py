@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import signal
 import sys
 import tempfile
 import textwrap
@@ -183,6 +185,29 @@ class LocalCheckTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(verification_result["commands"][0]["status"], "timed_out")
 
+    def test_early_command_exit_does_not_wait_for_stdout_descendant(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(
+                root,
+                script=(
+                    "import subprocess, sys; "
+                    "subprocess.Popen([sys.executable, '-c', "
+                    "'import time; time.sleep(3)'])"
+                ),
+            )
+            started = time.monotonic()
+            result = local_checks.start_check(
+                root,
+                check_id="CHECK-DESCENDANT",
+                suite="gate",
+                execution="foreground",
+            )
+            elapsed = time.monotonic() - started
+
+        self.assertEqual(result["status"], "passed")
+        self.assertLess(elapsed, 2.0)
+
     def test_auto_detached_check_completes_and_keeps_dispatch_target(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -242,6 +267,46 @@ class LocalCheckTests(unittest.TestCase):
         self.assertIsInstance(descriptor.get("supervisor_pid"), int)
         self.assertIsInstance(descriptor.get("supervisor_identity"), dict)
 
+    def test_detached_check_persists_active_command_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(
+                root,
+                verification="full",
+                script="import time; time.sleep(1)",
+            )
+            binding.write_binding(root, host="codex", target_thread_id="thread-1")
+            local_checks.start_check(
+                root,
+                check_id="CHECK-ACTIVE-COMMAND",
+                suite="gate",
+            )
+            path = local_checks.descriptor_path(
+                root, "CHECK-ACTIVE-COMMAND", state_dir=".orchestrator"
+            )
+            for _ in range(100):
+                descriptor = core.load_object(path)
+                if isinstance(descriptor.get("active_command"), dict):
+                    break
+                time.sleep(0.02)
+            else:
+                self.fail("active command identity was not recorded")
+            active_command = descriptor["active_command"]
+            for _ in range(100):
+                finished = local_checks.check_status(
+                    root, check_id="CHECK-ACTIVE-COMMAND"
+                )["checks"][0]
+                if finished["status"] == "passed":
+                    break
+                time.sleep(0.02)
+            else:
+                self.fail("detached check did not finish")
+
+        self.assertEqual(
+            active_command["pid"],
+            active_command["process_group"],
+        )
+
     def test_reap_finalizes_check_when_supervisor_is_gone(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -281,6 +346,191 @@ class LocalCheckTests(unittest.TestCase):
         self.assertEqual(report["reaped_count"], 1)
         self.assertEqual(descriptor["status"], "errored")
         self.assertTrue(result_exists)
+
+    def test_reap_stops_active_command_before_finalizing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            directory = local_checks.check_dir(
+                root, "CHECK-ORPHAN", state_dir=".orchestrator"
+            )
+            directory.mkdir(parents=True)
+            command_identity = {"pid": 456, "start_ticks": 10}
+            core.atomic_json(
+                directory / "check.json",
+                {
+                    "schema_version": 1,
+                    "kind": local_checks.CHECK_KIND,
+                    "check_id": "CHECK-ORPHAN",
+                    "suite": "gate",
+                    "verification": "focused",
+                    "fingerprint": "a" * 64,
+                    "status": "running",
+                    "execution": "detached",
+                    "wake_policy": "never",
+                    "created_at": core.utc_now(),
+                    "started_at": core.utc_now(),
+                    "check_dir": str(directory),
+                    "plan": {},
+                    "supervisor_identity": {"pid": 123},
+                    "active_command": {
+                        "label": "unit",
+                        "pid": 456,
+                        "process_group": 456,
+                        "process_identity": command_identity,
+                        "started_at": core.utc_now(),
+                    },
+                },
+            )
+
+            def identity_state(identity):
+                return {
+                    "state": "alive" if identity == command_identity else "gone",
+                    "identity_verified": True,
+                }
+
+            with (
+                mock.patch.object(
+                    local_checks.worker_lease,
+                    "identity_state",
+                    side_effect=identity_state,
+                ),
+                mock.patch.object(
+                    local_checks.worker_lease,
+                    "stop_worker_tree",
+                    return_value={"exited": True, "stop_outcome": "killed"},
+                ) as stop,
+                mock.patch.object(
+                    local_checks.worker_lease,
+                    "process_group_state",
+                    return_value="gone",
+                ),
+            ):
+                report = local_checks.reap_checks(
+                    root, check_id="CHECK-ORPHAN"
+                )
+
+        self.assertEqual(report["reaped_count"], 1)
+        stop.assert_called_once()
+
+    def test_reap_real_orphaned_command_group_before_terminal_event(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(
+                root,
+                verification="full",
+                script="import time; time.sleep(30)",
+            )
+            dispatched = local_checks.start_check(
+                root,
+                check_id="CHECK-REAL-ORPHAN",
+                suite="gate",
+                execution="detached",
+                wake_policy="never",
+            )
+            path = Path(dispatched["descriptor_path"])
+            for _ in range(100):
+                descriptor = core.load_object(path)
+                active = descriptor.get("active_command")
+                if isinstance(active, dict):
+                    break
+                time.sleep(0.02)
+            else:
+                self.fail("active command was not recorded")
+
+            os.kill(int(descriptor["supervisor_pid"]), signal.SIGKILL)
+            report = None
+            for _ in range(100):
+                report = local_checks.reap_checks(
+                    root, check_id="CHECK-REAL-ORPHAN"
+                )
+                if report["reaped_count"] == 1:
+                    break
+                time.sleep(0.02)
+            else:
+                self.fail(f"orphaned command was not reaped: {report}")
+            command_state = local_checks.worker_lease.identity_state(
+                active["process_identity"]
+            )
+            group_state = local_checks.worker_lease.process_group_state(
+                active["process_group"]
+            )
+
+        self.assertEqual(command_state["state"], "gone")
+        self.assertEqual(group_state, "gone")
+        self.assertTrue(Path(report["outcomes"][0]["event_path"]).is_absolute())
+
+    def test_reap_fails_closed_during_command_launch_transition(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            directory = local_checks.check_dir(
+                root, "CHECK-LAUNCHING", state_dir=".orchestrator"
+            )
+            directory.mkdir(parents=True)
+            path = directory / "check.json"
+            core.atomic_json(
+                path,
+                {
+                    "schema_version": 1,
+                    "kind": local_checks.CHECK_KIND,
+                    "check_id": "CHECK-LAUNCHING",
+                    "suite": "gate",
+                    "verification": "focused",
+                    "fingerprint": "a" * 64,
+                    "status": "running",
+                    "execution": "detached",
+                    "wake_policy": "never",
+                    "created_at": core.utc_now(),
+                    "started_at": core.utc_now(),
+                    "check_dir": str(directory),
+                    "plan": {},
+                    "supervisor_identity": {"pid": 123},
+                    "command_launching": {
+                        "label": "unit",
+                        "recorded_at": core.utc_now(),
+                    },
+                },
+            )
+            with mock.patch.object(
+                local_checks.worker_lease,
+                "identity_state",
+                return_value={"state": "gone", "identity_verified": True},
+            ):
+                report = local_checks.reap_checks(
+                    root, check_id="CHECK-LAUNCHING"
+                )
+            unchanged = core.load_object(path)
+
+        self.assertEqual(
+            report["outcomes"][0]["status"],
+            "unsafe_command_launch_transition",
+        )
+        self.assertEqual(unchanged["status"], "running")
+
+    def test_reap_rejects_unsupported_descriptor_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            directory = local_checks.check_dir(
+                root, "CHECK-FUTURE", state_dir=".orchestrator"
+            )
+            directory.mkdir(parents=True)
+            path = directory / "check.json"
+            core.atomic_json(
+                path,
+                {
+                    "schema_version": 2,
+                    "kind": local_checks.CHECK_KIND,
+                    "check_id": "CHECK-FUTURE",
+                    "status": "running",
+                },
+            )
+            report = local_checks.reap_checks(root, check_id="CHECK-FUTURE")
+            unchanged = core.load_object(path)
+
+        self.assertEqual(report["outcomes"][0]["status"], "invalid")
+        self.assertEqual(unchanged["schema_version"], 2)
+        self.assertEqual(unchanged["status"], "running")
 
     def test_reap_recovers_terminal_artifacts_without_replacing_result(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -22,6 +22,7 @@ from . import (
     platform_runtime,
     vscode_chat,
     worker_lease,
+    workers,
     workstreams,
 )
 
@@ -1060,6 +1061,8 @@ def scan_once(
     server_factory=codex_app.AppServer,
     host_adapters: dict | None = None,
     host_filter: set[str] | None = None,
+    record_handler=None,
+    queue_tick=workers.queue_tick,
 ) -> dict[str, Any]:
     if action not in WATCHER_ACTIONS:
         raise WatcherError(f"unsupported watcher action: {action}")
@@ -1085,6 +1088,7 @@ def scan_once(
     action_errors: list[dict[str, str]] = []
     suppressed_signals: list[dict[str, str]] = []
     workstream_reconciliations: list[dict[str, Any]] = []
+    worker_queue_ticks: list[dict[str, Any]] = []
 
     def perform_action(
         project: Path,
@@ -1097,7 +1101,8 @@ def scan_once(
         defer_reason: str | None = None
         try:
             if action == "record":
-                pass
+                if record_handler is not None:
+                    record_handler(project, signal)
             elif action == "notify":
                 notifications.append(
                     str(notify_signal(project, signal, state_dir=state_dir))
@@ -1186,6 +1191,19 @@ def scan_once(
                     "error": f"workstream reconciliation failed: {error}",
                 }
             )
+        pending_queue = (
+            core.state_root(project, state_dir=state_dir) / "queue" / "pending"
+        )
+        if any(pending_queue.glob("*.json")):
+            try:
+                worker_queue_ticks.append(queue_tick(project, state_dir=state_dir))
+            except (OSError, RuntimeError, ValueError) as error:
+                action_errors.append(
+                    {
+                        "project_root": str(project),
+                        "error": f"worker queue tick failed: {error}",
+                    }
+                )
         invalid_signals: list[dict[str, str]] = []
         signals = core.inbox(
             project,
@@ -1293,6 +1311,7 @@ def scan_once(
         "thread_wakeups": thread_wakeups,
         "suppressed_signals": suppressed_signals,
         "workstream_reconciliations": workstream_reconciliations,
+        "worker_queue_ticks": worker_queue_ticks,
         "action_errors": action_errors,
         "state_path": str(state_file),
     }
@@ -1810,6 +1829,97 @@ def stop_service(
         )
 
 
+def restart_service(
+    project_roots: list[Path],
+    *,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    interval_seconds: float | None,
+    state_path: Path | None,
+    service_file: Path | None,
+    action: str | None,
+    target_thread_id: str | None,
+    codex: str,
+    host: str | None = None,
+    timeout_seconds: float = 5.0,
+    popen_factory=subprocess.Popen,
+    process_identity_reader=worker_lease.process_identity,
+    process_checker=process_alive,
+    kill_group=None,
+) -> dict[str, Any]:
+    """Atomically restart a service, inheriting omitted stored settings."""
+
+    projects = [path.expanduser().resolve() for path in project_roots]
+    if not projects:
+        raise WatcherError("at least one project root is required")
+    service_path = service_file or default_callback_service_path(
+        projects[0],
+        host=host,
+        state_dir=state_dir,
+    )
+    with platform_runtime.exclusive_file_lock(service_path.with_suffix(".lock")):
+        existing = load_optional_object(service_path)
+        if existing is not None:
+            if existing.get("kind") != SERVICE_KIND:
+                raise WatcherError(
+                    f"{service_path} is not a watcher service state file"
+                )
+            if not core.is_supported_schema_version(existing.get("schema_version")):
+                raise WatcherError(
+                    "watcher service state uses an unsupported schema version"
+                )
+        resolved_action = action
+        if resolved_action is None and existing is not None:
+            stored_action = existing.get("action")
+            if isinstance(stored_action, str):
+                resolved_action = stored_action
+        resolved_action = resolved_action or "notify"
+
+        resolved_interval = interval_seconds
+        if resolved_interval is None and existing is not None:
+            stored_interval = existing.get("interval_seconds")
+            if isinstance(stored_interval, (int, float)) and not isinstance(
+                stored_interval, bool
+            ):
+                resolved_interval = float(stored_interval)
+        resolved_interval = resolved_interval if resolved_interval is not None else 5.0
+
+        resolved_state_path = state_path
+        if resolved_state_path is None and existing is not None:
+            stored_state_path = existing.get("state_path")
+            if isinstance(stored_state_path, str) and stored_state_path:
+                resolved_state_path = Path(stored_state_path)
+
+        resolved_target = target_thread_id
+        if resolved_target is None and existing is not None:
+            stored_target = existing.get("target_thread_id")
+            if isinstance(stored_target, str) and stored_target:
+                resolved_target = stored_target
+
+        _stop_service_unlocked(
+            projects,
+            state_dir=state_dir,
+            service_file=service_path,
+            host=host,
+            timeout_seconds=timeout_seconds,
+            process_checker=process_checker,
+            kill_group=kill_group,
+        )
+        return _start_service_unlocked(
+            projects,
+            state_dir=state_dir,
+            interval_seconds=resolved_interval,
+            state_path=resolved_state_path,
+            service_file=service_path,
+            action=resolved_action,
+            target_thread_id=resolved_target,
+            codex=codex,
+            host=host,
+            replace=True,
+            popen_factory=popen_factory,
+            process_identity_reader=process_identity_reader,
+        )
+
+
 def _stop_service_unlocked(
     project_roots: list[Path],
     *,
@@ -1878,9 +1988,10 @@ def _stop_service_unlocked(
         raise WatcherError(
             "watcher service stop requires identity-safe process-group signalling"
         )
-    if not worker_lease.identity_matches(
-        recorded_identity, worker_lease.process_identity(pid)
-    ):
+    current_identity = worker_lease.identity_state(recorded_identity)
+    if current_identity["state"] == "unknown":
+        raise WatcherError("watcher process identity became unverifiable")
+    if current_identity["state"] == "gone":
         state.update(
             status="stopped",
             stopped_at=core.utc_now(),
@@ -1891,9 +2002,10 @@ def _stop_service_unlocked(
     kill_group(process_group, signal_module.SIGTERM)
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        if not worker_lease.identity_matches(
-            recorded_identity, worker_lease.process_identity(pid)
-        ):
+        current_identity = worker_lease.identity_state(recorded_identity)
+        if current_identity["state"] == "unknown":
+            raise WatcherError("watcher process identity became unverifiable")
+        if current_identity["state"] == "gone":
             state.update(
                 status="stopped",
                 stopped_at=core.utc_now(),
@@ -1902,9 +2014,10 @@ def _stop_service_unlocked(
             core.atomic_json(service_path, state)
             return {**state, "service_file": str(service_path)}
         time.sleep(0.1)
-    if not worker_lease.identity_matches(
-        recorded_identity, worker_lease.process_identity(pid)
-    ):
+    current_identity = worker_lease.identity_state(recorded_identity)
+    if current_identity["state"] == "unknown":
+        raise WatcherError("watcher process identity became unverifiable")
+    if current_identity["state"] == "gone":
         state.update(
             status="stopped",
             stopped_at=core.utc_now(),

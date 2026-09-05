@@ -58,7 +58,7 @@ For a reproducible adopter install, use an immutable release tag:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.0.1"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.1.0"
 ```
 
 GitHub Release archives and wheel/sdist assets are published with the tag;
@@ -852,6 +852,11 @@ Finally, tell the user what was configured: host binding, workers, watcher
 state, and how to stop it (`watcher --host HOST service stop` for callback
 hosts, or by ending the armed stream command for Claude).
 
+To restart an existing callback service without changing its saved delivery
+configuration, use `watcher --host HOST service restart`. Omitted action,
+interval, state path and legacy target values are inherited from the service
+descriptor; pass an option explicitly only when changing it intentionally.
+
 ## Troubleshooting
 
 | Symptom | Cause / fix |
@@ -863,7 +868,7 @@ hosts, or by ending the armed stream command for Claude).
 | Codex receipt has `queue_delivery_ambiguous` | The queue process timed out, exited nonzero or returned no matching acknowledgement. Inspect the target task before manual retry: the message may already be queued, so automatic retry is intentionally disabled. |
 | Bare `watcher service status` disagrees with `doctor` | Host-scoped callback services use host-specific state files. Run `watcher --host <host> service status` for the active callback channel shown by `bind --status` or `doctor`. |
 | `watcher stream status` is `stale` or `not_started` | Re-arm `watcher stream` from the Claude chat. Re-arming is safe: the stream state keeps seen event ids, so already delivered signals are not repeated. |
-| `watcher stream status` is `erroring` | The stream loop is alive but the latest scan failed. Inspect `last_error`, fix the inbox/state issue, and keep the stream running; the status returns to `fresh` after a successful scan. |
+| `watcher stream status` is `erroring` | The stream loop is alive but the latest scan or line delivery failed. Inspect `last_error`, fix or re-arm the host stream, then use `watcher deferred retry` when operator retry is required. The signal remains durable and is deduplicated by `event_id`. |
 | Codex receipt `deferred` with `thread_active` or `thread_recently_active` | The CLI lacks `codex queue`, so the compatibility fallback guarded against a parallel headless turn. Upgrade Codex or end the active turn and let the retry proceed. |
 | Codex receipt `submitted` with `turn_status: "running"` | The compatibility fallback started a long headless App Server turn; a background finalizer updates the receipt when it ends. |
 | Codex receipt `queued` but window did not focus | Queue delivery is still valid. Check `activation`; the optional deep link needs `powershell.exe` reachable in WSL and the Desktop app installed. |
@@ -882,4 +887,4 @@ hosts, or by ending the armed stream command for Claude).
 | Worker appears stuck or no follow-up arrived | Run `worker tasks --severity warning` to inspect stale heartbeats, dead supervisor/worker pids and missing artifacts before reading full logs. |
 | Copilot worker stalls with `Permission denied and could not request permission from user` | The profile is interactive. Add autonomous Copilot flags such as `--allow-all --no-ask-user`, or configure a project-approved narrower non-interactive policy. |
 | Supervisor log shows `ModuleNotFoundError: orchestrator_engine` | Engine was run via ad-hoc `PYTHONPATH` instead of being installed; run `pip install .` (Step 1). |
-| Watcher status `degraded` / `crashed` | Read `.orchestrator/inbox/logs/watcher-service.log`, then `watcher service restart`. |
+| Watcher status `degraded` / `crashed` | Read `.orchestrator/inbox/logs/watcher-service.log`, then run `watcher --host HOST service restart` for a callback host (or bare `watcher service restart` for a legacy unscoped service). |

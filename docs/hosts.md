@@ -131,12 +131,11 @@ orchestrator-engine --project-root /path/to/project watcher stream
 ```
 
 Every new inbox signal is printed as one JSON line and wakes the chat. The
-stream uses `watcher-claude-stream-state.json`, so each Claude signal is
-delivered once and callback services for other hosts do not consume it.
-Delivery is at-most-once: a signal is marked seen when its line is printed, so
-if the armed watch dies at that exact moment the line is lost — check
-`orchestrator-engine inbox` output against recent task results after re-arming
-a watch that was down.
+stream uses `watcher-claude-stream-state.json`, so callback services for other
+hosts do not consume Claude signals. A signal is marked seen only after its
+line is written successfully. A failed write remains retryable after the
+stream is re-armed. Delivery is therefore at-least-once across a crash window;
+host integrations must deduplicate by the stable `event_id`.
 
 Check stream health:
 

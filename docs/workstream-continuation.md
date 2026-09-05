@@ -114,8 +114,8 @@ Each workstream uses:
 .orchestrator/workstreams/<workstream_id>/
   workstream.json
   checkpoints/<checkpoint_id>.json
-  checkpoints/<checkpoint_id>.result.json
-  checkpoints/<checkpoint_id>.evidence.json
+  artifacts/results/<checkpoint_id>.json
+  artifacts/evidence/<checkpoint_id>.json
 ```
 
 The result contains only the bounded summary, next action and due time. The
@@ -129,7 +129,9 @@ before descriptor or signal publication. The descriptor holds one
 `active_continuation`; a later stop or continuation checkpoint revokes the
 older timer signal before host delivery. New operation identities use
 `workstream:<workstream_id>:<checkpoint_id>`; legacy checkpoint events remain
-readable and recoverable.
+readable and recoverable. Legacy result and evidence files stored beside
+checkpoints also remain readable, while new generated artifacts use separate
+directories so every valid checkpoint ID has an unambiguous path.
 
 Read compact state with:
 

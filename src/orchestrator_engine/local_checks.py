@@ -85,6 +85,16 @@ def descriptor_path(project_root: Path, check_id: str, *, state_dir: str) -> Pat
     return check_dir(project_root, check_id, state_dir=state_dir) / "check.json"
 
 
+def load_check_descriptor(path: Path) -> dict[str, Any]:
+    descriptor = core.load_object(path)
+    if (
+        not core.is_supported_schema_version(descriptor.get("schema_version"))
+        or descriptor.get("kind") != CHECK_KIND
+    ):
+        raise LocalCheckError(f"invalid local check descriptor: {path}")
+    return descriptor
+
+
 @contextlib.contextmanager
 def file_lock(path: Path):
     with platform_runtime.exclusive_file_lock(path):
@@ -318,24 +328,78 @@ def relative_path(path: Path, project_root: Path) -> str:
 
 
 def terminate_process(process: subprocess.Popen[str]) -> None:
-    if process.poll() is not None:
-        return
     if hasattr(os, "killpg"):
         with contextlib.suppress(OSError, ProcessLookupError):
             os.killpg(process.pid, signal.SIGTERM)
     else:
         with contextlib.suppress(OSError):
             process.terminate()
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        if hasattr(os, "killpg"):
+    deadline = time.monotonic() + 1.0
+    while (
+        hasattr(os, "killpg")
+        and worker_lease.process_group_state(process.pid) == "alive"
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.05)
+    if hasattr(os, "killpg"):
+        if worker_lease.process_group_state(process.pid) == "alive":
             with contextlib.suppress(OSError, ProcessLookupError):
                 os.killpg(process.pid, signal.SIGKILL)
-        else:
-            with contextlib.suppress(OSError):
-                process.kill()
-        process.wait(timeout=5)
+    elif process.poll() is None:
+        with contextlib.suppress(OSError):
+            process.kill()
+    if process.poll() is None:
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=1)
+
+
+def record_active_command(
+    path: Path,
+    process: subprocess.Popen[str],
+    spec: CommandSpec,
+) -> dict[str, Any]:
+    identity = worker_lease.process_identity(process.pid)
+    if identity is None:
+        raise LocalCheckError("active command identity is unavailable")
+    active = {
+        "label": spec.label,
+        "pid": int(process.pid),
+        "process_group": int(process.pid),
+        "process_identity": identity,
+        "started_at": core.utc_now(),
+    }
+    with file_lock(path.with_suffix(".lock")):
+        descriptor = load_check_descriptor(path)
+        if descriptor.get("status") != "running":
+            raise LocalCheckError("local check is no longer running")
+        descriptor["active_command"] = active
+        descriptor.pop("command_launching", None)
+        core.atomic_json(path, descriptor)
+    return active
+
+
+def record_command_launch(path: Path, spec: CommandSpec) -> None:
+    with file_lock(path.with_suffix(".lock")):
+        descriptor = load_check_descriptor(path)
+        if descriptor.get("status") != "running":
+            raise LocalCheckError("local check is no longer running")
+        descriptor["command_launching"] = {
+            "label": spec.label,
+            "recorded_at": core.utc_now(),
+        }
+        core.atomic_json(path, descriptor)
+
+
+def clear_active_command(path: Path, active: dict[str, Any]) -> None:
+    with file_lock(path.with_suffix(".lock")):
+        descriptor = load_check_descriptor(path)
+        current = descriptor.get("active_command")
+        if isinstance(current, dict) and current.get("process_identity") == active.get(
+            "process_identity"
+        ):
+            descriptor.pop("active_command", None)
+            descriptor.pop("command_launching", None)
+            core.atomic_json(path, descriptor)
 
 
 def read_lines(stream, output: queue.Queue[str]) -> None:
@@ -355,6 +419,7 @@ def run_command(
     project_root: Path,
     artifacts_dir: Path,
     full_log,
+    descriptor_path: Path | None = None,
 ) -> dict[str, Any]:
     log_path = artifacts_dir / f"{safe_label(spec.label)}.log"
     started_at = core.utc_now()
@@ -366,6 +431,8 @@ def run_command(
     timed_out = False
     full_log.write(f"\n--- {spec.label}: {shlex.join(spec.argv)} ---\n")
     full_log.flush()
+    if descriptor_path is not None:
+        record_command_launch(descriptor_path, spec)
     try:
         process = subprocess.Popen(
             spec.argv,
@@ -378,6 +445,11 @@ def run_command(
             start_new_session=True,
         )
     except OSError as error:
+        if descriptor_path is not None:
+            with file_lock(descriptor_path.with_suffix(".lock")):
+                descriptor = load_check_descriptor(descriptor_path)
+                descriptor.pop("command_launching", None)
+                core.atomic_json(descriptor_path, descriptor)
         message = str(error)
         log_path.write_text(message + "\n", encoding="utf-8")
         full_log.write(message + "\n")
@@ -397,6 +469,31 @@ def run_command(
             "output_line_count": 1,
             "error": message,
         }
+    active_command: dict[str, Any] | None = None
+    if descriptor_path is not None:
+        try:
+            active_command = record_active_command(descriptor_path, process, spec)
+        except (OSError, RuntimeError, ValueError) as error:
+            terminate_process(process)
+            message = f"could not record active command identity: {error}"
+            log_path.write_text(message + "\n", encoding="utf-8")
+            full_log.write(message + "\n")
+            return {
+                "label": spec.label,
+                "required": spec.required,
+                "status": "errored",
+                "exit_code": None,
+                "started_at": started_at,
+                "finished_at": core.utc_now(),
+                "duration_seconds": round(time.monotonic() - started, 3),
+                "cwd": relative_path(spec.cwd, project_root),
+                "argv": spec.argv,
+                "command": shlex.join(spec.argv),
+                "log_path": relative_path(log_path, project_root),
+                "output_tail": [message],
+                "output_line_count": 1,
+                "error": message,
+            }
     assert process.stdout is not None
     deadline = (
         time.monotonic() + spec.timeout_seconds
@@ -414,8 +511,11 @@ def run_command(
             try:
                 line = lines.get(timeout=0.05)
             except queue.Empty:
-                if process.poll() is not None and not reader.is_alive():
-                    break
+                if process.poll() is not None:
+                    if reader.is_alive():
+                        terminate_process(process)
+                    else:
+                        break
                 continue
             command_log.write(line)
             full_log.write(line)
@@ -468,6 +568,8 @@ def run_command(
     }
     if timed_out:
         result["error"] = f"command timed out after {spec.timeout_seconds}s"
+    if descriptor_path is not None and active_command is not None:
+        clear_active_command(descriptor_path, active_command)
     return result
 
 
@@ -647,7 +749,7 @@ def start_check(
         descriptor["wake_target"] = wake_target
     directory.mkdir(parents=True, exist_ok=True)
     if not core.claim_json(path, descriptor):
-        existing = core.load_object(path)
+        existing = load_check_descriptor(path)
         if (
             existing.get("suite") == suite
             and existing.get("fingerprint") == spec["fingerprint"]
@@ -685,7 +787,7 @@ def start_check(
         raise LocalCheckError(f"could not launch check supervisor: {error}") from error
     launch_error: str | None = None
     with file_lock(path.with_suffix(".lock")):
-        current = core.load_object(path)
+        current = load_check_descriptor(path)
         if current.get("status") == "starting":
             identity = worker_lease.process_identity(process.pid)
             if identity is None:
@@ -739,7 +841,7 @@ def supervise_check(
     path = descriptor_path(project, check_id, state_dir=state_dir)
     lock = path.with_suffix(".lock")
     with file_lock(lock):
-        descriptor = core.load_object(path)
+        descriptor = load_check_descriptor(path)
         if descriptor.get("status") in TERMINAL_STATUSES:
             return descriptor
         if descriptor.get("status") == "running":
@@ -769,6 +871,9 @@ def supervise_check(
                 project_root=project,
                 artifacts_dir=path.parent,
                 full_log=full_log,
+                descriptor_path=(
+                    path if descriptor.get("execution") == "detached" else None
+                ),
             )
             for command in spec["commands"]
         ]
@@ -857,6 +962,8 @@ def supervise_check(
         event_path=event["event_path"],
         signal_path=event["signal_path"],
     )
+    descriptor.pop("active_command", None)
+    descriptor.pop("command_launching", None)
     core.atomic_json(path, descriptor)
     return descriptor
 
@@ -1054,22 +1161,13 @@ def reap_checks(
     for path in paths:
         with file_lock(path.with_suffix(".lock")):
             try:
-                descriptor = core.load_object(path)
-            except (OSError, core.OrchestratorError) as error:
+                descriptor = load_check_descriptor(path)
+            except (OSError, RuntimeError, ValueError) as error:
                 outcomes.append(
                     {
                         "check_id": path.parent.name,
                         "status": "invalid",
                         "reason": str(error)[:1000],
-                    }
-                )
-                continue
-            if descriptor.get("kind") != CHECK_KIND:
-                outcomes.append(
-                    {
-                        "check_id": descriptor.get("check_id") or path.parent.name,
-                        "status": "invalid",
-                        "reason": "descriptor contract is invalid",
                     }
                 )
                 continue
@@ -1093,6 +1191,70 @@ def reap_checks(
                     }
                 )
                 continue
+            active = descriptor.get("active_command")
+            if active is None and isinstance(descriptor.get("command_launching"), dict):
+                outcomes.append(
+                    {
+                        "check_id": descriptor.get("check_id"),
+                        "status": "unsafe_command_launch_transition",
+                    }
+                )
+                continue
+            if isinstance(active, dict):
+                command_state = worker_lease.identity_state(
+                    active.get("process_identity")
+                )
+                if command_state["state"] == "unknown":
+                    outcomes.append(
+                        {
+                            "check_id": descriptor.get("check_id"),
+                            "status": "unsafe_active_command_identity",
+                        }
+                    )
+                    continue
+                if command_state["state"] == "alive":
+                    stopped = worker_lease.stop_worker_tree(
+                        worker_pid=active.get("pid"),
+                        worker_pgid=active.get("process_group"),
+                        worker_identity=active.get("process_identity"),
+                        reason="local_check_supervisor_lost",
+                    )
+                    if not stopped.get("exited"):
+                        outcomes.append(
+                            {
+                                "check_id": descriptor.get("check_id"),
+                                "status": "active_command_stop_unconfirmed",
+                                "stop": stopped,
+                            }
+                        )
+                        continue
+                    if (
+                        worker_lease.process_group_state(
+                            active.get("process_group")
+                        )
+                        != "gone"
+                    ):
+                        outcomes.append(
+                            {
+                                "check_id": descriptor.get("check_id"),
+                                "status": "active_command_group_not_gone",
+                                "stop": stopped,
+                            }
+                        )
+                        continue
+                    descriptor["active_command_stop"] = stopped
+                elif (
+                    worker_lease.process_group_state(active.get("process_group"))
+                    != "gone"
+                ):
+                    outcomes.append(
+                        {
+                            "check_id": descriptor.get("check_id"),
+                            "status": "unsafe_orphaned_command_group",
+                        }
+                    )
+                    continue
+                descriptor.pop("active_command", None)
             recovered = recover_completed_check(
                 project,
                 descriptor,
@@ -1161,9 +1323,7 @@ def check_status(
     invalid: list[dict[str, str]] = []
     for path in paths:
         try:
-            descriptor = core.load_object(path)
-            if descriptor.get("kind") != CHECK_KIND:
-                raise LocalCheckError("unexpected descriptor kind")
+            descriptor = load_check_descriptor(path)
         except (OSError, RuntimeError, ValueError) as error:
             invalid.append({"path": str(path), "error": str(error)})
             continue
@@ -1195,6 +1355,7 @@ def check_status(
             "summary_path": descriptor.get("summary_path"),
             "evidence_path": descriptor.get("evidence_path"),
             "supervisor_process": process,
+            "active_command": descriptor.get("active_command"),
         }
         if effective_status in {"crashed", "stalled"}:
             summary["failure_kind"] = (

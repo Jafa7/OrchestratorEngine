@@ -321,6 +321,50 @@ class WorkstreamTests(unittest.TestCase):
         self.assertEqual(descriptor["continuation_count"], 1)
         self.assertEqual(inbox_count, 1)
 
+    def test_new_checkpoint_reconciles_interrupted_descriptor_first(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            self.start(root, workstream_id="W", goal="Goal", delay_seconds=0)
+            descriptor_path = workstreams.descriptor_path(root, "W")
+            original_atomic_json = core.atomic_json
+            failed = False
+
+            def fail_descriptor_once(path, value):
+                nonlocal failed
+                if (
+                    Path(path) == descriptor_path
+                    and value.get("checkpoint_count") == 1
+                    and not failed
+                ):
+                    failed = True
+                    raise OSError("simulated descriptor interruption")
+                return original_atomic_json(path, value)
+
+            with mock.patch.object(
+                core, "atomic_json", side_effect=fail_descriptor_once
+            ), self.assertRaisesRegex(OSError, "descriptor interruption"):
+                workstreams.checkpoint_workstream(
+                    root,
+                    workstream_id="W",
+                    checkpoint_id="C1",
+                    decision="continue",
+                    summary="Ready.",
+                    next_action="Continue.",
+                    ready=True,
+                )
+
+            second = workstreams.checkpoint_workstream(
+                root,
+                workstream_id="W",
+                checkpoint_id="C2",
+                decision="paused",
+                summary="Pause after recovery.",
+            )
+            reconciled = workstreams.reconcile_workstreams(root)
+
+        self.assertEqual(second["sequence"], 2)
+        self.assertEqual(reconciled[0]["status"], "paused")
+
     def test_reconcile_recovers_failure_after_descriptor_update(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -375,6 +419,38 @@ class WorkstreamTests(unittest.TestCase):
         self.assertNotEqual(first["operation_id"], second["operation_id"])
         self.assertNotEqual(first["event_id"], second["event_id"])
 
+    def test_checkpoint_and_generated_artifact_namespaces_do_not_collide(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            self.start(root, workstream_id="W", goal="Goal")
+            dotted = workstreams.checkpoint_workstream(
+                root,
+                workstream_id="W",
+                checkpoint_id="C.result",
+                decision="paused",
+                summary="A valid dotted checkpoint.",
+            )
+            workstreams.resume_workstream(root, workstream_id="W")
+            continuation = workstreams.checkpoint_workstream(
+                root,
+                workstream_id="W",
+                checkpoint_id="C",
+                decision="continue",
+                summary="Ready.",
+                next_action="Continue.",
+                ready=True,
+            )
+            dotted_value = core.load_object(Path(dotted["checkpoint_path"]))
+            event = core.load_object(Path(continuation["event_path"]))
+            result_path = Path(event["result_path"])
+            reconciled = workstreams.reconcile_workstreams(root)
+
+        self.assertEqual(dotted_value["checkpoint_id"], "C.result")
+        self.assertEqual(result_path.parent.name, "results")
+        self.assertEqual(reconciled[0]["status"], "active")
+
     def test_continuation_wakeup_requires_current_state_recheck(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -409,6 +485,179 @@ class WorkstreamTests(unittest.TestCase):
 
         self.assertEqual(resumed["status"], "active")
         self.assertEqual(core.inbox(root), [])
+
+    def test_resume_does_not_restore_a_revoked_continuation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            self.start(root, workstream_id="W", goal="Goal", delay_seconds=0)
+            continuation = workstreams.checkpoint_workstream(
+                root,
+                workstream_id="W",
+                checkpoint_id="C1",
+                decision="continue",
+                summary="Ready.",
+                next_action="Continue.",
+                ready=True,
+            )
+            workstreams.checkpoint_workstream(
+                root,
+                workstream_id="W",
+                checkpoint_id="C2",
+                decision="paused",
+                summary="Pause.",
+            )
+            workstreams.resume_workstream(root, workstream_id="W")
+            scan = watcher.scan_once(
+                [root], state_path=root / "watcher-state.json", action="record"
+            )
+
+        self.assertEqual(scan["new_count"], 0)
+        self.assertEqual(
+            scan["suppressed_signals"][0]["event_id"], continuation["event_id"]
+        )
+
+    def test_legacy_continuation_authorization_is_migrated_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            self.start(root, workstream_id="W", goal="Goal", delay_seconds=0)
+            continuation = workstreams.checkpoint_workstream(
+                root,
+                workstream_id="W",
+                checkpoint_id="C1",
+                decision="continue",
+                summary="Ready.",
+                next_action="Continue.",
+                ready=True,
+            )
+            path = workstreams.descriptor_path(root, "W")
+            descriptor = core.load_object(path)
+            descriptor.pop("active_continuation")
+            descriptor.pop("continuation_state_version")
+            core.atomic_json(path, descriptor)
+
+            workstreams.reconcile_workstreams(root)
+            migrated = workstreams.load_workstream(root, "W")
+            scan = watcher.scan_once(
+                [root], state_path=root / "watcher-state.json", action="record"
+            )
+
+        self.assertEqual(
+            migrated["active_continuation"]["event_id"], continuation["event_id"]
+        )
+        self.assertEqual(migrated["continuation_state_version"], 1)
+        self.assertEqual(scan["new_count"], 1)
+
+    def test_expired_signal_cannot_reopen_a_completed_workstream(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            self.start(
+                root,
+                workstream_id="W",
+                goal="Goal",
+                delay_seconds=0,
+                max_wall_seconds=1,
+            )
+            workstreams.checkpoint_workstream(
+                root,
+                workstream_id="W",
+                checkpoint_id="C1",
+                decision="continue",
+                summary="Ready.",
+                next_action="Continue.",
+                ready=True,
+            )
+            workstreams.checkpoint_workstream(
+                root,
+                workstream_id="W",
+                checkpoint_id="C2",
+                decision="complete",
+                summary="Done.",
+            )
+            path = workstreams.descriptor_path(root, "W")
+            descriptor = core.load_object(path)
+            descriptor["created_at"] = "2000-01-01T00:00:00+00:00"
+            core.atomic_json(path, descriptor)
+
+            scan = watcher.scan_once(
+                [root], state_path=root / "watcher-state.json", action="record"
+            )
+            completed = workstreams.load_workstream(root, "W")
+
+        self.assertEqual(scan["new_count"], 0)
+        self.assertEqual(
+            scan["suppressed_signals"][0]["reason"],
+            "workstream_continuation_revoked",
+        )
+        self.assertEqual(completed["status"], "complete")
+
+    def test_reconciliation_cannot_apply_checkpoint_after_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            self.start(root, workstream_id="W", goal="Goal")
+            completed = workstreams.checkpoint_workstream(
+                root,
+                workstream_id="W",
+                checkpoint_id="C1",
+                decision="complete",
+                summary="Done.",
+            )
+            invalid = {
+                **completed,
+                "checkpoint_id": "C2",
+                "sequence": 2,
+                "decision": "paused",
+                "requested_decision": "paused",
+                "summary": "Must not reopen.",
+            }
+            invalid.pop("checkpoint_path")
+            invalid.pop("idempotent")
+            core.atomic_json(
+                workstreams.checkpoint_path(root, "W", "C2"), invalid
+            )
+
+            reconciled = workstreams.reconcile_workstreams(root)
+            descriptor = workstreams.load_workstream(root, "W")
+
+        self.assertEqual(reconciled[0]["status"], "error")
+        self.assertIn("completed workstream", reconciled[0]["error"])
+        self.assertEqual(descriptor["status"], "complete")
+
+    def test_reconciliation_isolates_a_broken_workstream(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            self.start(root, workstream_id="A-broken", goal="Broken")
+            self.start(root, workstream_id="Z-valid", goal="Valid", delay_seconds=0)
+            broken = (
+                workstreams.workstream_dir(root, "A-broken")
+                / "checkpoints"
+                / "bad.json"
+            )
+            core.atomic_json(broken, {"kind": "INVALID"})
+            with mock.patch.object(
+                core,
+                "write_followup_event",
+                side_effect=OSError("simulated event interruption"),
+            ), self.assertRaisesRegex(OSError, "event interruption"):
+                workstreams.checkpoint_workstream(
+                    root,
+                    workstream_id="Z-valid",
+                    checkpoint_id="C1",
+                    decision="continue",
+                    summary="Ready.",
+                    next_action="Continue.",
+                    ready=True,
+                )
+
+            scan = watcher.scan_once(
+                [root], state_path=root / "watcher-state.json", action="record"
+            )
+
+        reconciled = scan["workstream_reconciliations"]
+        self.assertEqual(reconciled[0]["workstream_id"], "A-broken")
+        self.assertEqual(reconciled[0]["status"], "error")
+        self.assertEqual(reconciled[1]["workstream_id"], "Z-valid")
+        self.assertEqual(reconciled[1]["recovered_events"], 1)
+        self.assertEqual(scan["new_count"], 1)
 
     def test_active_workstream_cannot_be_resumed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

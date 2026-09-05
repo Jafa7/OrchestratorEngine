@@ -13,6 +13,7 @@ from . import binding, core, platform_runtime
 WORKSTREAM_KIND = "ORCHESTRATOR_WORKSTREAM"
 CHECKPOINT_KIND = "ORCHESTRATOR_WORKSTREAM_CHECKPOINT"
 SOURCE_KIND = "workstream_checkpoint"
+CONTINUATION_STATE_VERSION = 1
 DECISIONS = {
     "continue",
     "waiting_external",
@@ -150,6 +151,7 @@ def start_workstream(
         "status": "active",
         "checkpoint_count": 0,
         "continuation_count": 0,
+        "continuation_state_version": CONTINUATION_STATE_VERSION,
         "max_continuations": max_continuations,
         "delay_seconds": round(float(delay_seconds), 3),
         "max_wall_seconds": max_wall_seconds,
@@ -261,9 +263,10 @@ def validate_checkpoint(
 
 def _checkpoint_artifact_paths(path: Path) -> tuple[Path, Path]:
     checkpoint_id = path.stem
+    artifacts = path.parent.parent / "artifacts"
     return (
-        path.with_name(f"{checkpoint_id}.result.json"),
-        path.with_name(f"{checkpoint_id}.evidence.json"),
+        artifacts / "results" / f"{checkpoint_id}.json",
+        artifacts / "evidence" / f"{checkpoint_id}.json",
     )
 
 
@@ -307,6 +310,10 @@ def _apply_checkpoint(
     applied = int(descriptor.get("checkpoint_count", 0))
     if sequence <= applied:
         return False
+    if descriptor.get("status") == "complete":
+        raise WorkstreamError(
+            f"completed workstream cannot apply checkpoint sequence {sequence}"
+        )
     if sequence != applied + 1:
         raise WorkstreamError(
             f"checkpoint sequence gap for {descriptor['workstream_id']}: "
@@ -343,6 +350,9 @@ def _apply_checkpoint(
         descriptor["last_scheduled_wake_at"] = checkpoint["not_before"]
     else:
         descriptor.pop("active_continuation", None)
+        descriptor.pop("last_scheduled_event_id", None)
+        descriptor.pop("last_scheduled_wake_at", None)
+    descriptor["continuation_state_version"] = CONTINUATION_STATE_VERSION
     if decision == "waiting_external":
         descriptor["waiting_on"] = checkpoint["waiting_on"]
     else:
@@ -391,10 +401,57 @@ def _checkpoint_files(project: Path, workstream_id: str, *, state_dir: str):
     directory = (
         workstream_dir(project, workstream_id, state_dir=state_dir) / "checkpoints"
     )
-    for path in directory.glob("*.json"):
-        if path.name.endswith((".result.json", ".evidence.json")):
-            continue
-        yield path
+    yield from directory.glob("*.json")
+
+
+def _migrate_continuation_state(
+    project: Path,
+    descriptor: dict[str, Any],
+    checkpoints: list[tuple[Path, dict[str, Any]]],
+    *,
+    state_dir: str,
+) -> bool:
+    """Convert the legacy last-event hint into explicit authorization once."""
+
+    if int(descriptor.get("continuation_state_version", 0)) >= (
+        CONTINUATION_STATE_VERSION
+    ):
+        return False
+    if descriptor.get("status") == "active" and not isinstance(
+        descriptor.get("active_continuation"), dict
+    ):
+        applied = int(descriptor.get("checkpoint_count", 0))
+        latest = next(
+            (
+                checkpoint
+                for _, checkpoint in reversed(checkpoints)
+                if int(checkpoint["sequence"]) == applied
+            ),
+            None,
+        )
+        if (
+            latest is not None
+            and latest.get("decision") == "continue"
+            and latest.get("event_id") == descriptor.get("last_scheduled_event_id")
+        ):
+            descriptor["active_continuation"] = {
+                "checkpoint_id": latest["checkpoint_id"],
+                "sequence": latest["sequence"],
+                "event_id": latest["event_id"],
+                "not_before": latest["not_before"],
+            }
+    if descriptor.get("status") != "active":
+        descriptor.pop("active_continuation", None)
+        descriptor.pop("last_scheduled_event_id", None)
+        descriptor.pop("last_scheduled_wake_at", None)
+    descriptor["continuation_state_version"] = CONTINUATION_STATE_VERSION
+    core.atomic_json(
+        descriptor_path(
+            project, str(descriptor["workstream_id"]), state_dir=state_dir
+        ),
+        descriptor,
+    )
+    return True
 
 
 def _reconcile_locked(
@@ -408,6 +465,12 @@ def _reconcile_locked(
     checkpoints: list[tuple[Path, dict[str, Any]]] = []
     for path in _checkpoint_files(project, workstream_id, state_dir=state_dir):
         checkpoint = core.load_object(path)
+        if checkpoint.get("kind") in {
+            "ORCHESTRATOR_WORKSTREAM_CONTINUATION",
+            "ORCHESTRATOR_WORKSTREAM_EVIDENCE",
+        }:
+            # v1.0.0/v1.0.1 wrote generated artifacts beside checkpoints.
+            continue
         validate_checkpoint(checkpoint, path=path, workstream_id=workstream_id)
         checkpoints.append((path, checkpoint))
     checkpoints.sort(key=lambda item: int(item[1]["sequence"]))
@@ -432,6 +495,10 @@ def _reconcile_locked(
                     project, checkpoint, path=path, state_dir=state_dir
                 )
                 recovered_events += 1
+
+    _migrate_continuation_state(
+        project, descriptor, checkpoints, state_dir=state_dir
+    )
 
     if descriptor.get("status") in {"active", "waiting_external"}:
         reason = wall_limit_reason(descriptor, now=now)
@@ -467,11 +534,20 @@ def reconcile_workstreams(
     root = workstreams_root(project, state_dir=state_dir)
     for path in sorted(root.glob("*/workstream.json")):
         workstream_id = path.parent.name
-        with workstream_lock(project, workstream_id, state_dir=state_dir):
-            reconciled.append(
-                _reconcile_locked(
-                    project, workstream_id, state_dir=state_dir, now=current
+        try:
+            with workstream_lock(project, workstream_id, state_dir=state_dir):
+                reconciled.append(
+                    _reconcile_locked(
+                        project, workstream_id, state_dir=state_dir, now=current
+                    )
                 )
+        except (OSError, RuntimeError, ValueError) as error:
+            reconciled.append(
+                {
+                    "workstream_id": workstream_id,
+                    "status": "error",
+                    "error": str(error),
+                }
             )
     return reconciled
 
@@ -510,6 +586,12 @@ def continuation_delivery_guard(
     workstream_id, checkpoint_id = identity
     with workstream_lock(project, workstream_id, state_dir=state_dir):
         try:
+            _reconcile_locked(
+                project,
+                workstream_id,
+                state_dir=state_dir,
+                now=now or datetime.now(UTC),
+            )
             descriptor = load_workstream(
                 project, workstream_id, state_dir=state_dir
             )
@@ -524,11 +606,10 @@ def continuation_delivery_guard(
             yield {"deliver": False, "reason": "invalid_workstream_state"}
             return
         active = descriptor.get("active_continuation")
-        expected_event = (
-            active.get("event_id") if isinstance(active, dict) else None
-        )
-        if expected_event is None:
-            expected_event = descriptor.get("last_scheduled_event_id")
+        expected_event = active.get("event_id") if isinstance(active, dict) else None
+        if descriptor.get("status") != "active":
+            yield {"deliver": False, "reason": "workstream_continuation_revoked"}
+            return
         reason = wall_limit_reason(descriptor, now=now or datetime.now(UTC))
         if reason is not None:
             descriptor["status"] = "needs_user"
@@ -542,8 +623,7 @@ def continuation_delivery_guard(
             yield {"deliver": False, "reason": "workstream_expired"}
             return
         if (
-            descriptor.get("status") != "active"
-            or checkpoint.get("decision") != "continue"
+            checkpoint.get("decision") != "continue"
             or checkpoint.get("event_id") != signal.get("event_id")
             or expected_event != signal.get("event_id")
         ):
@@ -599,6 +679,12 @@ def checkpoint_workstream(
         project, workstream_id, checkpoint_id, state_dir=state_dir
     )
     with workstream_lock(project, workstream_id, state_dir=state_dir):
+        _reconcile_locked(
+            project,
+            workstream_id,
+            state_dir=state_dir,
+            now=datetime.now(UTC),
+        )
         if path.is_file():
             existing = core.load_object(path)
             validate_checkpoint(existing, path=path, workstream_id=workstream_id)
@@ -720,6 +806,12 @@ def resume_workstream(
 ) -> dict[str, Any]:
     project = project_root.expanduser().resolve()
     with workstream_lock(project, workstream_id, state_dir=state_dir):
+        _reconcile_locked(
+            project,
+            workstream_id,
+            state_dir=state_dir,
+            now=datetime.now(UTC),
+        )
         descriptor = load_workstream(project, workstream_id, state_dir=state_dir)
         if descriptor.get("status") == "complete":
             raise WorkstreamError("completed workstream cannot be resumed")
@@ -729,6 +821,9 @@ def resume_workstream(
         descriptor["updated_at"] = core.utc_now()
         descriptor.pop("waiting_on", None)
         descriptor.pop("active_continuation", None)
+        descriptor.pop("last_scheduled_event_id", None)
+        descriptor.pop("last_scheduled_wake_at", None)
+        descriptor["continuation_state_version"] = CONTINUATION_STATE_VERSION
         descriptor.pop("reason", None)
         core.atomic_json(
             descriptor_path(project, workstream_id, state_dir=state_dir), descriptor

@@ -11,6 +11,32 @@ from orchestrator_engine import core, platform_runtime, worker_lease, workers
 
 
 class WorkerLeaseTests(unittest.TestCase):
+    def test_process_identity_permission_error_is_unknown(self) -> None:
+        recorded = {
+            "source": worker_lease.IDENTITY_SOURCE,
+            "pid": 123,
+            "start_ticks": 456,
+        }
+        with mock.patch.object(
+            Path, "read_text", side_effect=PermissionError("proc denied")
+        ):
+            identity = worker_lease.identity_state(recorded)
+            pid = worker_lease.pid_state(123)
+            stopped = worker_lease.stop_worker_tree(
+                worker_pid=123,
+                worker_pgid=123,
+                worker_identity=recorded,
+                reason="test unavailable identity",
+                grace_seconds=0,
+                timeout_seconds=0,
+            )
+
+        self.assertEqual(identity["state"], "unknown")
+        self.assertEqual(pid["state"], "unknown")
+        self.assertEqual(stopped["stop_outcome"], "refused_identity_unavailable")
+        self.assertFalse(stopped["exited"])
+        self.assertEqual(stopped["signals"], [])
+
     def test_identity_is_unknown_when_platform_cannot_verify_linux_processes(
         self,
     ) -> None:

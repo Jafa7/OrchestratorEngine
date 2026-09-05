@@ -11,7 +11,7 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release is `1.0.1` and the durable JSON contract schema version is
+The current release is `1.1.0` and the durable JSON contract schema version is
 `1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
@@ -19,8 +19,21 @@ PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.0.1"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.1.0"
 ```
+
+## Runtime reliability in v1.1.0
+
+Version 1.1.0 makes detached local-check process ownership fail closed, keeps
+Claude stream signals retryable until their JSON line is written, advances due
+worker retries from watcher scans, and hardens workstream recovery and terminal
+state transitions. Existing schema-version-1 state remains readable, including
+legacy workstream result and evidence paths.
+
+Restart callback watcher services after upgrading so the running process uses
+the new queue scheduling and delivery behavior. Re-arm a Claude stream after
+upgrading. Do not delete pending queue entries, stream state, workstream state,
+events or evidence during the upgrade.
 
 ## Reliability fixes in v1.0.1
 

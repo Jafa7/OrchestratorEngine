@@ -23,6 +23,7 @@ from orchestrator_engine import (
     vscode_chat,
     watcher,
     worker_lease,
+    workers,
 )
 
 
@@ -143,6 +144,36 @@ def write_event(root: Path, event_id: str = "event-1") -> None:
 
 
 class WatcherTests(unittest.TestCase):
+    def test_scan_advances_pending_worker_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            pending = workers.pending_queue_path(
+                root, "T-DELAYED", state_dir=core.DEFAULT_STATE_DIR
+            )
+            core.atomic_json(
+                pending,
+                {
+                    "schema_version": 1,
+                    "kind": "WORKER_QUEUE_ENTRY",
+                    "task_id": "T-DELAYED",
+                },
+            )
+            calls: list[Path] = []
+
+            def tick(project: Path, **_kwargs):
+                calls.append(project)
+                return {"admitted_count": 1, "admitted_task_ids": ["T-DELAYED"]}
+
+            scan = watcher.scan_once(
+                [root],
+                state_path=root / "watcher-state.json",
+                action="record",
+                queue_tick=tick,
+            )
+
+        self.assertEqual(calls, [root])
+        self.assertEqual(scan["worker_queue_ticks"][0]["admitted_count"], 1)
+
     def test_record_marks_signal_seen_once(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -706,6 +737,52 @@ class WatcherTests(unittest.TestCase):
         self.assertIsInstance(errors[0], watcher.WatcherError)
         self.assertIn("already running", str(errors[0]))
 
+    def test_service_restart_inherits_stored_callback_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            service_file = root / "service.json"
+            state_path = root / "stored-state.json"
+            core.atomic_json(
+                service_file,
+                {
+                    "schema_version": 1,
+                    "kind": watcher.SERVICE_KIND,
+                    "status": "running",
+                    "pid": 999999,
+                    "process_group": 999999,
+                    "process_identity": {
+                        **FAKE_PROCESS_IDENTITY,
+                        "pid": 999999,
+                    },
+                    "action": "callback",
+                    "interval_seconds": 7,
+                    "state_path": str(state_path),
+                },
+            )
+            restarted = watcher.restart_service(
+                [root],
+                state_dir=core.DEFAULT_STATE_DIR,
+                interval_seconds=None,
+                state_path=None,
+                service_file=service_file,
+                action=None,
+                target_thread_id=None,
+                codex="codex",
+                host="codex",
+                process_checker=lambda _pid: False,
+                popen_factory=FakePopen,
+                process_identity_reader=fake_process_identity,
+            )
+
+        self.assertEqual(restarted["action"], "callback")
+        self.assertEqual(restarted["interval_seconds"], 7.0)
+        self.assertEqual(restarted["state_path"], str(state_path))
+        self.assertIn("--action", FakePopen.command)
+        self.assertEqual(
+            FakePopen.command[FakePopen.command.index("--action") + 1],
+            "callback",
+        )
+
     def test_service_stop_refuses_legacy_pid_without_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -728,6 +805,46 @@ class WatcherTests(unittest.TestCase):
                     process_checker=lambda _pid: True,
                     kill_group=lambda pgid, sent: signals.append((pgid, sent)),
                 )
+        self.assertEqual(signals, [])
+
+    def test_service_stop_refuses_unavailable_process_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            service_file = root / "service.json"
+            core.atomic_json(
+                service_file,
+                {
+                    "schema_version": 1,
+                    "kind": watcher.SERVICE_KIND,
+                    "status": "running",
+                    "pid": 4242,
+                    "process_group": 4242,
+                    "process_identity": FAKE_PROCESS_IDENTITY,
+                },
+            )
+            original = service_file.read_bytes()
+            signals: list[tuple[int, object]] = []
+            unavailable = {
+                "state": "unknown",
+                "identity_verified": False,
+                "observed": None,
+                "reason": "process_identity_unavailable",
+            }
+            with (
+                mock.patch.object(
+                    worker_lease,
+                    "identity_state",
+                    return_value=unavailable,
+                ),
+                self.assertRaises(watcher.WatcherError),
+            ):
+                watcher.stop_service(
+                    [root],
+                    service_file=service_file,
+                    process_checker=lambda _pid: True,
+                    kill_group=lambda pgid, sent: signals.append((pgid, sent)),
+                )
+            self.assertEqual(service_file.read_bytes(), original)
         self.assertEqual(signals, [])
 
     def test_service_start_fails_when_process_identity_is_unavailable(self) -> None:

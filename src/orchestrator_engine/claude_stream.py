@@ -52,13 +52,21 @@ def stream_signals(
                 state_path=stream_state,
                 action="record",
                 host_filter={"claude"},
+                record_handler=lambda _project, signal: emit(
+                    format_signal_line(signal)
+                ),
             )
         except (OSError, RuntimeError, ValueError) as error:
             record_stream_error(stream_state, error)
         else:
-            clear_stream_error(stream_state)
-            for signal in result["new_signals"]:
-                emit(format_signal_line(signal))
+            action_errors = result.get("action_errors", [])
+            if action_errors:
+                record_stream_error(
+                    stream_state,
+                    RuntimeError(str(action_errors[0].get("error", "delivery failed"))),
+                )
+            else:
+                clear_stream_error(stream_state)
         scans += 1
         if max_scans is not None and scans >= max_scans:
             break

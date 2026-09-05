@@ -507,6 +507,13 @@ def survey_schema_versions(
             )
         )
     )
+    candidates.extend(
+        sorted(
+            (state_root(project, state_dir=state_dir) / "workstreams").glob(
+                "*/artifacts/*/*.json"
+            )
+        )
+    )
     supported: list[dict[str, Any]] = []
     unsupported: list[dict[str, Any]] = []
     unreadable: list[dict[str, Any]] = []

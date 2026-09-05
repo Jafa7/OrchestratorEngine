@@ -106,7 +106,7 @@ Install an immutable release, scaffold the project and bind the host chat:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.0.1"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.1.0"
 orchestrator-engine runtime-capabilities
 orchestrator-engine --project-root /path/to/project adopt --host HOST
 orchestrator-engine --project-root /path/to/project bind --host HOST
@@ -299,8 +299,9 @@ target project:
       workstream.json
       checkpoints/
         <checkpoint_id>.json
-        <checkpoint_id>.result.json
-        <checkpoint_id>.evidence.json
+      artifacts/
+        results/<checkpoint_id>.json
+        evidence/<checkpoint_id>.json
   inbox/
     binding.json
     signals/

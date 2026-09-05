@@ -15,6 +15,7 @@
     "status": {"enum": ["active", "waiting_external", "needs_user", "blocked", "complete", "paused"]},
     "checkpoint_count": {"type": "integer", "minimum": 0},
     "continuation_count": {"type": "integer", "minimum": 0},
+    "continuation_state_version": {"const": 1},
     "max_continuations": {"type": "integer", "minimum": 1, "maximum": 100},
     "delay_seconds": {"type": "number", "minimum": 0, "maximum": 3600},
     "max_wall_seconds": {"type": "integer", "minimum": 1, "maximum": 604800},

@@ -51,29 +51,42 @@ def boot_id() -> str | None:
 
 
 def process_identity(pid: object) -> dict[str, Any] | None:
-    """Return the identity token of a live pid, or None if there is no process.
+    """Return a readable identity token, or None when it cannot be read.
 
     The token includes the process state so a caller can tell an exited-but-not
     yet-reaped process (a zombie, which can no longer do any work) from a
     running one, while still keeping its pid reserved and therefore safe to
-    signal.
+    signal. Callers that distinguish absence from read failure must use
+    `process_identity_probe` or `identity_state`.
     """
+    return process_identity_probe(pid)["identity"]
+
+
+def process_identity_probe(pid: object) -> dict[str, Any]:
+    """Distinguish a missing process from an unavailable process table."""
+
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
-        return None
+        return {"state": "unknown", "identity": None}
     try:
         stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-    except OSError:
-        return None
+    except (FileNotFoundError, ProcessLookupError):
+        return {"state": "gone", "identity": None}
+    except OSError as error:
+        return {
+            "state": "unknown",
+            "identity": None,
+            "error": str(error)[:1000],
+        }
     # The comm field is parenthesised and may itself contain spaces and
     # parentheses, so fields are only unambiguous after the final ") ".
     _, separator, tail = stat.rpartition(") ")
     if not separator:
-        return None
+        return {"state": "unknown", "identity": None}
     fields = tail.split()
     try:
         start_ticks = int(fields[PROC_STAT_STARTTIME_INDEX])
     except (IndexError, ValueError):
-        return None
+        return {"state": "unknown", "identity": None}
     identity: dict[str, Any] = {
         "source": IDENTITY_SOURCE,
         "pid": pid,
@@ -83,7 +96,7 @@ def process_identity(pid: object) -> dict[str, Any] | None:
     current_boot = boot_id()
     if current_boot is not None:
         identity["boot_id"] = current_boot
-    return identity
+    return {"state": "present", "identity": identity}
 
 
 def identity_matches(recorded: object, observed: dict[str, Any] | None) -> bool:
@@ -119,6 +132,16 @@ def identity_state(recorded: object) -> dict[str, Any]:
     if not isinstance(recorded, dict) or not isinstance(recorded.get("pid"), int):
         return {"state": "unknown", "identity_verified": False, "observed": None}
     observed = process_identity(recorded["pid"])
+    if observed is None:
+        probe = process_identity_probe(recorded["pid"])
+        if probe["state"] == "unknown":
+            return {
+                "state": "unknown",
+                "identity_verified": False,
+                "observed": None,
+                "reason": "process_identity_unavailable",
+            }
+        return {"state": "gone", "identity_verified": False, "observed": None}
     if not identity_matches(recorded, observed):
         # No process, or a different process reusing the pid. Either way the
         # recorded process no longer exists and must never be signalled.
@@ -142,10 +165,34 @@ def pid_state(pid: object) -> dict[str, Any]:
         return {"state": "unknown", "identity_verified": False, "observed": None}
     observed = process_identity(pid)
     if observed is None:
+        probe = process_identity_probe(pid)
+        if probe["state"] == "unknown":
+            return {
+                "state": "unknown",
+                "identity_verified": False,
+                "observed": None,
+                "reason": "process_identity_unavailable",
+            }
         return {"state": "gone", "identity_verified": False, "observed": None}
     if observed.get("state") == ZOMBIE_STATE:
         return {"state": "gone", "identity_verified": False, "observed": observed}
     return {"state": "alive", "identity_verified": False, "observed": observed}
+
+
+def process_group_state(pgid: object) -> str:
+    """Return alive, gone or unknown without signalling a process group."""
+
+    if not isinstance(pgid, int) or isinstance(pgid, bool) or pgid <= 0:
+        return "unknown"
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return "gone"
+    except PermissionError:
+        return "unknown"
+    except OSError:
+        return "unknown"
+    return "alive"
 
 
 def lease_path(task_dir: Path) -> Path:
@@ -291,8 +338,12 @@ def stop_worker_tree(
     if state["state"] == "unknown":
         # A worker pid with no identity token cannot be signalled safely: a live
         # pid may already belong to an unrelated process.
-        ledger["stop_outcome"] = "refused_no_identity_token"
-        ledger["exited"] = process_identity(worker_pid) is None
+        ledger["stop_outcome"] = (
+            "refused_identity_unavailable"
+            if state.get("reason") == "process_identity_unavailable"
+            else "refused_no_identity_token"
+        )
+        ledger["exited"] = pid_state(worker_pid)["state"] == "gone"
         return ledger
     if state["state"] == "gone":
         ledger["stop_outcome"] = (
@@ -368,7 +419,7 @@ def wait_until_gone(
     """
     deadline = time.monotonic() + max(timeout_seconds, 0.0)
     while True:
-        if identity_state(identity)["state"] != "alive":
+        if identity_state(identity)["state"] == "gone":
             return True
         if time.monotonic() >= deadline:
             return False

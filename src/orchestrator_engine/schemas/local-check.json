@@ -25,6 +25,28 @@
     "wake_target": {"$ref": "orchestrator-engine://schemas/wake-target"},
     "supervisor_pid": {"type": "integer", "minimum": 1},
     "supervisor_identity": {"type": "object"},
+    "command_launching": {
+      "type": "object",
+      "required": ["label", "recorded_at"],
+      "properties": {
+        "label": {"type": "string", "minLength": 1},
+        "recorded_at": {"type": "string", "format": "date-time"}
+      },
+      "additionalProperties": false
+    },
+    "active_command": {
+      "type": "object",
+      "required": ["label", "pid", "process_group", "process_identity", "started_at"],
+      "properties": {
+        "label": {"type": "string", "minLength": 1},
+        "pid": {"type": "integer", "minimum": 1},
+        "process_group": {"type": "integer", "minimum": 1},
+        "process_identity": {"type": "object"},
+        "started_at": {"type": "string", "format": "date-time"}
+      },
+      "additionalProperties": false
+    },
+    "active_command_stop": {"type": "object"},
     "started_at": {"type": "string", "format": "date-time"},
     "finished_at": {"type": "string", "format": "date-time"},
     "duration_seconds": {"type": "number", "minimum": 0},

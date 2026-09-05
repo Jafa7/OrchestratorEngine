@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 from orchestrator_engine import (
     binding,
@@ -84,6 +85,47 @@ class StreamTests(unittest.TestCase):
             )
         self.assertEqual(len(first), 1)
         self.assertEqual(second, [])
+
+    def test_stream_emit_failure_keeps_signal_retryable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            state_path = root / "watcher-state.json"
+            binding.write_binding(root, host="claude")
+            write_event(root, "event-a")
+
+            def broken_emit(_line: str) -> None:
+                raise BrokenPipeError("host stream closed")
+
+            with mock.patch.object(watcher, "unix_now", return_value=1000.0):
+                claude_stream.stream_signals(
+                    [root],
+                    state_path=state_path,
+                    emit=broken_emit,
+                    max_scans=1,
+                )
+            failed_state = watcher.load_state(state_path)
+            failed_status = claude_stream.stream_status(
+                [root], state_path=state_path
+            )
+            watcher.retry_deferred_event(
+                root,
+                event_id="event-a",
+                state_path=state_path,
+                reason="stream reconnected",
+            )
+            emitted: list[str] = []
+            claude_stream.stream_signals(
+                [root],
+                state_path=state_path,
+                emit=emitted.append,
+                max_scans=1,
+            )
+
+        self.assertEqual(failed_state["seen_event_ids"], [])
+        self.assertEqual(len(failed_state["deferred_signals"]), 1)
+        self.assertEqual(failed_status["status"], "erroring")
+        self.assertEqual(json.loads(emitted[0])["event_id"], "event-a")
+
 
     def test_stream_uses_separate_default_state_and_skips_codex_targets(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

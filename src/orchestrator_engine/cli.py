@@ -878,7 +878,11 @@ def build_parser() -> argparse.ArgumentParser:
     watcher_parser.add_argument(
         "--action",
         choices=sorted(watcher.WATCHER_ACTIONS),
-        default="notify",
+        default=None,
+        help=(
+            "Delivery action (default: notify; service restart inherits the "
+            "stored action when omitted)."
+        ),
     )
     watcher_subparsers = watcher_parser.add_subparsers(
         dest="watcher_command",
@@ -974,7 +978,7 @@ def build_parser() -> argparse.ArgumentParser:
         "restart",
         help="Stop and start the watcher process.",
     )
-    service_restart.add_argument("--interval-seconds", type=float, default=5)
+    service_restart.add_argument("--interval-seconds", type=float, default=None)
     service_restart.add_argument("--timeout-seconds", type=float, default=5)
     return parser
 
@@ -1776,7 +1780,11 @@ def run_report_command(args: argparse.Namespace, root: Path) -> str | None:
 
 
 def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object | None:
-    target_thread_id = watcher_target_thread_id(args)
+    restarting = (
+        args.watcher_command == "service" and args.service_command == "restart"
+    )
+    action = args.action if restarting else (args.action or "notify")
+    target_thread_id = watcher_target_thread_id(args, action=action)
     host_filter = {args.host} if args.host else None
     # Operator commands must reach the same state file the service uses:
     # host-scoped callback services keep their deferred events in
@@ -1793,7 +1801,7 @@ def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object |
             roots,
             state_dir=args.state_dir,
             state_path=args.state_file,
-            action=args.action,
+            action=action,
             target_thread_id=target_thread_id,
             codex=args.codex,
             host_filter=host_filter,
@@ -1851,7 +1859,7 @@ def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object |
             state_dir=args.state_dir,
             interval_seconds=args.interval_seconds,
             state_path=args.state_file,
-            action=args.action,
+            action=action,
             target_thread_id=target_thread_id,
             codex=args.codex,
             heartbeat_file=args.heartbeat_file,
@@ -1884,7 +1892,7 @@ def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object |
             interval_seconds=args.interval_seconds,
             state_path=args.state_file,
             service_file=args.service_file,
-            action=args.action,
+            action=action,
             target_thread_id=target_thread_id,
             codex=args.codex,
             host=args.host,
@@ -1906,32 +1914,29 @@ def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object |
             timeout_seconds=args.timeout_seconds,
         )
     if args.service_command == "restart":
-        watcher.stop_service(
-            roots,
-            state_dir=args.state_dir,
-            service_file=args.service_file,
-            host=args.host,
-            timeout_seconds=args.timeout_seconds,
-        )
-        return watcher.start_service(
+        return watcher.restart_service(
             roots,
             state_dir=args.state_dir,
             interval_seconds=args.interval_seconds,
             state_path=args.state_file,
             service_file=args.service_file,
-            action=args.action,
+            action=action,
             target_thread_id=target_thread_id,
             codex=args.codex,
             host=args.host,
-            replace=True,
+            timeout_seconds=args.timeout_seconds,
         )
     raise watcher.WatcherError(f"unsupported service command: {args.service_command}")
 
 
-def watcher_target_thread_id(args: argparse.Namespace) -> str | None:
+def watcher_target_thread_id(
+    args: argparse.Namespace,
+    *,
+    action: str | None = None,
+) -> str | None:
     if args.target_thread_id:
         return args.target_thread_id
-    if args.action == "current-thread-callback":
+    if (action or args.action) == "current-thread-callback":
         return os.environ.get("CODEX_THREAD_ID")
     return None
 
