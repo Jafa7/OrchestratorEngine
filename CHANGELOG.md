@@ -12,6 +12,8 @@ All notable changes to OrchestratorEngine are documented here.
 - `operation wait` can block once on up to 64 mixed worker, local-check, CI and
   PR descriptors with `any`/`all` semantics, compact terminal output and no
   model calls, provider queries or log reads.
+- `operation status` exposes the same bounded mixed-operation snapshot without
+  blocking, for scripts, dashboards and operator diagnostics.
 
 ## [0.11.1] - 2026-09-05
 

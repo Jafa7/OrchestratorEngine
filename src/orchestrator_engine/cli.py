@@ -188,10 +188,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     operation = subparsers.add_parser(
         "operation",
-        help="Wait on a bounded mix of local orchestration operations.",
+        help="Inspect or wait on a bounded mix of orchestration operations.",
     )
     operation_subparsers = operation.add_subparsers(
         dest="operation_command", required=True
+    )
+    operation_status_parser = operation_subparsers.add_parser(
+        "status",
+        help="Print one bounded worker/check/CI/PR state snapshot.",
+    )
+    operation_status_parser.add_argument(
+        "--target",
+        action="append",
+        required=True,
+        help="KIND:ID target; KIND is worker, check, ci or pr. Repeat as needed.",
+    )
+    operation_status_parser.add_argument(
+        "--mode",
+        choices=sorted(operation_wait.WAIT_MODES),
+        default="all",
+    )
+    operation_status_parser.add_argument(
+        "--stale-after-seconds",
+        type=float,
+        default=task_diagnostics.DEFAULT_STALE_AFTER_SECONDS,
     )
     operation_wait_parser = operation_subparsers.add_parser(
         "wait",
@@ -1102,8 +1122,18 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "operation":
             if len(roots) != 1:
                 raise core.OrchestratorError(
-                    "operation wait requires exactly one project root"
+                    "operation commands require exactly one project root"
                 )
+            if args.operation_command == "status":
+                output = operation_wait.operation_wait_snapshot(
+                    roots[0],
+                    targets=args.target,
+                    mode=args.mode,
+                    state_dir=args.state_dir,
+                    stale_after_seconds=args.stale_after_seconds,
+                )
+                print_json(output)
+                return operation_status_exit_code(output)
             output = run_operation_wait_command(args, roots[0])
             if args.json:
                 print_json(output)
@@ -1593,6 +1623,14 @@ def operation_wait_exit_code(snapshot: dict[str, object]) -> int:
     if snapshot.get("wait_status") == "action_required":
         return 3
     return 0 if snapshot.get("status") == "completed" else 2
+
+
+def operation_status_exit_code(snapshot: dict[str, object]) -> int:
+    if snapshot.get("wait_status") == "action_required":
+        return 3
+    if snapshot.get("condition_met") and snapshot.get("status") != "completed":
+        return 2
+    return 0
 
 
 def format_operation_wait_line(

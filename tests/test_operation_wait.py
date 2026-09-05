@@ -204,6 +204,69 @@ class OperationWaitTests(unittest.TestCase):
             "ORCHESTRATOR_OPERATION_WAIT_STATUS",
         )
 
+    @mock.patch("orchestrator_engine.cli.operation_wait.operation_wait_snapshot")
+    def test_cli_status_prints_snapshot_without_waiting(
+        self, operation_wait_snapshot: object
+    ) -> None:
+        operation_wait_snapshot.return_value = {
+            "schema_version": 1,
+            "kind": "ORCHESTRATOR_OPERATION_WAIT_STATUS",
+            "mode": "all",
+            "status": "waiting",
+            "wait_status": "waiting",
+            "condition_met": False,
+            "targets": [],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = cli.main(
+                    [
+                        "--project-root",
+                        temporary,
+                        "operation",
+                        "status",
+                        "--target",
+                        "worker:T",
+                    ]
+                )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output.getvalue())["status"], "waiting")
+        operation_wait_snapshot.assert_called_once()
+
+    def test_status_exit_codes_distinguish_results_from_active_state(self) -> None:
+        self.assertEqual(
+            cli.operation_status_exit_code(
+                {
+                    "status": "waiting",
+                    "wait_status": "waiting",
+                    "condition_met": False,
+                }
+            ),
+            0,
+        )
+        self.assertEqual(
+            cli.operation_status_exit_code(
+                {
+                    "status": "unsuccessful",
+                    "wait_status": "condition_met",
+                    "condition_met": True,
+                }
+            ),
+            2,
+        )
+        self.assertEqual(
+            cli.operation_status_exit_code(
+                {
+                    "status": "action_required",
+                    "wait_status": "action_required",
+                    "condition_met": False,
+                }
+            ),
+            3,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

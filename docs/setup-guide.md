@@ -800,8 +800,10 @@ To delegate a task to a CLI worker:
    For parallel workers, repeat `--task-id` and use `--mode all` to wait for the
    full set or `--mode any` to return on the first terminal result.
    For a mixed set of workers, local checks, CI monitors and PR monitors, use
-   one `operation wait --target KIND:ID --mode all|any`. It reads bounded local
-   state only and preserves the same `0`, `2`, `3` and `124` outcome classes.
+   `operation status --target KIND:ID --mode all|any` for an immediate snapshot,
+   or one `operation wait` with the same targets for a blocking wait. Both read
+   bounded local state only; wait preserves the `0`, `2`, `3` and `124` outcome
+   classes.
    See [heterogeneous operation wait](operation-wait.md).
 
 ## Adopter-neutral public content
