@@ -769,10 +769,24 @@ class InstallSmokeTests(unittest.TestCase):
     def run_cli(self, cli: Path, project: Path, *args: str) -> dict:
         completed = subprocess.run(
             [str(cli), "--project-root", str(project), *args],
-            check=True,
+            check=False,
             capture_output=True,
             text=True,
             timeout=30,
             env=clean_env(),
         )
-        return json.loads(completed.stdout)
+        if completed.returncode != 0:
+            self.fail(
+                "installed CLI failed: "
+                f"args={args!r} exit_code={completed.returncode} "
+                f"stdout_tail={completed.stdout[-4000:]!r} "
+                f"stderr_tail={completed.stderr[-4000:]!r}"
+            )
+        try:
+            return json.loads(completed.stdout)
+        except json.JSONDecodeError as error:
+            self.fail(
+                "installed CLI returned invalid JSON: "
+                f"args={args!r} error={error} "
+                f"stdout_tail={completed.stdout[-4000:]!r}"
+            )

@@ -1665,3 +1665,4 @@ def watch(
             time.sleep(interval_seconds)
     finally:
         stop_ticker.set()
+        ticker.join()

@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1136,6 +1137,12 @@ class WatcherTests(unittest.TestCase):
             heartbeat_data = core.load_object(heartbeat)
         self.assertEqual(calls["count"], 2)
         self.assertEqual(heartbeat_data["action_error_count"], 1)
+        self.assertFalse(
+            any(
+                thread.name == "watcher-heartbeat" and thread.is_alive()
+                for thread in threading.enumerate()
+            )
+        )
 
     def test_heartbeat_age_never_goes_negative(self) -> None:
         age = watcher.heartbeat_age_seconds(

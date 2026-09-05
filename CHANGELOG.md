@@ -18,6 +18,13 @@ All notable changes to OrchestratorEngine are documented here.
   changelog section and generate `SHA256SUMS`; focused tests cover stale runs,
   failed reruns, tag/version mismatches and remote asset drift.
 
+### Fixed
+
+- Watcher shutdown now joins its heartbeat thread before returning, preventing
+  late atomic heartbeat writes from racing temporary-directory cleanup.
+- Install smoke failures retain bounded nested CLI stdout/stderr tails so a
+  conformance failure remains diagnosable from the failed CI step.
+
 ## [0.10.0] - 2026-09-05
 
 ### Added
