@@ -584,6 +584,89 @@ class WorkerWaitTests(unittest.TestCase):
         self.assertEqual(snapshot["terminal_status"], "completed")
         self.assertFalse(snapshot["terminal"])
 
+    def test_finalizing_result_does_not_report_dead_supervisor(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            task_dir = workers.task_dir_for(root, "T-FINALIZING-DEAD-PID")
+            task_dir.mkdir(parents=True)
+            core.atomic_json(
+                task_dir / "task.json",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-FINALIZING-DEAD-PID",
+                    "worker": "fast",
+                    "status": "running",
+                    "supervisor_pid": 999_999_999,
+                    "last_alive_at": core.utc_now(),
+                },
+            )
+            core.atomic_json(
+                task_dir / "result.json",
+                {
+                    "schema_version": 1,
+                    "kind": "WORKER_RESULT",
+                    "task_id": "T-FINALIZING-DEAD-PID",
+                    "worker": "fast",
+                    "terminal_status": "completed",
+                    "exit_code": 0,
+                    "failure_reason": None,
+                    "duration_seconds": 0.1,
+                    "finished_at": core.utc_now(),
+                },
+            )
+
+            snapshot = workers.worker_wait_snapshot(
+                root, task_id="T-FINALIZING-DEAD-PID"
+            )
+
+        self.assertEqual(snapshot["status"], "finalizing")
+        self.assertFalse(snapshot["terminal"])
+        self.assertNotIn("health", snapshot)
+
+    def test_finalizing_result_reports_stale_heartbeat(self) -> None:
+        now = datetime(2026, 9, 5, 12, 0, tzinfo=UTC)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            task_dir = workers.task_dir_for(root, "T-FINALIZING-STALE")
+            task_dir.mkdir(parents=True)
+            core.atomic_json(
+                task_dir / "task.json",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-FINALIZING-STALE",
+                    "worker": "fast",
+                    "status": "running",
+                    "supervisor_pid": 999_999_999,
+                    "last_alive_at": (now - timedelta(seconds=120)).isoformat(),
+                },
+            )
+            core.atomic_json(
+                task_dir / "result.json",
+                {
+                    "schema_version": 1,
+                    "kind": "WORKER_RESULT",
+                    "task_id": "T-FINALIZING-STALE",
+                    "worker": "fast",
+                    "terminal_status": "completed",
+                    "exit_code": 0,
+                    "failure_reason": None,
+                    "duration_seconds": 0.1,
+                    "finished_at": (now - timedelta(seconds=120)).isoformat(),
+                },
+            )
+
+            snapshot = workers.worker_wait_snapshot(
+                root,
+                task_id="T-FINALIZING-STALE",
+                stale_after_seconds=90,
+                now=now,
+            )
+
+        self.assertEqual(snapshot["status"], "finalizing")
+        self.assertEqual(snapshot["health"]["status"], "heartbeat_stale")
+
     def test_wait_timeout_preserves_running_task_status(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

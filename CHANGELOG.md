@@ -4,6 +4,13 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Worker and heterogeneous waits no longer misclassify the normal
+  result-to-descriptor finalization window as a dead supervisor when the
+  supervisor exits between two bounded state reads; genuinely stalled
+  finalization remains detectable through the stale-heartbeat threshold.
+
 ### Added
 
 - Release source provenance now has a deterministic helper and temporary-Git

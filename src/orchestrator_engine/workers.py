@@ -1886,6 +1886,28 @@ def worker_wait_health(
         },
         now=now,
     )
+    # A terminal result is claimed before the descriptor's final atomic write.
+    # The supervisor may complete that write and exit after this caller has read
+    # the old descriptor, so a dead-PID verdict in this window is a false alarm.
+    # Keep the task in `finalizing`; a genuinely interrupted finalization still
+    # becomes actionable when the terminal result crosses the stale threshold.
+    if result is not None:
+        finalization_age = worker_lease.lease_age_seconds(
+            {"renewed_at": result.get("finished_at")},
+            now=now,
+        )
+        if finalization_age is None:
+            finalization_age = heartbeat_age
+        if finalization_age is not None and finalization_age > stale_after_seconds:
+            return {
+                "status": "heartbeat_stale",
+                "message": (
+                    f"task finalization age {finalization_age:.1f}s exceeds "
+                    f"{stale_after_seconds:.1f}s"
+                ),
+                "heartbeat_age_seconds": round(finalization_age, 3),
+            }
+        return None
     try:
         lease = worker_lease.load_lease(worker_lease.lease_path(task_dir))
     except worker_lease.WorkerLeaseError as error:
