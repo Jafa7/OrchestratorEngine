@@ -98,6 +98,9 @@ class InstallSmokeTests(unittest.TestCase):
                 env=env,
             ).stdout.strip()
             host_capabilities = self.run_cli(cli, project, "host-capabilities")
+            runtime_capabilities = self.run_cli(
+                cli, project, "runtime-capabilities"
+            )
 
             adoption = self.run_cli(cli, project, "adopt", "--host", "claude")
 
@@ -250,6 +253,15 @@ class InstallSmokeTests(unittest.TestCase):
                     time.sleep(0.1)
                 self.fail(f"missing file: {path}")
 
+            def wait_terminal_descriptor(path: Path) -> dict:
+                for _ in range(100):
+                    if path.is_file():
+                        value = json.loads(path.read_text(encoding="utf-8"))
+                        if value.get("status") not in {"starting", "running"}:
+                            return value
+                    time.sleep(0.1)
+                self.fail(f"descriptor did not become terminal: {path}")
+
             bind = self.run_cli(cli, project, "bind", "--host", "claude")
             workstream_start = self.run_cli(
                 cli,
@@ -333,7 +345,7 @@ class InstallSmokeTests(unittest.TestCase):
                 "--expected-head-sha",
                 "abcdef1",
             )
-            wait_file(Path(ci_monitor["monitor_dir"]) / "evidence.json")
+            wait_terminal_descriptor(Path(ci_monitor["monitor_dir"]) / "monitor.json")
             ci_status = self.run_cli(
                 cli,
                 project,
@@ -357,7 +369,7 @@ class InstallSmokeTests(unittest.TestCase):
                 "--review-policy",
                 "approved",
             )
-            wait_file(Path(pr_monitor["monitor_dir"]) / "evidence.json")
+            wait_terminal_descriptor(Path(pr_monitor["monitor_dir"]) / "monitor.json")
             pr_status = self.run_cli(
                 cli,
                 project,
@@ -601,7 +613,13 @@ class InstallSmokeTests(unittest.TestCase):
                     "stop",
                 )
             check_file = project / ".orchestrator" / "checks" / "INSTALL-CHECK"
-            wait_file(check_file / "verification-result.json")
+            wait_terminal_descriptor(
+                project
+                / ".orchestrator"
+                / "tasks"
+                / "SMOKE-CHECK"
+                / "task.json"
+            )
             verification = json.loads(
                 (check_file / "verification-result.json").read_text(
                     encoding="utf-8"
@@ -655,6 +673,8 @@ class InstallSmokeTests(unittest.TestCase):
         )
         self.assertEqual(codex_capability["delivery_mode"], "session_queue")
         self.assertEqual(codex_capability["requirement"], "codex queue")
+        self.assertEqual(runtime_capabilities["portable_core"], "supported")
+        self.assertEqual(runtime_capabilities["detached_lifecycle"], "supported")
         self.assertEqual(adoption["kind"], "ORCHESTRATOR_ADOPTION")
         self.assertTrue(policy_exists)
         self.assertTrue(workers["workers"]["smoke"]["enabled"])

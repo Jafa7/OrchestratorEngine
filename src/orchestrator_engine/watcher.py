@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from . import binding as binding_module
-from . import codex_app, core, vscode_chat
+from . import codex_app, core, platform_runtime, vscode_chat
 
 WATCHER_ACTIONS = {"record", "notify", "callback", "current-thread-callback"}
 DEFER_BASE_SECONDS = 30
@@ -372,15 +372,7 @@ def notify_signal(
 
 
 def process_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    return platform_runtime.process_alive(pid)
 
 
 def heartbeat_age_seconds(heartbeat: dict[str, Any] | None) -> float | None:
@@ -1379,6 +1371,7 @@ def start_service(
     replace: bool = False,
     popen_factory=subprocess.Popen,
 ) -> dict[str, Any]:
+    platform_runtime.require_detached_lifecycle("watcher service start")
     if interval_seconds <= 0:
         raise WatcherError("interval must be positive")
     if action == "current-thread-callback" and not target_thread_id:
@@ -1520,7 +1513,7 @@ def stop_service(
     host: str | None = None,
     timeout_seconds: float = 5.0,
     process_checker=process_alive,
-    kill_group=os.killpg,
+    kill_group=None,
 ) -> dict[str, Any]:
     projects = [path.expanduser().resolve() for path in project_roots]
     service_path = service_file or default_callback_service_path(
@@ -1552,6 +1545,12 @@ def stop_service(
     if not isinstance(process_group, int):
         raise WatcherError("watcher service state has invalid process_group")
 
+    if kill_group is None:
+        kill_group = getattr(os, "killpg", None)
+    if kill_group is None:
+        raise WatcherError(
+            "watcher service stop requires identity-safe process-group signalling"
+        )
     kill_group(process_group, signal_module.SIGTERM)
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:

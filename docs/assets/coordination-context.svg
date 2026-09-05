@@ -20,27 +20,27 @@
   <text x="96" y="175" text-anchor="end" font-family="Inter, Arial, sans-serif" font-size="14" fill="#64748b">100%</text>
 
   <rect x="190" y="170" width="105" height="400" rx="5" fill="#64748b"/>
-  <rect x="305" y="559.40" width="105" height="10.60" rx="3" fill="#16a34a"/>
+  <rect x="305" y="558.52" width="105" height="11.48" rx="3" fill="#16a34a"/>
   <text x="242.5" y="156" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#334155">100%</text>
-  <text x="357.5" y="547.40" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700" fill="#15803d">2.65%</text>
+  <text x="357.5" y="546.52" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700" fill="#15803d">2.87%</text>
   <text x="300" y="610" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="700" fill="#0f172a">Long test</text>
-  <text x="300" y="636" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#15803d">97.35% less context</text>
+  <text x="300" y="636" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#15803d">97.13% less context</text>
   <text x="300" y="658" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#64748b">1 task | 256 KB log | 4 checks</text>
 
   <rect x="500" y="170" width="105" height="400" rx="5" fill="#64748b"/>
   <rect x="615" y="566.00" width="105" height="4.00" rx="3" fill="#16a34a"/>
   <text x="552.5" y="156" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#334155">100%</text>
-  <text x="667.5" y="554.00" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700" fill="#15803d">0.66%</text>
+  <text x="667.5" y="554.00" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700" fill="#15803d">0.72%</text>
   <text x="610" y="610" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="700" fill="#0f172a">AI worker</text>
-  <text x="610" y="636" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#15803d">99.34% less context</text>
+  <text x="610" y="636" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#15803d">99.28% less context</text>
   <text x="610" y="658" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#64748b">1 task | 1 MB log | 4 checks</text>
 
   <rect x="810" y="170" width="105" height="400" rx="5" fill="#64748b"/>
   <rect x="925" y="566.00" width="105" height="4.00" rx="3" fill="#16a34a"/>
   <text x="862.5" y="156" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#334155">100%</text>
-  <text x="977.5" y="554.00" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700" fill="#15803d">0.51%</text>
+  <text x="977.5" y="554.00" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700" fill="#15803d">0.54%</text>
   <text x="920" y="610" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="700" fill="#0f172a">Parallel workers</text>
-  <text x="920" y="636" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#15803d">99.49% less context</text>
+  <text x="920" y="636" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#15803d">99.46% less context</text>
   <text x="920" y="658" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#64748b">3 tasks | 512 KB logs | 4 checks</text>
   <rect x="110" y="682" width="1010" height="58" rx="8" fill="#f0fdf4" stroke="#bbf7d0"/>
   <text x="615" y="704" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700" fill="#166534">Every task state remains visible | full result, evidence and logs stay available by path</text>

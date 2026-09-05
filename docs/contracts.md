@@ -106,6 +106,21 @@ VS Code CLI, not a claim that host security is bypassed. The legacy `woken`
 status means completed headless history delivery when the Codex receipt has
 `delivery_mode: "headless_app_server_turn"`.
 
+### Platform runtime capabilities
+
+`runtime-capabilities` emits a bounded `ORCHESTRATOR_PLATFORM_CAPABILITIES`
+report with `schema_version`, `kind`, `os_name`, `platform`,
+`platform_system`, `portable_core`, `file_locking`, `detached_lifecycle` and
+`recommended_runtime`. The current stable values for capability fields are
+`supported` and `unsupported`; `recommended_runtime` is either null or
+`linux-or-wsl`.
+
+The report describes capabilities of the process running the CLI. It does not
+infer host UI behavior or worker-provider permissions. Commands that require
+the detached lifecycle fail before creating their task, monitor or service
+artifact when that capability is unsupported. See
+[Platform support](platform-support.md).
+
 ## Operator diagnostics
 
 `adopt` writes missing local layout only:

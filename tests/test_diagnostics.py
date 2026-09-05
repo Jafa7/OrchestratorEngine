@@ -5,10 +5,22 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from orchestrator_engine import binding, core, diagnostics, workers
+from orchestrator_engine import binding, core, diagnostics, platform_runtime, workers
 
 
 class DiagnosticsTests(unittest.TestCase):
+    def test_doctor_reports_limited_non_linux_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            platform_runtime,
+            "detached_lifecycle_supported",
+            return_value=False,
+        ):
+            report = diagnostics.run_doctor(Path(temporary).resolve())
+
+        runtime = check_by_name(report, "platform_runtime")
+        self.assertEqual(runtime["status"], "warn")
+        self.assertEqual(runtime["data"]["detached_lifecycle"], "unsupported")
+
     def test_doctor_warns_when_state_layout_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

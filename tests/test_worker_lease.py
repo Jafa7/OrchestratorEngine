@@ -5,11 +5,31 @@ import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
-from orchestrator_engine import core, worker_lease, workers
+from orchestrator_engine import core, platform_runtime, worker_lease, workers
 
 
 class WorkerLeaseTests(unittest.TestCase):
+    def test_identity_is_unknown_when_platform_cannot_verify_linux_processes(
+        self,
+    ) -> None:
+        recorded = {
+            "source": worker_lease.IDENTITY_SOURCE,
+            "pid": 123,
+            "start_ticks": 456,
+        }
+        with mock.patch.object(
+            platform_runtime,
+            "detached_lifecycle_supported",
+            return_value=False,
+        ):
+            identity = worker_lease.identity_state(recorded)
+            pid = worker_lease.pid_state(123)
+
+        self.assertEqual(identity["state"], "unknown")
+        self.assertEqual(pid["state"], "unknown")
+
     def test_reap_recovers_new_task_never_claimed_by_supervisor(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

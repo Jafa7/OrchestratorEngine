@@ -14,6 +14,7 @@ from orchestrator_engine import (
     codex_app,
     core,
     github_actions,
+    platform_runtime,
     verification,
     wakeup,
     watcher,
@@ -88,6 +89,29 @@ class RunningProcess:
 
 
 class GitHubActionsTests(unittest.TestCase):
+    def test_watch_fails_before_artifacts_when_detached_lifecycle_unsupported(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with (
+                mock.patch.object(
+                    platform_runtime,
+                    "detached_lifecycle_supported",
+                    return_value=False,
+                ),
+                self.assertRaises(platform_runtime.PlatformRuntimeError),
+            ):
+                github_actions.start_monitor(
+                    root,
+                    repository="Example/Project",
+                    run_id=123,
+                )
+
+            self.assertFalse(
+                github_actions.monitor_root(root, state_dir=".orchestrator").exists()
+            )
+
     def test_followup_event_identity_has_unambiguous_components(self) -> None:
         project = Path("/tmp/example-project")
         first = core.followup_event_id(
@@ -122,7 +146,7 @@ class GitHubActionsTests(unittest.TestCase):
             )
             second = github_actions.start_monitor(
                 root,
-                repository="Example/Project",
+                repository="example/project",
                 run_id="123",
                 expected_head_sha="abcdef1",
                 popen_factory=popen,
@@ -250,7 +274,46 @@ class GitHubActionsTests(unittest.TestCase):
             runner.call_args.args[0][0],
             "/mnt/c/Program Files/GitHub CLI/gh.exe",
         )
+        self.assertIn("github.com/Example/Project", runner.call_args.args[0])
         self.assertFalse(runner.call_args.kwargs.get("shell", False))
+
+    def test_view_identity_rejects_another_repository_or_host(self) -> None:
+        data = {
+            "run_id": 123,
+            "attempt": 1,
+            "expected_head_sha": "abcdef1",
+            "hostname": "github.com",
+            "repository": "Example/Project",
+        }
+        wrong_repository = gh_view()
+        wrong_repository["url"] = "https://github.com/Other/Project/actions/runs/123"
+        wrong_host = gh_view()
+        wrong_host["url"] = "https://enterprise.example/Example/Project/actions/runs/123"
+
+        self.assertEqual(
+            github_actions.validate_view_identity(data, wrong_repository),
+            "repository_url_mismatch",
+        )
+        self.assertEqual(
+            github_actions.validate_view_identity(data, wrong_host),
+            "repository_url_mismatch",
+        )
+
+    def test_start_rejects_non_finite_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            for value in (float("nan"), float("inf"), float("-inf")):
+                with self.subTest(value=value), self.assertRaisesRegex(
+                    github_actions.GitHubActionsError,
+                    "finite positive number",
+                ):
+                    github_actions.start_monitor(
+                        root,
+                        repository="Example/Project",
+                        run_id=123,
+                        timeout_seconds=value,
+                    )
 
     def test_view_failure_is_classified_without_claiming_ci_failed(self) -> None:
         runner = mock.Mock(

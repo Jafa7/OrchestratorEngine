@@ -11,7 +11,7 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release is `0.8.1` and the durable JSON contract schema version is
+The current release is `0.9.0` and the durable JSON contract schema version is
 `1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
@@ -19,8 +19,21 @@ PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.8.1"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.9.0"
 ```
+
+## Platform capability boundary after v0.8.1
+
+Version 0.9.0 makes the operating-system boundary explicit. Run
+`orchestrator-engine runtime-capabilities` after upgrading. Linux and WSL
+provide the complete detached lifecycle. Native Windows and macOS support the
+portable core and compatible foreground checks; detached workers, monitors,
+reapers and watcher services fail closed before changing their runtime state.
+
+No durable state migration is required. When inspecting Linux/WSL state from
+another platform, an unverifiable process identity is reported as `unknown`
+rather than being treated as proof that the process exited. See
+[Platform support](platform-support.md).
 
 ## Schema Compatibility
 

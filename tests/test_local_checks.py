@@ -8,7 +8,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from orchestrator_engine import binding, core, local_checks, verification
+from orchestrator_engine import (
+    binding,
+    core,
+    local_checks,
+    platform_runtime,
+    verification,
+)
 
 
 def write_config(
@@ -41,6 +47,33 @@ def write_config(
 
 
 class LocalCheckTests(unittest.TestCase):
+    def test_detached_run_fails_before_check_artifacts_when_unsupported(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root, verification="full")
+            with (
+                mock.patch.object(
+                    platform_runtime,
+                    "detached_lifecycle_supported",
+                    return_value=False,
+                ),
+                self.assertRaises(platform_runtime.PlatformRuntimeError),
+            ):
+                local_checks.start_check(
+                    root,
+                    check_id="CHECK-UNSUPPORTED",
+                    suite="gate",
+                    execution="detached",
+                )
+
+            self.assertFalse(
+                local_checks.check_dir(
+                    root,
+                    "CHECK-UNSUPPORTED",
+                    state_dir=".orchestrator",
+                ).exists()
+            )
+
     def test_plan_detaches_configured_check_over_30_seconds(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

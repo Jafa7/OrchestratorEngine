@@ -7,7 +7,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from orchestrator_engine import binding, core, github_pull_requests, verification
+from orchestrator_engine import (
+    binding,
+    core,
+    github_pull_requests,
+    platform_runtime,
+    verification,
+)
 
 SHA = "a" * 40
 
@@ -87,6 +93,33 @@ class DummyProcess:
 
 
 class GitHubPullRequestTests(unittest.TestCase):
+    def test_watch_fails_before_artifacts_when_detached_lifecycle_unsupported(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with (
+                mock.patch.object(
+                    platform_runtime,
+                    "detached_lifecycle_supported",
+                    return_value=False,
+                ),
+                self.assertRaises(platform_runtime.PlatformRuntimeError),
+            ):
+                github_pull_requests.start_monitor(
+                    root,
+                    repository="Example/Project",
+                    pr_number=7,
+                    expected_head_sha=SHA,
+                )
+
+            self.assertFalse(
+                github_pull_requests.monitor_root(
+                    root,
+                    state_dir=".orchestrator",
+                ).exists()
+            )
+
     def test_default_id_is_scoped_to_one_pr_revision(self) -> None:
         first = github_pull_requests.default_monitor_id(
             hostname="github.com",
@@ -106,7 +139,13 @@ class GitHubPullRequestTests(unittest.TestCase):
         self.assertNotEqual(first, second)
 
     def test_snapshot_evaluation_covers_readiness_states(self) -> None:
-        base = {"pr_number": 7, "expected_head_sha": SHA, "review_policy": "ignore"}
+        base = {
+            "hostname": "github.com",
+            "repository": "Example/Project",
+            "pr_number": 7,
+            "expected_head_sha": SHA,
+            "review_policy": "ignore",
+        }
         cases = [
             (pr_view(), "ready"),
             (pr_view(head_sha="b" * 40), "head_changed"),
@@ -148,7 +187,13 @@ class GitHubPullRequestTests(unittest.TestCase):
                 self.assertEqual(status, expected)
 
     def test_approved_policy_requires_approval_and_reports_changes(self) -> None:
-        base = {"pr_number": 7, "expected_head_sha": SHA, "review_policy": "approved"}
+        base = {
+            "hostname": "github.com",
+            "repository": "Example/Project",
+            "pr_number": 7,
+            "expected_head_sha": SHA,
+            "review_policy": "approved",
+        }
         pending = github_pull_requests.normalize_snapshot(pr_view(review=""))
         changes = github_pull_requests.normalize_snapshot(
             pr_view(review="CHANGES_REQUESTED")
@@ -177,8 +222,24 @@ class GitHubPullRequestTests(unittest.TestCase):
         command = runner.call_args.args[0]
         self.assertEqual(command[:3], ["gh", "pr", "view"])
         self.assertEqual(command[3], "7")
+        self.assertIn("github.com/Example/Project", command)
         self.assertNotIn("tail", result["stdout"])
         self.assertEqual(result["snapshot"]["head_sha"], SHA)
+
+    def test_snapshot_rejects_another_repository_or_host(self) -> None:
+        data = descriptor(Path("/tmp/example"))
+        for url in (
+            "https://github.com/Other/Project/pull/7",
+            "https://enterprise.example/Example/Project/pull/7",
+        ):
+            with self.subTest(url=url):
+                view = pr_view()
+                view["url"] = url
+                snapshot = github_pull_requests.normalize_snapshot(view)
+                self.assertEqual(
+                    github_pull_requests.evaluate_snapshot(data, snapshot),
+                    ("ambiguous", "repository_url_mismatch"),
+                )
 
     def test_run_view_classifies_pr_errors_and_invalid_contract(self) -> None:
         data = descriptor(Path("/tmp/example"))
@@ -216,7 +277,7 @@ class GitHubPullRequestTests(unittest.TestCase):
             )
             second = github_pull_requests.start_monitor(
                 root,
-                repository="Example/Project",
+                repository="example/project",
                 pr_number=7,
                 expected_head_sha=SHA,
                 popen_factory=popen,
@@ -226,6 +287,27 @@ class GitHubPullRequestTests(unittest.TestCase):
         self.assertTrue(second["idempotent"])
         self.assertEqual(first["wake_target"]["target_thread_id"], "thread-1")
         self.assertEqual(popen.call_count, 1)
+
+    def test_start_rejects_non_finite_polling_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            for field, value in (
+                ("interval_seconds", float("nan")),
+                ("timeout_seconds", float("inf")),
+                ("timeout_seconds", float("-inf")),
+            ):
+                with self.subTest(field=field, value=value), self.assertRaisesRegex(
+                    github_pull_requests.GitHubPullRequestError,
+                    "must be between",
+                ):
+                    github_pull_requests.start_monitor(
+                        root,
+                        repository="Example/Project",
+                        pr_number=7,
+                        expected_head_sha=SHA,
+                        **{field: value},
+                    )
 
     def test_poll_waits_then_returns_ready(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

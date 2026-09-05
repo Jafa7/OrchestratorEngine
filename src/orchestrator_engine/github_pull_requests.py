@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -16,7 +16,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import binding, core, github_actions, verification, worker_lease
+from . import (
+    binding,
+    core,
+    github_actions,
+    platform_runtime,
+    verification,
+    worker_lease,
+)
 
 SOURCE_KIND = "github_pull_request"
 MONITOR_KIND = "GITHUB_PR_READINESS_MONITOR"
@@ -98,13 +105,8 @@ def monitor_dir_for(
 @contextlib.contextmanager
 def admission_lock(project_root: Path, *, state_dir: str):
     path = monitor_root(project_root, state_dir=state_dir) / ".admission.lock"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    with platform_runtime.exclusive_file_lock(path):
+        yield
 
 
 def default_monitor_id(
@@ -133,9 +135,17 @@ def validate_sha(value: str) -> str:
 
 
 def bounded_setting(value: float, *, field: str, maximum: float) -> float:
-    if isinstance(value, bool) or value <= 0 or value > maximum:
+    if isinstance(value, bool):
         raise GitHubPullRequestError(f"{field} must be between 0 and {maximum}")
-    return float(value)
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as error:
+        raise GitHubPullRequestError(
+            f"{field} must be between 0 and {maximum}"
+        ) from error
+    if not math.isfinite(parsed) or parsed <= 0 or parsed > maximum:
+        raise GitHubPullRequestError(f"{field} must be between 0 and {maximum}")
+    return parsed
 
 
 def supervisor_command(
@@ -189,6 +199,7 @@ def start_monitor(
     retry_reason: str | None = None,
     popen_factory=subprocess.Popen,
 ) -> dict[str, Any]:
+    platform_runtime.require_detached_lifecycle("pr watch")
     project = project_root.expanduser().resolve()
     config = github_actions.load_config(project, state_dir=state_dir)
     repository = github_actions.normalize_repository(repository)
@@ -287,13 +298,27 @@ def start_monitor(
                 key: existing.get(key)
                 for key in ("hostname", "repository", "pr_number")
             }
-            if existing_identity != identity:
+            if (
+                existing_identity["hostname"] != identity["hostname"]
+                or not github_actions.same_repository(
+                    existing_identity["repository"], identity["repository"]
+                )
+                or existing_identity["pr_number"] != identity["pr_number"]
+            ):
                 continue
             existing_dispatch = {
                 key: existing.get(key) for key in dispatch_identity
             }
             if path == descriptor_path:
-                if existing_dispatch != dispatch_identity:
+                comparable_existing = {
+                    **existing_dispatch,
+                    "repository": str(existing_dispatch["repository"]).casefold(),
+                }
+                comparable_dispatch = {
+                    **dispatch_identity,
+                    "repository": str(dispatch_identity["repository"]).casefold(),
+                }
+                if comparable_existing != comparable_dispatch:
                     raise GitHubPullRequestError(
                         "monitor already exists with different dispatch options: "
                         f"{resolved_id}"
@@ -569,6 +594,12 @@ def run_view(
 def evaluate_snapshot(
     descriptor: dict[str, Any], snapshot: dict[str, Any]
 ) -> tuple[str, str | None]:
+    if not github_actions.repository_url_matches(
+        snapshot.get("url"),
+        hostname=str(descriptor.get("hostname", "")),
+        repository=str(descriptor.get("repository", "")),
+    ):
+        return "ambiguous", "repository_url_mismatch"
     if snapshot.get("number") != descriptor.get("pr_number"):
         return "ambiguous", "pr_number_mismatch"
     if snapshot.get("head_sha") != descriptor.get("expected_head_sha"):
@@ -1043,6 +1074,7 @@ def reap_monitors(
     *,
     state_dir: str = core.DEFAULT_STATE_DIR,
 ) -> dict[str, Any]:
+    platform_runtime.require_detached_lifecycle("pr reap")
     project = project_root.expanduser().resolve()
     outcomes = []
     for path in sorted(

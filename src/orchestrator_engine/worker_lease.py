@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import core
+from . import core, platform_runtime
 
 LEASE_KIND = "WORKER_LEASE"
 LEASE_NAME = "lease.json"
@@ -114,6 +114,8 @@ def identity_state(recorded: object) -> dict[str, Any]:
       fail closed: never signal, and only finalize on an explicit staleness
       threshold.
     """
+    if not platform_runtime.detached_lifecycle_supported():
+        return {"state": "unknown", "identity_verified": False, "observed": None}
     if not isinstance(recorded, dict) or not isinstance(recorded.get("pid"), int):
         return {"state": "unknown", "identity_verified": False, "observed": None}
     observed = process_identity(recorded["pid"])
@@ -134,6 +136,8 @@ def pid_state(pid: object) -> dict[str, Any]:
     an occupied pid is reported as `alive` and the task is left alone. Only an
     unoccupied pid proves the recorded process is gone.
     """
+    if not platform_runtime.detached_lifecycle_supported():
+        return {"state": "unknown", "identity_verified": False, "observed": None}
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return {"state": "unknown", "identity_verified": False, "observed": None}
     observed = process_identity(pid)

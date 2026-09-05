@@ -9,7 +9,6 @@ exit. The configured host channel decides how that completion is delivered.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import hashlib
 import json
 import math
@@ -27,6 +26,7 @@ from typing import Any
 from . import (
     binding,
     core,
+    platform_runtime,
     task_resolution,
     telemetry_adapters,
     worker_diagnostics,
@@ -857,13 +857,8 @@ def queue_root(
 @contextlib.contextmanager
 def admission_lock(project_root: Path, *, state_dir: str):
     path = queue_root(project_root, state_dir=state_dir) / "admission.lock"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    with platform_runtime.exclusive_file_lock(path):
+        yield
 
 
 def active_task_counts(
@@ -943,6 +938,7 @@ def spawn_supervisor(
     supervisor_log: Path,
     popen_factory=subprocess.Popen,
 ) -> Any:
+    platform_runtime.require_detached_lifecycle("worker run")
     with supervisor_log.open("ab") as log:
         process = popen_factory(
             supervisor_command(
@@ -1120,6 +1116,7 @@ def queue_tick(
     state_dir: str = core.DEFAULT_STATE_DIR,
     popen_factory=subprocess.Popen,
 ) -> dict[str, Any]:
+    platform_runtime.require_detached_lifecycle("worker queue tick")
     project = project_root.expanduser().resolve()
     with contextlib.suppress(OSError, core.OrchestratorError, WorkerError):
         reap_worker_tasks(project, state_dir=state_dir)
@@ -1218,6 +1215,7 @@ def run_worker(
     never writes it again. A post-spawn read-modify-write here would race the
     supervisor's own writes and could resurrect a finished task as `running`.
     """
+    platform_runtime.require_detached_lifecycle("worker run")
     project = project_root.expanduser().resolve()
     config = require_worker(project, worker, state_dir=state_dir)
     if preflight_availability and availability_mode is not None:
@@ -2706,6 +2704,7 @@ def reap_worker_tasks(
     are reported but never changed. Repeated calls are idempotent because the
     terminal result and event use exclusive/deterministic identities.
     """
+    platform_runtime.require_detached_lifecycle("worker reap")
     project = project_root.expanduser().resolve()
     current = now or datetime.now(UTC)
     tasks_root = core.state_root(project, state_dir=state_dir) / "tasks"

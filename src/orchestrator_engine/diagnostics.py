@@ -14,6 +14,7 @@ from . import (
     claude_stream,
     core,
     host_capabilities,
+    platform_runtime,
     watcher,
     workers,
 )
@@ -73,6 +74,7 @@ def run_doctor(
     if not project.is_dir():
         raise DiagnosticsError(f"project root is not a directory: {project}")
     checks = [
+        check_platform_runtime(),
         check_state_layout(project, state_dir=state_dir),
         check_schema_compatibility(project, state_dir=state_dir),
         check_binding(project, state_dir=state_dir),
@@ -91,6 +93,27 @@ def run_doctor(
         "checks": checks,
         "generated_at": core.utc_now(),
     }
+
+
+def check_platform_runtime() -> dict[str, Any]:
+    capabilities = platform_runtime.capabilities()
+    supported = capabilities["detached_lifecycle"] == "supported"
+    return check(
+        "platform_runtime",
+        "Platform runtime capabilities are explicit",
+        "ok" if supported else "warn",
+        (
+            "portable core and detached lifecycle are supported"
+            if supported
+            else "portable core is supported; detached lifecycle is unavailable"
+        ),
+        hint=(
+            None
+            if supported
+            else "Use Linux or WSL for detached workers, monitors and watcher services."
+        ),
+        data=capabilities,
+    )
 
 
 def check_state_layout(project: Path, *, state_dir: str) -> dict[str, Any]:

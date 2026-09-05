@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import core, task_resolution, worker_diagnostics, workers
+from . import (
+    core,
+    platform_runtime,
+    task_resolution,
+    worker_diagnostics,
+    workers,
+)
 
 TASK_DIAGNOSTICS_KIND = "WORKER_TASK_DIAGNOSTICS"
 RUNNING_STATUSES = {"starting", "running", "cancelling"}
@@ -25,15 +30,7 @@ class TaskDiagnosticError(RuntimeError):
 
 
 def process_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    return platform_runtime.process_alive(pid)
 
 
 def parse_timestamp(value: object) -> datetime | None:

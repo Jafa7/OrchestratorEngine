@@ -4,6 +4,33 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-05
+
+### Added
+
+- A machine-readable `runtime-capabilities` report, portable advisory file
+  locking and Windows/macOS CI smoke coverage make the supported platform
+  boundary explicit.
+- Native Windows and macOS can import and inspect the portable core and run
+  compatible foreground checks; detached lifecycle commands fail before
+  creating runtime artifacts and direct adopters to Linux or WSL.
+
+### Fixed
+
+- GitHub Actions and pull-request monitors now pin the requested GitHub host,
+  compare repository ownership case-insensitively, reject non-finite polling
+  values and validate the repository identity returned by `gh`.
+- Install smoke waits for terminal monitor and check descriptors instead of
+  earlier evidence files, closing publication races in CI and PR scenarios.
+- Native Windows process inspection uses a non-signalling process handle
+  query instead of `os.kill(pid, 0)`, preventing a read-only status command
+  from emitting a Windows console control event or terminating a process.
+- Worker, local-check, CI and PR reapers now fail closed when Linux process
+  identity is unavailable; identity checks return `unknown` rather than
+  treating an inaccessible Linux `/proc` record as proof of process exit.
+- The platform capability check is sequenced after installing the release that
+  provides it, keeping the canonical setup flow executable end to end.
+
 ## [0.8.1] - 2026-09-05
 
 ### Fixed

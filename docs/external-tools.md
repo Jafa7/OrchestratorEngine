@@ -6,6 +6,11 @@ features execute explicitly configured local tools through argv without a
 shell. The adopter owns installation, updates, authentication and local
 policy for those tools.
 
+Platform support is independent from external-tool availability. Run
+`orchestrator-engine runtime-capabilities` first; detached features require
+Linux or WSL even when the provider CLI itself runs on native Windows or
+macOS. See the [platform support matrix](platform-support.md).
+
 | Feature | External tool | Required | Verify |
 | --- | --- | --- | --- |
 | Core files, schemas and status | none | always available | `orchestrator-engine --version` |

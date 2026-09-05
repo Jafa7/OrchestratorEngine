@@ -9,10 +9,20 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from orchestrator_engine import binding, cli, core, watcher, workers
+from orchestrator_engine import binding, cli, core, platform_runtime, watcher, workers
 
 
 class CliTests(unittest.TestCase):
+    def test_runtime_capabilities_cli_emits_versioned_report(self) -> None:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = cli.main(["runtime-capabilities"])
+
+        report = json.loads(output.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(report["schema_version"], core.SCHEMA_VERSION)
+        self.assertEqual(report["kind"], platform_runtime.PLATFORM_CAPABILITIES_KIND)
+
     def test_workstream_cli_requires_ready_for_continue(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

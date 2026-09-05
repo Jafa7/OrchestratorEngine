@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import hashlib
 import json
 import os
@@ -23,7 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import binding, core, verification, worker_lease
+from . import binding, core, platform_runtime, verification, worker_lease
 
 CHECK_KIND = "ORCHESTRATOR_LOCAL_CHECK"
 HISTORY_KIND = "ORCHESTRATOR_CHECK_DURATION_HISTORY"
@@ -88,13 +87,8 @@ def descriptor_path(project_root: Path, check_id: str, *, state_dir: str) -> Pat
 
 @contextlib.contextmanager
 def file_lock(path: Path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    with platform_runtime.exclusive_file_lock(path):
+        yield
 
 
 def read_suite(
@@ -613,6 +607,8 @@ def start_check(
     selected_execution = (
         str(plan["recommended_execution"]) if execution == "auto" else execution
     )
+    if selected_execution == "detached":
+        platform_runtime.require_detached_lifecycle("detached check run")
     selected_wake_policy = resolved_wake_policy(wake_policy, selected_execution)
     wake_target = capture_wake_target(
         project,
@@ -1026,6 +1022,7 @@ def reap_checks(
 ) -> dict[str, Any]:
     """Finalize checks whose detached supervisor is proven gone."""
 
+    platform_runtime.require_detached_lifecycle("check reap")
     project = project_root.expanduser().resolve()
     root = verification.checks_root(project, state_dir=state_dir)
     paths = (

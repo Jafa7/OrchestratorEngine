@@ -9,8 +9,9 @@ import tomllib
 import unittest
 from pathlib import Path
 from typing import Any, ClassVar
+from unittest import mock
 
-from orchestrator_engine import binding, core, worker_policy, workers
+from orchestrator_engine import binding, core, platform_runtime, worker_policy, workers
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHECK_RUNNER = REPO_ROOT / "examples" / "check_runner.py"
@@ -496,6 +497,28 @@ expect_long_running = "yes"
 
 
 class WorkerRunTests(unittest.TestCase):
+    def test_run_fails_before_artifacts_without_detached_lifecycle(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with (
+                mock.patch.object(
+                    platform_runtime,
+                    "detached_lifecycle_supported",
+                    return_value=False,
+                ),
+                self.assertRaises(platform_runtime.PlatformRuntimeError),
+            ):
+                workers.run_worker(
+                    root,
+                    worker="missing",
+                    task_id="TASK-1",
+                    prompt_file=root / "missing.md",
+                )
+
+            self.assertFalse(
+                workers.tasks_root(root, state_dir=".orchestrator").exists()
+            )
+
     def test_run_worker_spawns_detached_supervisor(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

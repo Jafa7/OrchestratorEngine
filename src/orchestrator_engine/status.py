@@ -17,6 +17,7 @@ from . import (
     github_pull_requests,
     host_capabilities,
     local_checks,
+    platform_runtime,
     task_diagnostics,
     verification,
     worker_diagnostics,
@@ -69,7 +70,11 @@ def run_status(
     local_check_runtime = summarize_local_check_runtime(
         local_checks.check_status(project, state_dir=state_dir)
     )
+    runtime_capabilities = summarize_runtime_capabilities(
+        platform_runtime.capabilities()
+    )
     components = {
+        "runtime_capabilities": runtime_capabilities,
         "doctor": summarize_doctor(doctor),
         "worker_profiles": worker_profiles,
         "wake_channel": wake_channel,
@@ -163,6 +168,15 @@ def summarize_doctor(report: dict[str, Any]) -> dict[str, Any]:
         "worst_severity": severity_from_doctor_status(report.get("status")),
         "check_count": len(checks),
         "checks": checks,
+    }
+
+
+def summarize_runtime_capabilities(report: dict[str, Any]) -> dict[str, Any]:
+    supported = report.get("detached_lifecycle") == "supported"
+    return {
+        **report,
+        "status": "ready" if supported else "limited",
+        "worst_severity": None if supported else "warning",
     }
 
 

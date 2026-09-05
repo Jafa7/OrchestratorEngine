@@ -21,6 +21,7 @@ from . import (
     github_pull_requests,
     host_capabilities,
     local_checks,
+    platform_runtime,
     schemas,
     status,
     task_diagnostics,
@@ -74,6 +75,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "host-capabilities",
         help="Print the read-only host delivery capability report.",
+    )
+    subparsers.add_parser(
+        "runtime-capabilities",
+        help="Print portable-core and detached-runtime platform support.",
     )
     schema_parser = subparsers.add_parser(
         "schemas", help="List or print packaged durable-artifact schemas."
@@ -898,6 +903,8 @@ def main(argv: list[str] | None = None) -> int:
             print_json(output)
         elif args.command == "host-capabilities":
             print_json(host_capabilities.all_hosts())
+        elif args.command == "runtime-capabilities":
+            print_json(platform_runtime.capabilities())
         elif args.command == "schemas":
             print_json(
                 schemas.catalog() if args.name is None else schemas.load(args.name)

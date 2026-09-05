@@ -46,9 +46,11 @@ command -v codex
 command -v copilot
 ```
 
-Constraints: Python >= 3.11 on the machine where workers run (typically WSL on
-Windows). If the host is Codex Desktop on Windows in WSL mode, everything
-below runs inside WSL.
+Constraints: Python >= 3.11 on the machine where workers run. The complete
+detached runtime requires Linux or WSL; native Windows and macOS currently
+support the portable core and compatible foreground checks only. See the
+[platform support matrix](platform-support.md). If the host is Codex Desktop
+on Windows in WSL mode, everything below runs inside WSL.
 
 ## Step 1 — Install the engine
 
@@ -56,7 +58,7 @@ For a reproducible adopter install, use an immutable release tag:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.8.1"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.9.0"
 ```
 
 GitHub Release archives and wheel/sdist assets are published with the tag;
@@ -80,7 +82,12 @@ runtime dependencies.
 ```bash
 orchestrator-engine --help
 orchestrator-engine --version
+orchestrator-engine runtime-capabilities
 ```
+
+Before continuing with detached workers or a watcher service, expect
+`"detached_lifecycle": "supported"`. An unsupported result is not repaired by
+installing a provider CLI.
 
 If `orchestrator-engine` is not on PATH, use `python3 -m orchestrator_engine.cli`
 everywhere below — but prefer a real install: the worker supervisor re-executes

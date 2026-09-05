@@ -54,9 +54,9 @@ loading growing worker logs. Lower is better.
 
 | Scenario | Full-log polling | Status reads | Context read | Reduction |
 | --- | ---: | ---: | ---: | ---: |
-| Long test | 655.4 KB | 17.4 KB | 2.65% | 97.35% |
-| AI worker | 2.62 MB | 17.4 KB | 0.66% | 99.34% |
-| Three parallel workers | 3.93 MB | 19.9 KB | 0.51% | 99.49% |
+| Long test | 655.4 KB | 18.8 KB | 2.87% | 97.13% |
+| AI worker | 2.62 MB | 18.8 KB | 0.72% | 99.28% |
+| Three parallel workers | 3.93 MB | 21.4 KB | 0.54% | 99.46% |
 
 This is selective inspection, not output truncation. The status report keeps
 task states, diagnostics, log sizes and paths compact; complete stdout,
@@ -90,13 +90,19 @@ canonical procedure. It contains host-specific branches, checks after each
 step, strict-admission examples and troubleshooting. The shorter sequence
 below is only a human-readable preview.
 
+The complete detached runtime currently requires Linux or WSL. Native Windows
+and macOS support the portable core and compatible foreground checks, while
+detached commands fail before creating runtime artifacts. See the
+[platform support matrix](docs/platform-support.md).
+
 ### Manual preview
 
 Install an immutable release, scaffold the project and bind the host chat:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.8.1"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.9.0"
+orchestrator-engine runtime-capabilities
 orchestrator-engine --project-root /path/to/project adopt --host HOST
 orchestrator-engine --project-root /path/to/project bind --host HOST
 ```

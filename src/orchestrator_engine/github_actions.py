@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import signal
@@ -18,8 +18,9 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
-from . import binding, core, worker_lease
+from . import binding, core, platform_runtime, worker_lease
 
 CONFIG_NAME = "integrations.toml"
 SOURCE_KIND = "github_actions"
@@ -212,13 +213,8 @@ def monitor_dir_for(
 @contextlib.contextmanager
 def monitor_admission_lock(project_root: Path, *, state_dir: str):
     path = monitor_root(project_root, state_dir=state_dir) / ".admission.lock"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    with platform_runtime.exclusive_file_lock(path):
+        yield
 
 
 def default_monitor_id(
@@ -235,7 +231,48 @@ def default_monitor_id(
 
 
 def repo_argument(hostname: str, repository: str) -> str:
-    return repository if hostname == "github.com" else f"{hostname}/{repository}"
+    return f"{hostname}/{repository}"
+
+
+def same_repository(left: object, right: object) -> bool:
+    return (
+        isinstance(left, str)
+        and isinstance(right, str)
+        and left.casefold() == right.casefold()
+    )
+
+
+def repository_url_matches(
+    value: object,
+    *,
+    hostname: str,
+    repository: str,
+) -> bool:
+    if not isinstance(value, str) or len(value) > 2048:
+        return False
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return False
+    if (
+        parsed.scheme != "https"
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in {None, 443}
+        or (parsed.hostname or "").casefold() != hostname.casefold()
+    ):
+        return False
+    parts = [part for part in parsed.path.split("/") if part]
+    try:
+        owner, name = repository.split("/", 1)
+    except ValueError:
+        return False
+    return (
+        len(parts) >= 2
+        and parts[0].casefold() == owner.casefold()
+        and parts[1].casefold() == name.casefold()
+    )
 
 
 def capture_wake_target(
@@ -300,6 +337,7 @@ def start_monitor(
     retry_reason: str | None = None,
     popen_factory=subprocess.Popen,
 ) -> dict[str, Any]:
+    platform_runtime.require_detached_lifecycle("ci watch")
     project = project_root.expanduser().resolve()
     config = load_config(project, state_dir=state_dir)
     normalized_repo = normalize_repository(repository)
@@ -320,8 +358,17 @@ def start_monitor(
         raise GitHubActionsError(
             "wake policy must be one of: " + ", ".join(sorted(WAKE_POLICIES))
         )
-    if timeout_seconds is not None and timeout_seconds <= 0:
-        raise GitHubActionsError("timeout-seconds must be positive")
+    if timeout_seconds is not None:
+        if isinstance(timeout_seconds, bool):
+            raise GitHubActionsError("timeout-seconds must be a finite positive number")
+        try:
+            timeout_seconds = float(timeout_seconds)
+        except (TypeError, ValueError) as error:
+            raise GitHubActionsError(
+                "timeout-seconds must be a finite positive number"
+            ) from error
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise GitHubActionsError("timeout-seconds must be a finite positive number")
     if expected_head_sha is not None:
         expected_head_sha = expected_head_sha.strip().lower()
         if not re.fullmatch(r"[0-9a-f]{7,64}", expected_head_sha):
@@ -398,11 +445,13 @@ def start_monitor(
                 key: existing.get(key)
                 for key in ("hostname", "repository", "run_id", "attempt")
             }
-            if {
-                key: existing_run[key] for key in ("hostname", "repository", "run_id")
-            } != {
-                key: run_identity[key] for key in ("hostname", "repository", "run_id")
-            }:
+            if (
+                existing_run["hostname"] != run_identity["hostname"]
+                or not same_repository(
+                    existing_run["repository"], run_identity["repository"]
+                )
+                or existing_run["run_id"] != run_identity["run_id"]
+            ):
                 continue
             existing_dispatch = {
                 key: existing.get(key)
@@ -420,7 +469,15 @@ def start_monitor(
                 )
             }
             if existing_path == descriptor_path:
-                if existing_dispatch != dispatch_identity:
+                comparable_existing = {
+                    **existing_dispatch,
+                    "repository": str(existing_dispatch["repository"]).casefold(),
+                }
+                comparable_dispatch = {
+                    **dispatch_identity,
+                    "repository": str(dispatch_identity["repository"]).casefold(),
+                }
+                if comparable_existing != comparable_dispatch:
                     raise GitHubActionsError(
                         "monitor already exists with different dispatch options: "
                         f"{resolved_monitor_id}"
@@ -885,6 +942,12 @@ def validate_view_identity(
     descriptor: dict[str, Any],
     view: dict[str, Any],
 ) -> str | None:
+    if not repository_url_matches(
+        view.get("url"),
+        hostname=str(descriptor.get("hostname", "")),
+        repository=str(descriptor.get("repository", "")),
+    ):
+        return "repository_url_mismatch"
     if view.get("databaseId") != descriptor.get("run_id"):
         return "run_id_mismatch"
     attempt = view.get("attempt")
@@ -1330,6 +1393,7 @@ def reap_monitors(
 ) -> dict[str, Any]:
     """Finalize active monitors whose supervisor is proven gone."""
 
+    platform_runtime.require_detached_lifecycle("ci reap")
     project = project_root.expanduser().resolve()
     root = monitor_root(project, state_dir=state_dir)
     outcomes: list[dict[str, Any]] = []

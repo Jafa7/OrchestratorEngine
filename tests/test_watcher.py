@@ -11,8 +11,16 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import ClassVar
+from unittest import mock
 
-from orchestrator_engine import binding, codex_app, core, vscode_chat, watcher
+from orchestrator_engine import (
+    binding,
+    codex_app,
+    core,
+    platform_runtime,
+    vscode_chat,
+    watcher,
+)
 
 
 class FakeThreadServer:
@@ -1228,6 +1236,34 @@ class DetectThreadIdTests(unittest.TestCase):
 
 
 class ServiceDiagnosticsTests(unittest.TestCase):
+    def test_service_start_fails_before_artifacts_when_runtime_unsupported(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with (
+                mock.patch.object(
+                    platform_runtime,
+                    "detached_lifecycle_supported",
+                    return_value=False,
+                ),
+                self.assertRaises(platform_runtime.PlatformRuntimeError),
+            ):
+                watcher.start_service(
+                    [root],
+                    interval_seconds=5,
+                    state_path=None,
+                    service_file=None,
+                    action="callback",
+                    target_thread_id=None,
+                    codex="codex",
+                    host="codex",
+                )
+
+            self.assertFalse(
+                watcher.default_callback_service_path(root, host="codex").exists()
+            )
+
     def start_legacy_service(self, root: Path, thread_id: str = "thread-old"):
         return watcher.start_service(
             [root],

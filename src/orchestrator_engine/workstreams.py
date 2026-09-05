@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from . import binding, core
+from . import binding, core, platform_runtime
 
 WORKSTREAM_KIND = "ORCHESTRATOR_WORKSTREAM"
 CHECKPOINT_KIND = "ORCHESTRATOR_WORKSTREAM_CHECKPOINT"
@@ -104,13 +103,8 @@ def checkpoint_path(
 @contextlib.contextmanager
 def workstream_lock(project_root: Path, workstream_id: str, *, state_dir: str):
     path = workstream_dir(project_root, workstream_id, state_dir=state_dir) / ".lock"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    with platform_runtime.exclusive_file_lock(path):
+        yield
 
 
 def capture_wake_target(project_root: Path, *, state_dir: str) -> dict[str, Any]:

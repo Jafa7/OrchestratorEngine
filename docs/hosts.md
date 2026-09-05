@@ -11,9 +11,12 @@ live wakeup:
 - **Live wakeup** means the already-open host chat receives the message and
   the active agent continues in that same visible session.
 
-Everything engine-side runs where the CLI workers run. In WSL, Windows-side
-actions (`codex.exe`, the Codex deep link, and the `code` CLI) are reached
-through normal WSL interop.
+Everything engine-side runs where the CLI workers run. The complete detached
+runtime currently requires Linux or WSL; check
+`orchestrator-engine runtime-capabilities` and the
+[platform support matrix](platform-support.md) before setup. In WSL,
+Windows-side actions (`codex.exe`, the Codex deep link, and the `code` CLI) are
+reached through normal WSL interop.
 
 Machine-readable capabilities are available with
 `orchestrator-engine host-capabilities`:
