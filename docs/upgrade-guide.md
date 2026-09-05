@@ -11,7 +11,7 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release is `0.12.0` and the durable JSON contract schema version is
+The current release is `0.13.0` and the durable JSON contract schema version is
 `1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
@@ -19,8 +19,17 @@ PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.12.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.13.0"
 ```
+
+## Reliability and historical upgrades in v0.13.0
+
+Version 0.13.0 adds a bounded installed-wheel conformance soak and a CI matrix
+that verifies schema-version-1 state produced by releases 0.10.0 through
+0.12.0 with the current wheel. The upgrade check is read-only, the watcher
+consumes the historical terminal signal exactly once, and durable event,
+result and evidence artifacts remain present. These are maintainer and CI
+checks; adopter runtime state needs no migration.
 
 ## Heterogeneous operation observation in v0.12.0
 

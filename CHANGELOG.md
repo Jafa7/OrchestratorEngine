@@ -4,6 +4,17 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-05
+
+### Added
+
+- CI now runs a bounded 20-iteration installed-wheel conformance soak and a
+  SHA-256-pinned historical upgrade matrix for releases 0.10.0 through 0.12.0.
+- Maintainer tools produce bounded reliability and upgrade-path reports while
+  preserving failed synthetic fixtures and durable audit artifacts.
+- Version 1 readiness and the supported historical compatibility floor are
+  documented without expanding the provider-neutral runtime scope.
+
 ## [0.12.0] - 2026-09-05
 
 ### Added

@@ -82,3 +82,78 @@ jobs:
           env -u PYTHONPATH .wheel-smoke/bin/python -m pip install --no-deps dist/*.whl
           env -u PYTHONPATH .wheel-smoke/bin/orchestrator-engine --version | grep -Fx "orchestrator-engine ${expected_version}"
           env -u PYTHONPATH .wheel-smoke/bin/orchestrator-engine conformance run --mode full --timeout-seconds 15
+      - name: Run bounded installed-wheel reliability soak
+        shell: bash
+        run: |
+          env -u PYTHONPATH python tools/run_reliability_soak.py \
+            --cli .wheel-smoke/bin/orchestrator-engine \
+            --iterations 20 --mode full --timeout-seconds 15
+
+  upgrade-compatibility:
+    name: Upgrade compatibility (${{ matrix.version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: "0.10.0"
+            wheel: orchestrator_engine-0.10.0-py3-none-any.whl
+            sha256: 7b4939cf9a7382b6707d325271fc987b55891b651ba8a3e29f3aa10617bc3618
+          - version: "0.11.1"
+            wheel: orchestrator_engine-0.11.1-py3-none-any.whl
+            sha256: 2e4f9d05a02095619b37f75fb7439eef9bffc40baab10c1336868dd357184e29
+          - version: "0.12.0"
+            wheel: orchestrator_engine-0.12.0-py3-none-any.whl
+            sha256: 0bdeb4b976e20e8e608b8fe5a4c0fce4e38c4071034c9adb99151f4f40870d03
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build current wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build --wheel
+      - name: Install pinned baseline and current wheels
+        env:
+          BASELINE_VERSION: ${{ matrix.version }}
+          BASELINE_WHEEL: ${{ matrix.wheel }}
+          BASELINE_SHA256: ${{ matrix.sha256 }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .upgrade
+          python - <<'PY'
+          import os
+          import pathlib
+          import time
+          import urllib.request
+
+          target = pathlib.Path(".upgrade") / os.environ["BASELINE_WHEEL"]
+          url = (
+              f"https://github.com/{os.environ['REPOSITORY']}/releases/download/"
+              f"v{os.environ['BASELINE_VERSION']}/{os.environ['BASELINE_WHEEL']}"
+          )
+          for attempt in range(1, 4):
+              try:
+                  with urllib.request.urlopen(url, timeout=30) as response:
+                      target.write_bytes(response.read())
+                  break
+              except OSError:
+                  if attempt == 3:
+                      raise
+                  time.sleep(attempt * 2)
+          PY
+          python -c 'import hashlib, os, pathlib; p=pathlib.Path(".upgrade") / os.environ["BASELINE_WHEEL"]; actual=hashlib.sha256(p.read_bytes()).hexdigest(); expected=os.environ["BASELINE_SHA256"]; assert actual == expected, (actual, expected)'
+          python -m venv .upgrade-baseline
+          python -m venv .upgrade-current
+          .upgrade-baseline/bin/python -m pip install --no-deps \
+            ".upgrade/${BASELINE_WHEEL}"
+          .upgrade-current/bin/python -m pip install --no-deps dist/*.whl
+      - name: Verify historical state upgrade
+        run: |
+          env -u PYTHONPATH python tools/verify_upgrade_path.py \
+            --baseline-cli .upgrade-baseline/bin/orchestrator-engine \
+            --current-cli .upgrade-current/bin/orchestrator-engine

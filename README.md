@@ -516,6 +516,8 @@ Additional documentation:
 - [Codex in-turn continuation](docs/codex-in-turn-continuation.md)
 - [Worker behavior policies](docs/worker-policies.md)
 - [Adopter upgrade checklist](docs/adopter-upgrade-checklist.md)
+- [Reliability and upgrade validation](docs/reliability-validation.md)
+- [Version 1 readiness](docs/v1-readiness.md)
 - [Project integration and legacy adoption](docs/project-adoption.md)
 - [Release process](docs/release-process.md)
 
