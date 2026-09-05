@@ -11,7 +11,7 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release is `0.11.0` and the durable JSON contract schema version is
+The current release is `0.11.1` and the durable JSON contract schema version is
 `1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
@@ -19,8 +19,15 @@ PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.11.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.11.1"
 ```
+
+## Release tag validation fix in v0.11.1
+
+Version 0.11.1 preserves release provenance checks when GitHub Actions checks
+out a tag event as a commit-backed local tag ref. The workflow fetches the
+remote annotated tag object into a dedicated internal ref and reports the
+specific failed invariant. No runtime state migration is required.
 
 ## Release publication and CI diagnostics in v0.11.0
 

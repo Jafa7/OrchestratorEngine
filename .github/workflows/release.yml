@@ -31,12 +31,33 @@ jobs:
         run: |
           set -euo pipefail
           version="$(python tools/check_release_consistency.py --print-version)"
-          test "${GITHUB_REF_NAME}" = "v${version}"
-          test "$(git cat-file -t "${GITHUB_REF_NAME}")" = "tag"
-          commit_sha="$(git rev-list -n 1 "${GITHUB_REF_NAME}")"
-          git fetch --no-tags origin main
-          git merge-base --is-ancestor "${commit_sha}" refs/remotes/origin/main
+          if [[ "${GITHUB_REF_NAME}" != "v${version}" ]]; then
+            echo "::error::Release tag ${GITHUB_REF_NAME} does not match version ${version}."
+            exit 1
+          fi
+
+          release_ref="refs/orchestrator/release-tag"
+          main_ref="refs/remotes/origin/main"
+          git fetch --force --no-tags origin \
+            "refs/tags/${GITHUB_REF_NAME}:${release_ref}" \
+            "refs/heads/main:${main_ref}"
+
+          object_type="$(git cat-file -t "${release_ref}" 2>/dev/null || true)"
+          if [[ "${object_type}" != "tag" ]]; then
+            echo "::error::Release tag ${GITHUB_REF_NAME} must be annotated; found ${object_type:-missing}."
+            exit 1
+          fi
+          commit_sha="$(git rev-list -n 1 "${release_ref}")"
+          if [[ "${commit_sha}" != "${GITHUB_SHA}" ]]; then
+            echo "::error::Release tag targets ${commit_sha}, but the workflow event targets ${GITHUB_SHA}."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${commit_sha}" "${main_ref}"; then
+            echo "::error::Release commit ${commit_sha} is not contained in origin/main."
+            exit 1
+          fi
           source_date_epoch="$(git show -s --format=%ct "${commit_sha}")"
+          echo "Validated annotated ${GITHUB_REF_NAME} at ${commit_sha} on origin/main."
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
           echo "commit_sha=${commit_sha}" >> "${GITHUB_OUTPUT}"
           echo "SOURCE_DATE_EPOCH=${source_date_epoch}" >> "${GITHUB_ENV}"

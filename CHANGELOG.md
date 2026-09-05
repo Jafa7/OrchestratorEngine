@@ -4,6 +4,17 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-09-05
+
+### Fixed
+
+- Release validation now fetches the remote annotated tag object into a
+  dedicated internal ref before inspecting it, avoiding the lightweight local
+  tag ref produced by tag-event checkout while preserving immutable tag and
+  exact-SHA provenance checks.
+- Release source validation now reports the failed tag, event-SHA or main-line
+  invariant explicitly instead of exiting from a silent shell assertion.
+
 ## [0.11.0] - 2026-09-05
 
 ### Added
