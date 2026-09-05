@@ -12,6 +12,9 @@ All notable changes to OrchestratorEngine are documented here.
 - Clean-fixture conformance validates the generated layout, disabled example
   profile, bundled worker policy, conservative dispatch defaults and
   create-only adoption idempotency before exercising runtime artifacts.
+- Create-only adoption writes generated worker and policy templates with
+  canonical LF line endings on every platform, keeping bundled-policy hashes
+  stable on native Windows.
 - The packaged `conformance-report` schema makes that self-test result a
   versioned public contract; successful fixtures are removed by default while
   failed fixtures are retained for diagnosis.

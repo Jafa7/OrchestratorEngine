@@ -46,6 +46,18 @@ class AdoptionTests(unittest.TestCase):
         self.assertEqual(policy_content, worker_policy.QUALITY_EFFICIENT_POLICY)
         self.assertIn("worker list", " ".join(result["next_steps"]))
 
+    def test_adopt_writes_portable_lf_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            adoption.adopt_project(root)
+            workers_bytes = workers.workers_config_path(root).read_bytes()
+            policy_bytes = (
+                core.state_root(root) / "policies" / "quality-efficient.md"
+            ).read_bytes()
+
+        self.assertNotIn(b"\r\n", workers_bytes)
+        self.assertNotIn(b"\r\n", policy_bytes)
+
     def test_adopt_is_idempotent_on_second_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

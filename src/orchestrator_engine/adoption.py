@@ -86,7 +86,11 @@ def adopt_project(
         created.append(state_relative(project, workers_config))
         if not dry_run:
             workers_config.parent.mkdir(parents=True, exist_ok=True)
-            workers_config.write_text(WORKERS_TEMPLATE, encoding="utf-8")
+            workers_config.write_text(
+                WORKERS_TEMPLATE,
+                encoding="utf-8",
+                newline="\n",
+            )
 
     if policy_file.exists():
         skipped.append(state_relative(project, policy_file))
@@ -97,6 +101,7 @@ def adopt_project(
             policy_file.write_text(
                 worker_policy.QUALITY_EFFICIENT_POLICY,
                 encoding="utf-8",
+                newline="\n",
             )
 
     return {
