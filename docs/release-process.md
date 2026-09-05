@@ -16,7 +16,8 @@ Before creating a tag:
 4. Require the repository `CI` workflow for that exact commit SHA to complete
    successfully. `ci watch --expected-head-sha FULL_SHA --workflow-name CI`
    can wait and wake the dispatching chat without model polling.
-5. Create an annotated `vX.Y.Z` tag on that exact commit and push the tag.
+5. Create an annotated `vX.Y.Z` stable tag or `vX.Y.ZrcN` release-candidate
+   tag on that exact commit and push the tag.
 
 The tag is the explicit human/agent authorization boundary. Configure a GitHub
 ruleset that prevents deletion or force-update of `v*` tags. The workflow never
@@ -39,8 +40,10 @@ unless all of these conditions hold:
 - uploaded asset names, sizes and GitHub SHA-256 digests match the local build.
 
 The workflow creates or reuses a draft release, uploads the wheel, sdist and
-`SHA256SUMS`, verifies them through a readback, and only then publishes the
-release as latest. Builds use `SOURCE_DATE_EPOCH` from the tagged commit. A
+`SHA256SUMS`, verifies them through a readback, and only then publishes it.
+Stable releases become latest; `rcN` releases remain marked as prereleases and
+never replace the latest stable release. Builds use `SOURCE_DATE_EPOCH` from
+the tagged commit. A
 retry may replace assets only after checking that the release is still a
 draft. An already published release is never modified automatically: the
 workflow succeeds only if its existing assets exactly match the rebuilt bundle.

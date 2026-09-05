@@ -637,6 +637,7 @@ def thread_wakeup_receipt_path(
     *,
     state_dir: str = core.DEFAULT_STATE_DIR,
 ) -> Path:
+    event_id = core.validate_event_id(event_id)
     return (
         core.inbox_root(project_root, state_dir=state_dir)
         / "thread-wakeups"

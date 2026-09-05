@@ -11,16 +11,34 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release is `0.13.0` and the durable JSON contract schema version is
-`1`.
+The current release candidate is `1.0.0rc1` and the durable JSON contract
+schema version is `1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
 PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.13.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.0.0rc1"
 ```
+
+## Version 1 release candidate
+
+Version `1.0.0rc1` defines the stable `1.x` compatibility and security
+boundaries, validates path-safe event identifiers and makes watcher shutdown
+identity-safe. It also adds formal `rcN` GitHub prereleases that do not replace
+the latest stable release.
+
+Stop watcher services before upgrading from an older release. Pre-`1.0.0rc1`
+service state records a PID but not a process identity. The new CLI refuses to
+signal that unverifiable live PID. If the package was already upgraded, inspect
+and terminate the old watcher process explicitly, then run `watcher service
+start` to create identity-bound state. Durable events, signals and receipts do
+not need migration.
+
+The [Compatibility Policy](compatibility-policy.md) defines the `1.x`
+guarantees. Security reporting and trust boundaries are in
+[`SECURITY.md`](../SECURITY.md).
 
 ## Reliability and historical upgrades in v0.13.0
 
@@ -89,8 +107,8 @@ rather than being treated as proof that the process exited. See
 
 ## Schema Compatibility
 
-Every durable JSON contract includes `schema_version`. OrchestratorEngine v0.1
-accepts schema version `1`.
+Every durable JSON contract includes `schema_version`. OrchestratorEngine
+`1.x` accepts schema version `1`.
 
 Before and after an engine upgrade, run:
 

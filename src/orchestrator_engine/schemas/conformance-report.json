@@ -90,7 +90,7 @@
                 ]
               },
               "status": {"const": "recovered"},
-              "event_id": {"type": "string", "minLength": 1}
+              "event_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"}
             },
             "additionalProperties": false
           }

@@ -18,6 +18,20 @@ CURRENT_CLI = Path(sys.executable).with_name("orchestrator-engine")
 
 
 class UpgradePathTests(unittest.TestCase):
+    @mock.patch.object(verify_upgrade_path.subprocess, "run")
+    def test_cli_version_accepts_release_candidate(self, run: mock.Mock) -> None:
+        run.return_value = subprocess.CompletedProcess(
+            [],
+            0,
+            stdout="orchestrator-engine 1.0.0rc1\n",
+            stderr="",
+        )
+
+        self.assertEqual(
+            verify_upgrade_path.cli_version(Path("orchestrator-engine")),
+            "1.0.0rc1",
+        )
+
     @mock.patch.object(
         verify_upgrade_path.subprocess,
         "run",

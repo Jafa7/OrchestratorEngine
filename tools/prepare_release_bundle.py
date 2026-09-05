@@ -11,7 +11,9 @@ import sys
 import tomllib
 from pathlib import Path
 
-SEMVER_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+RELEASE_VERSION_PATTERN = re.compile(
+    r"^[0-9]+\.[0-9]+\.[0-9]+(?:rc[1-9][0-9]*)?$"
+)
 
 
 class ReleaseBundleError(RuntimeError):
@@ -32,8 +34,8 @@ def project_version(root: Path) -> str:
             version = tomllib.load(handle).get("project", {}).get("version")
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise ReleaseBundleError(f"cannot read pyproject.toml: {error}") from error
-    if not isinstance(version, str) or not SEMVER_PATTERN.fullmatch(version):
-        raise ReleaseBundleError("project version must use x.y.z form")
+    if not isinstance(version, str) or not RELEASE_VERSION_PATTERN.fullmatch(version):
+        raise ReleaseBundleError("project version must use x.y.z or x.y.zrcN form")
     return version
 
 
@@ -167,6 +169,7 @@ def prepare_bundle(
         "kind": "ORCHESTRATOR_RELEASE_BUNDLE",
         "version": version,
         "tag": tag,
+        "prerelease": "rc" in version,
         "notes_path": str(notes_path),
         "checksums_path": str(checksums_path),
         "assets": [

@@ -41,3 +41,8 @@ For setup, architecture and reporting details, see the
 [operator reporting policy](docs/operator-reporting.md). Maintainers preparing
 a tag must also follow the [release process](docs/release-process.md); pushing
 the tag is the explicit publication authorization boundary.
+
+Public API and durable-state promises are defined by the
+[compatibility policy](docs/compatibility-policy.md). Report sensitive defects
+through the private path described in the [security policy](SECURITY.md), not
+through a public issue containing credentials or private adopter data.

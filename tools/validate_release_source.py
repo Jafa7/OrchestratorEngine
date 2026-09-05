@@ -10,7 +10,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-SEMVER_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+RELEASE_VERSION_PATTERN = re.compile(
+    r"^[0-9]+\.[0-9]+\.[0-9]+(?:rc[1-9][0-9]*)?$"
+)
 SHA_PATTERN = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 REMOTE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 INTERNAL_TAG_REF = "refs/orchestrator/release-tag"
@@ -62,8 +64,8 @@ def validate_release_source(
 ) -> dict[str, object]:
     root = root.resolve()
     expected_sha = expected_sha.strip().lower()
-    if not SEMVER_PATTERN.fullmatch(version):
-        raise ReleaseSourceError("version must use x.y.z form")
+    if not RELEASE_VERSION_PATTERN.fullmatch(version):
+        raise ReleaseSourceError("version must use x.y.z or x.y.zrcN form")
     if tag != f"v{version}":
         raise ReleaseSourceError(
             f"release tag {tag!r} does not match version {version!r}"
@@ -132,6 +134,7 @@ def validate_release_source(
             "kind": "ORCHESTRATOR_RELEASE_SOURCE_VERIFICATION",
             "version": version,
             "tag": tag,
+            "prerelease": "rc" in version,
             "commit_sha": commit_sha.lower(),
             "remote": remote,
             "main_branch": main_branch,

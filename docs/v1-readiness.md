@@ -34,6 +34,10 @@ boundary remains explicit in the platform report and documentation.
 7. One release candidate completes its local gate, exact-SHA CI and GitHub
    artifact verification without unresolved critical findings.
 
+The canonical guarantees are recorded in
+[Compatibility Policy](compatibility-policy.md), and security reporting and
+trust boundaries are recorded in the repository [Security Policy](../SECURITY.md).
+
 The release does not require PyPI publication, autonomous merge/push behavior,
 project roadmap interpretation or provider-specific policy in core. GitHub
 Release assets and immutable annotated tags remain a supported installation

@@ -4,6 +4,34 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [1.0.0rc1] - 2026-09-05
+
+### Added
+
+- The public `1.x` compatibility policy now defines durable schema, CLI,
+  configuration, platform and host-adapter guarantees together with the
+  verified historical upgrade floor.
+- A public security policy documents executable project configuration,
+  untrusted worker output, credential ownership, audit retention and private
+  vulnerability reporting boundaries.
+- Release automation supports immutable `rcN` tags and publishes them as
+  GitHub prereleases without changing the latest stable release.
+- Historical upgrade verification accepts stable and `rcN` installed CLI
+  versions, so the same read-only fixture gate covers release candidates.
+
+### Security
+
+- Event identifiers are now constrained to a bounded path-safe alphabet before
+  they are used in event, signal or receipt paths.
+- Watcher services record process identity and refuse to signal a live PID when
+  that identity is absent or no longer matches, preventing PID-reuse shutdowns
+  from targeting an unrelated process.
+- Watcher startup terminates its owned child if identity capture or durable
+  service-state publication fails, including kill escalation after a bounded
+  termination timeout.
+- Watcher stop rejects unsupported future service-state schemas before
+  mutating the file or signalling a recorded process.
+
 ## [0.13.0] - 2026-09-05
 
 ### Added

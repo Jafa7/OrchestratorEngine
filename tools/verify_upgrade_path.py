@@ -14,7 +14,9 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-VERSION_PATTERN = re.compile(r"^orchestrator-engine ([0-9]+\.[0-9]+\.[0-9]+)$")
+VERSION_PATTERN = re.compile(
+    r"^orchestrator-engine ([0-9]+\.[0-9]+\.[0-9]+(?:rc[1-9][0-9]*)?)$"
+)
 EVENT_ID = "upgrade-compatibility-event"
 TASK_ID = "UPGRADE-COMPATIBILITY-001"
 COMMAND_TIMEOUT_SECONDS = 30

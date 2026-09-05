@@ -13,21 +13,25 @@ PREPARER = REPO_ROOT / "tools" / "prepare_release_bundle.py"
 
 
 class ReleaseBundleTests(unittest.TestCase):
-    def create_fixture(self, root: Path) -> tuple[Path, Path]:
+    def create_fixture(
+        self, root: Path, *, version: str = "1.2.3"
+    ) -> tuple[Path, Path]:
         (root / "pyproject.toml").write_text(
-            '[project]\nname = "orchestrator-engine"\nversion = "1.2.3"\n',
+            f'[project]\nname = "orchestrator-engine"\nversion = "{version}"\n',
             encoding="utf-8",
         )
         (root / "CHANGELOG.md").write_text(
             "# Changelog\n\n## [Unreleased]\n\n"
-            "## [1.2.3] - 2026-09-05\n\n### Added\n\n- Release automation.\n\n"
+            f"## [{version}] - 2026-09-05\n\n### Added\n\n- Release automation.\n\n"
             "## [1.2.2] - 2026-09-01\n\n- Older change.\n",
             encoding="utf-8",
         )
         dist = root / "dist"
         dist.mkdir()
-        (dist / "orchestrator_engine-1.2.3-py3-none-any.whl").write_bytes(b"wheel")
-        (dist / "orchestrator_engine-1.2.3.tar.gz").write_bytes(b"sdist")
+        (dist / f"orchestrator_engine-{version}-py3-none-any.whl").write_bytes(
+            b"wheel"
+        )
+        (dist / f"orchestrator_engine-{version}.tar.gz").write_bytes(b"sdist")
         output = root / "release"
         return dist, output
 
@@ -72,6 +76,7 @@ class ReleaseBundleTests(unittest.TestCase):
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(report["tag"], "v1.2.3")
+        self.assertFalse(report["prerelease"])
         self.assertIn("Release automation.", notes)
         self.assertNotIn("Older change.", notes)
         self.assertIn(hashlib.sha256(b"wheel").hexdigest(), checksums)
@@ -127,6 +132,21 @@ class ReleaseBundleTests(unittest.TestCase):
         self.assertTrue(json.loads(verified.stdout)["remote_assets_verified"])
         self.assertEqual(mismatched.returncode, 1)
         self.assertIn("digest mismatch", mismatched.stderr)
+
+    def test_release_candidate_bundle_is_marked_prerelease(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dist, output = self.create_fixture(root, version="1.2.3rc1")
+            completed = self.run_preparer(
+                root,
+                dist,
+                output,
+                tag="v1.2.3rc1",
+            )
+            report = json.loads(completed.stdout)
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(report["prerelease"])
 
 
 if __name__ == "__main__":

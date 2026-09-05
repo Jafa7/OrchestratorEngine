@@ -32,7 +32,7 @@ bounded, stable `hosts` collection. Codex also declares its `codex queue`
 requirement and the `headless_app_server_turn` / `unsupported` fallback. These
 describe message delivery, not deep-link or window activation success.
 
-`ui_injection` is a stable machine-readable v0.1 identifier for invoking the
+`ui_injection` is a stable machine-readable version 1 identifier for invoking the
 documented VS Code chat CLI. It does not mean that the engine bypasses host
 security. All adapters use user-installed local CLIs or interfaces under the
 user's account and an explicit project binding; OrchestratorEngine does not

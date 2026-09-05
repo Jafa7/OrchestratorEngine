@@ -92,6 +92,22 @@ class SchemaContractTests(unittest.TestCase):
         event["wake_target"].pop("captured_at")
         self.assertTrue(list(self.validators["terminal-event"].iter_errors(event)))
 
+    def test_event_identifiers_are_bounded_filename_components(self) -> None:
+        root = Path(__file__).parent / "fixtures" / "schemas" / "valid"
+        for name in (
+            "terminal-event",
+            "inbox-signal",
+            "followup-terminal-event",
+            "followup-signal",
+            "local-check",
+            "workstream-checkpoint",
+            "conformance-report",
+        ):
+            with self.subTest(schema=name):
+                artifact = json.loads((root / f"{name}.json").read_text("utf-8"))
+                artifact["event_id"] = "../escape"
+                self.assertTrue(list(self.validators[name].iter_errors(artifact)))
+
     def test_worker_policy_ref_uses_the_packaged_registry(self) -> None:
         root = Path(__file__).parent / "fixtures" / "schemas" / "valid"
         policy = json.loads(

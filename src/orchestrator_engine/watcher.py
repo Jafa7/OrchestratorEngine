@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from . import binding as binding_module
-from . import codex_app, core, platform_runtime, vscode_chat
+from . import codex_app, core, platform_runtime, vscode_chat, worker_lease
 
 WATCHER_ACTIONS = {"record", "notify", "callback", "current-thread-callback"}
 DEFER_BASE_SECONDS = 30
@@ -217,8 +217,7 @@ def acknowledgement_receipt_path(
     event_id: str,
     state_dir: str = core.DEFAULT_STATE_DIR,
 ) -> Path:
-    if not event_id or "/" in event_id or "\\" in event_id or event_id.startswith("."):
-        raise WatcherError(f"invalid event id: {event_id!r}")
+    event_id = core.validate_event_id(event_id)
     return (
         core.inbox_root(project_root, state_dir=state_dir)
         / "acknowledgements"
@@ -353,7 +352,7 @@ def notify_signal(
     *,
     state_dir: str = core.DEFAULT_STATE_DIR,
 ) -> Path:
-    event_id = str(signal["event_id"])
+    event_id = core.validate_event_id(signal.get("event_id"))
     root = core.inbox_root(project_root, state_dir=state_dir) / "notifications"
     path = root / f"{event_id}.json"
     core.atomic_json(
@@ -724,8 +723,7 @@ def retry_deferred_event(
     state_path: Path | None = None,
     reason: str | None = None,
 ) -> dict[str, Any]:
-    if not event_id:
-        raise WatcherError("event id is required")
+    event_id = core.validate_event_id(event_id)
     project = project_root.expanduser().resolve()
     state_file = state_path or default_state_path(project, state_dir=state_dir)
     state = load_state(state_file)
@@ -1007,6 +1005,17 @@ def scan_once(
             if not isinstance(event_id, str) or event_id in seen:
                 continue
             try:
+                event_id = core.validate_event_id(event_id)
+            except core.OrchestratorError as error:
+                action_errors.append(
+                    {
+                        "event_id": event_id,
+                        "project_root": str(project),
+                        "error": str(error),
+                    }
+                )
+                continue
+            try:
                 not_before = signal_not_before_timestamp(signal)
             except WatcherError as error:
                 action_errors.append(
@@ -1236,9 +1245,14 @@ def service_status(
             "checked_at": core.utc_now(),
         }
     pid = state.get("pid")
-    alive = isinstance(pid, int) and process_checker(pid)
+    recorded_identity = state.get("process_identity")
+    identity_status = worker_lease.identity_state(recorded_identity)
+    if isinstance(recorded_identity, dict):
+        alive = identity_status["state"] == "alive"
+    else:
+        alive = isinstance(pid, int) and process_checker(pid)
     heartbeat_status = heartbeat_health(state, heartbeat, alive=alive)
-    if alive and heartbeat_status["healthy"]:
+    if alive and heartbeat_status["healthy"] and isinstance(recorded_identity, dict):
         status = "running"
     elif alive:
         status = "degraded"
@@ -1253,6 +1267,8 @@ def service_status(
         "alive": alive,
         "pid": pid,
         "process_group": state.get("process_group"),
+        "process_identity_status": identity_status["state"],
+        "process_identity_verified": identity_status["identity_verified"],
         "action": state.get("action"),
         "target_thread_id": state.get("target_thread_id"),
         "host_filter": state.get("host_filter"),
@@ -1307,6 +1323,15 @@ def service_warnings(
     host = bound.get("host") if bound else None
     if binding_error:
         warnings.append(f"binding is unreadable: {binding_error}")
+    if state and status == "degraded" and not isinstance(
+        state.get("process_identity"), dict
+    ):
+        warnings.append(
+            "watcher service process identity is unverified; the current CLI "
+            "will not signal this live PID — stop it with the version that "
+            "launched it or terminate it after explicit verification, then "
+            "start a new service"
+        )
     if (
         query_host is None
         and host in HOST_ADAPTERS
@@ -1370,6 +1395,7 @@ def start_service(
     host: str | None = None,
     replace: bool = False,
     popen_factory=subprocess.Popen,
+    process_identity_reader=worker_lease.process_identity,
 ) -> dict[str, Any]:
     platform_runtime.require_detached_lifecycle("watcher service start")
     if interval_seconds <= 0:
@@ -1483,12 +1509,26 @@ def start_service(
             close_fds=True,
         )
     pid = int(process.pid)
+    process_identity = process_identity_reader(pid)
+    if process_identity is None:
+        try:
+            terminate_spawned_process(process)
+        except (OSError, subprocess.SubprocessError) as error:
+            raise WatcherError(
+                "watcher service process identity could not be recorded and "
+                "the spawned child could not be terminated"
+            ) from error
+        raise WatcherError(
+            "watcher service started but its process identity could not be "
+            "recorded; the child was terminated and no service state was written"
+        )
     state = {
         "schema_version": core.SCHEMA_VERSION,
         "kind": SERVICE_KIND,
         "status": "running",
         "pid": pid,
         "process_group": pid,
+        "process_identity": process_identity,
         "started_at": core.utc_now(),
         "project_roots": [str(path) for path in projects],
         "state_dir": state_dir,
@@ -1501,8 +1541,37 @@ def start_service(
         "log_path": str(log_path),
         "command": command,
     }
-    core.atomic_json(service_path, state)
+    try:
+        core.atomic_json(service_path, state)
+    except Exception as write_error:
+        try:
+            terminate_spawned_process(process)
+        except (OSError, subprocess.SubprocessError) as cleanup_error:
+            raise WatcherError(
+                "watcher service state could not be written and the spawned "
+                "child could not be terminated"
+            ) from cleanup_error
+        raise write_error
     return {**state, "service_file": str(service_path)}
+
+
+def terminate_spawned_process(process: Any, *, timeout_seconds: float = 1.0) -> None:
+    """Stop a newly spawned child while its Popen handle proves ownership."""
+
+    try:
+        process.terminate()
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=timeout_seconds)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        process.kill()
+    except ProcessLookupError:
+        return
+    process.wait(timeout=timeout_seconds)
 
 
 def stop_service(
@@ -1532,6 +1601,11 @@ def stop_service(
         }
     if state.get("kind") != SERVICE_KIND:
         raise WatcherError(f"{service_path} is not a watcher service state file")
+    if not core.is_supported_schema_version(state.get("schema_version")):
+        raise WatcherError(
+            "watcher service state uses an unsupported schema version; "
+            "refusing to mutate state or signal its recorded process"
+        )
     pid = state.get("pid")
     process_group = state.get("process_group", pid)
     if not isinstance(pid, int) or not process_checker(pid):
@@ -1542,8 +1616,25 @@ def stop_service(
         )
         core.atomic_json(service_path, state)
         return {**state, "service_file": str(service_path)}
+    recorded_identity = state.get("process_identity")
+    identity = worker_lease.identity_state(recorded_identity)
+    if identity["state"] == "gone":
+        state.update(
+            status="stopped",
+            stopped_at=core.utc_now(),
+            stop_reason="identity_gone",
+        )
+        core.atomic_json(service_path, state)
+        return {**state, "service_file": str(service_path)}
+    if identity["state"] != "alive" or not identity["identity_verified"]:
+        raise WatcherError(
+            "refusing to signal watcher service without a verified process "
+            "identity; stop the legacy process explicitly, then start a new service"
+        )
     if not isinstance(process_group, int):
         raise WatcherError("watcher service state has invalid process_group")
+    if process_group != pid:
+        raise WatcherError("watcher service process_group must equal its pid")
 
     if kill_group is None:
         kill_group = getattr(os, "killpg", None)
@@ -1551,10 +1642,22 @@ def stop_service(
         raise WatcherError(
             "watcher service stop requires identity-safe process-group signalling"
         )
+    if not worker_lease.identity_matches(
+        recorded_identity, worker_lease.process_identity(pid)
+    ):
+        state.update(
+            status="stopped",
+            stopped_at=core.utc_now(),
+            stop_reason="identity_changed",
+        )
+        core.atomic_json(service_path, state)
+        return {**state, "service_file": str(service_path)}
     kill_group(process_group, signal_module.SIGTERM)
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        if not process_checker(pid):
+        if not worker_lease.identity_matches(
+            recorded_identity, worker_lease.process_identity(pid)
+        ):
             state.update(
                 status="stopped",
                 stopped_at=core.utc_now(),
@@ -1563,6 +1666,16 @@ def stop_service(
             core.atomic_json(service_path, state)
             return {**state, "service_file": str(service_path)}
         time.sleep(0.1)
+    if not worker_lease.identity_matches(
+        recorded_identity, worker_lease.process_identity(pid)
+    ):
+        state.update(
+            status="stopped",
+            stopped_at=core.utc_now(),
+            stop_reason="identity_changed",
+        )
+        core.atomic_json(service_path, state)
+        return {**state, "service_file": str(service_path)}
     kill_group(process_group, signal_module.SIGKILL)
     state.update(status="stopped", stopped_at=core.utc_now(), stop_reason="killed")
     core.atomic_json(service_path, state)

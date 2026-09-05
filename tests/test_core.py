@@ -46,6 +46,58 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(len(inbox), 1)
         self.assertEqual(inbox[0]["task_id"], "TASK-001")
 
+    def test_event_paths_reject_unsafe_identifiers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            result = root / "result.json"
+            evidence = root / "evidence.json"
+            result.write_text("{}", encoding="utf-8")
+            evidence.write_text("{}", encoding="utf-8")
+            for event_id in (
+                "",
+                ".hidden",
+                "../escape",
+                "sub/path",
+                "sub\\path",
+                "/tmp/escape",
+                "line\nbreak",
+                "x" * (core.MAX_EVENT_ID_LENGTH + 1),
+            ):
+                with self.subTest(event_id=event_id), self.assertRaises(
+                    core.OrchestratorError
+                ):
+                    core.write_terminal_event(
+                        root,
+                        task_id="TASK-001",
+                        terminal_status="completed",
+                        result_path=result,
+                        evidence_path=evidence,
+                        event_id=event_id,
+                    )
+            self.assertFalse((root / "escape.json").exists())
+
+    def test_verify_terminal_event_rejects_unsafe_event_identifier(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            result = root / "result.json"
+            evidence = root / "evidence.json"
+            result.write_text("{}", encoding="utf-8")
+            evidence.write_text("{}", encoding="utf-8")
+            output = core.write_terminal_event(
+                root,
+                task_id="TASK-001",
+                terminal_status="completed",
+                result_path=result,
+                evidence_path=evidence,
+                event_id="event-safe",
+            )
+            event_path = Path(output["event_path"])
+            event = core.load_object(event_path)
+            event["event_id"] = "../unsafe"
+            core.atomic_json(event_path, event)
+            with self.assertRaises(core.OrchestratorError):
+                core.verify_terminal_event(event_path)
+
     def test_verify_terminal_event_rejects_hash_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

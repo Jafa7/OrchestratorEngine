@@ -56,13 +56,19 @@ class ReleaseRepository:
         git(self.work, "commit", "-m", content)
         return git(self.work, "rev-parse", "HEAD")
 
-    def tag_and_push(self, *, annotated: bool = True) -> str:
-        args = ("tag", "-a", TAG, "-m", "release") if annotated else ("tag", TAG)
+    def tag_and_push(self, *, annotated: bool = True, tag: str = TAG) -> str:
+        args = ("tag", "-a", tag, "-m", "release") if annotated else ("tag", tag)
         git(self.work, *args)
-        git(self.work, "push", "origin", TAG)
-        return git(self.work, "rev-list", "-n", "1", TAG)
+        git(self.work, "push", "origin", tag)
+        return git(self.work, "rev-list", "-n", "1", tag)
 
-    def run_checker(self, expected_sha: str) -> subprocess.CompletedProcess[str]:
+    def run_checker(
+        self,
+        expected_sha: str,
+        *,
+        tag: str = TAG,
+        version: str = "1.2.3",
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [
                 sys.executable,
@@ -70,9 +76,9 @@ class ReleaseRepository:
                 "--root",
                 str(self.work),
                 "--tag",
-                TAG,
+                tag,
                 "--version",
-                "1.2.3",
+                version,
                 "--expected-sha",
                 expected_sha,
             ],
@@ -159,6 +165,20 @@ class ReleaseSourceTests(unittest.TestCase):
 
         self.assertEqual(completed.returncode, 1)
         self.assertIn("not contained in origin/main", completed.stderr)
+
+    def test_release_candidate_tag_is_accepted_and_classified(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = ReleaseRepository(temporary)
+            tag = "v1.2.3rc1"
+            commit_sha = repository.tag_and_push(tag=tag)
+            completed = repository.run_checker(
+                commit_sha,
+                tag=tag,
+                version="1.2.3rc1",
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(json.loads(completed.stdout)["prerelease"])
 
 
 if __name__ == "__main__":

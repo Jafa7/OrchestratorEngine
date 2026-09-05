@@ -18,6 +18,12 @@ orchestrator-engine --version
 Record the installed version in the adopter handoff. The engine does not make
 a provider/API call to discover a newer version.
 
+Before upgrading from a pre-`1.0.0rc1` installation, stop each live watcher
+service with the version that launched it. Older service state has no process
+identity. If the upgrade already happened, verify and terminate that process
+explicitly, then start a new service; the current CLI will not signal an
+identity-less live PID.
+
 ## 2. Run bounded diagnostics
 
 ```bash

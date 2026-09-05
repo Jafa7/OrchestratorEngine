@@ -47,6 +47,9 @@ class ReleaseConsistencyTests(unittest.TestCase):
             (root / "CHANGELOG.md").write_text(
                 "## [1.2.3] - 2026-01-01\n", encoding="utf-8"
             )
+            (root / "README.md").write_text(
+                "OrchestratorEngine.git@v1.2.3\n", encoding="utf-8"
+            )
             (root / "docs" / "setup-guide.md").write_text(
                 "OrchestratorEngine.git@v1.2.3\n", encoding="utf-8"
             )
@@ -67,6 +70,44 @@ class ReleaseConsistencyTests(unittest.TestCase):
             "src/orchestrator_engine/__init__.py has version 1.2.2; expected 1.2.3",
             completed.stderr,
         )
+
+    def test_release_candidate_version_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "src" / "orchestrator_engine").mkdir(parents=True)
+            (root / "docs").mkdir()
+            version = "1.2.3rc1"
+            (root / "pyproject.toml").write_text(
+                f'[project]\nname = "orchestrator-engine"\nversion = "{version}"\n',
+                encoding="utf-8",
+            )
+            (root / "src" / "orchestrator_engine" / "__init__.py").write_text(
+                f'__version__ = "{version}"\n', encoding="utf-8"
+            )
+            (root / "uv.lock").write_text(
+                f'[[package]]\nname = "orchestrator-engine"\nversion = "{version}"\n',
+                encoding="utf-8",
+            )
+            (root / "CHANGELOG.md").write_text(
+                f"## [{version}] - 2026-01-01\n", encoding="utf-8"
+            )
+            marker = f"OrchestratorEngine.git@v{version}\n"
+            (root / "README.md").write_text(marker, encoding="utf-8")
+            (root / "docs" / "setup-guide.md").write_text(
+                marker, encoding="utf-8"
+            )
+            (root / "docs" / "upgrade-guide.md").write_text(
+                f"The current release candidate is `{version}`\n{marker}",
+                encoding="utf-8",
+            )
+            completed = subprocess.run(
+                [sys.executable, str(CHECKER), "--root", str(root)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
 
 
 if __name__ == "__main__":

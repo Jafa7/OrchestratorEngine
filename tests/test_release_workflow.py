@@ -21,13 +21,16 @@ class ReleaseWorkflowTests(unittest.TestCase):
             "--expected-sha \"${GITHUB_SHA}\"",
             ".release/source.json",
             "SOURCE_DATE_EPOCH=",
+            "prerelease=${prerelease}",
             "tools/verify_release_ci.py",
             "tools/prepare_release_bundle.py",
             "--verify-tag --draft",
+            '--prerelease="${{ steps.source.outputs.prerelease }}"',
             "--verify-assets",
             "--clobber",
             "draft-state.json",
-            "--draft=false --latest",
+            "--prerelease --latest=false",
+            "--prerelease=false --latest",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, workflow)

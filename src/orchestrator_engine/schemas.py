@@ -1,4 +1,4 @@
-"""Packaged JSON Schema catalog for the public v0.1 durable artifacts."""
+"""Packaged JSON Schema catalog for schema-version-1 durable artifacts."""
 
 from __future__ import annotations
 

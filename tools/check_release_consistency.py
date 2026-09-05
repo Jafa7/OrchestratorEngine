@@ -10,7 +10,9 @@ import sys
 import tomllib
 from pathlib import Path
 
-SEMVER_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+RELEASE_VERSION_PATTERN = re.compile(
+    r"^[0-9]+\.[0-9]+\.[0-9]+(?:rc[1-9][0-9]*)?$"
+)
 
 
 class ReleaseConsistencyError(RuntimeError):
@@ -67,8 +69,10 @@ def check_release_consistency(root: Path) -> tuple[str, list[str]]:
     root = root.resolve()
     project = load_toml(root / "pyproject.toml")
     version = project.get("project", {}).get("version")
-    if not isinstance(version, str) or not SEMVER_PATTERN.fullmatch(version):
-        raise ReleaseConsistencyError("pyproject.toml project.version must be x.y.z")
+    if not isinstance(version, str) or not RELEASE_VERSION_PATTERN.fullmatch(version):
+        raise ReleaseConsistencyError(
+            "pyproject.toml project.version must be x.y.z or x.y.zrcN"
+        )
 
     errors: list[str] = []
     sources = {
@@ -83,13 +87,23 @@ def check_release_consistency(root: Path) -> tuple[str, list[str]]:
 
     require_text(root / "CHANGELOG.md", f"## [{version}] -", errors)
     require_text(
-        root / "docs" / "setup-guide.md",
+        root / "README.md",
         f"OrchestratorEngine.git@v{version}",
         errors,
     )
     require_text(
+        root / "docs" / "setup-guide.md",
+        f"OrchestratorEngine.git@v{version}",
+        errors,
+    )
+    release_label = (
+        "The current release candidate is"
+        if "rc" in version
+        else "The current release is"
+    )
+    require_text(
         root / "docs" / "upgrade-guide.md",
-        f"The current release is `{version}`",
+        f"{release_label} `{version}`",
         errors,
     )
     require_text(

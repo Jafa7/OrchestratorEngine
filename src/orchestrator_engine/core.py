@@ -6,6 +6,7 @@ import errno
 import hashlib
 import json
 import os
+import re
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -15,6 +16,8 @@ from typing import Any
 SCHEMA_VERSION = 1
 SUPPORTED_SCHEMA_VERSIONS = frozenset({SCHEMA_VERSION})
 DEFAULT_STATE_DIR = ".orchestrator"
+MAX_EVENT_ID_LENGTH = 128
+EVENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 TERMINAL_STATUSES = {
     "completed",
     "failed",
@@ -48,6 +51,16 @@ def utc_now() -> str:
 
 def json_text(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+
+def validate_event_id(value: object) -> str:
+    """Return one bounded filename-safe event identifier."""
+
+    if not isinstance(value, str) or not EVENT_ID_PATTERN.fullmatch(value):
+        raise OrchestratorError(
+            "event_id must match [A-Za-z0-9][A-Za-z0-9_.-]{0,127}"
+        )
+    return value
 
 
 def atomic_json(path: Path, value: object) -> None:
@@ -175,6 +188,7 @@ def event_path_for(
     *,
     state_dir: str = DEFAULT_STATE_DIR,
 ) -> Path:
+    event_id = validate_event_id(event_id)
     return (
         events_root(
             project_root,
@@ -190,6 +204,7 @@ def signal_path_for(
     *,
     state_dir: str = DEFAULT_STATE_DIR,
 ) -> Path:
+    event_id = validate_event_id(event_id)
     return (
         inbox_root(project_root, state_dir=state_dir) / "signals" / f"{event_id}.json"
     )
@@ -226,7 +241,9 @@ def write_terminal_event(
     project = project_root.expanduser().resolve()
     result = ensure_file(result_path, field="result")
     evidence = ensure_file(evidence_path, field="evidence")
-    event_id = event_id or str(uuid.uuid4())
+    event_id = validate_event_id(
+        event_id if event_id is not None else str(uuid.uuid4())
+    )
     event_path = event_path_for(
         project,
         event_id,
@@ -300,10 +317,14 @@ def write_followup_event(
     project = project_root.expanduser().resolve()
     result = ensure_file(result_path, field="result")
     evidence = ensure_file(evidence_path, field="evidence")
-    event_id = event_id or followup_event_id(
-        project,
-        source_kind=source_kind,
-        operation_id=operation_id,
+    event_id = validate_event_id(
+        event_id
+        if event_id is not None
+        else followup_event_id(
+            project,
+            source_kind=source_kind,
+            operation_id=operation_id,
+        )
     )
     event_path = event_path_for(project, event_id, state_dir=state_dir)
     signal_path = signal_path_for(project, event_id, state_dir=state_dir)
@@ -376,6 +397,7 @@ def verify_terminal_event(event_path: Path) -> dict[str, Any]:
     for key in identity_keys:
         if not isinstance(event.get(key), str) or not event[key]:
             raise OrchestratorError(f"terminal event has invalid {key}")
+    validate_event_id(event["event_id"])
     allowed_statuses = (
         TERMINAL_STATUSES
         if kind == "WORKER_TERMINAL"

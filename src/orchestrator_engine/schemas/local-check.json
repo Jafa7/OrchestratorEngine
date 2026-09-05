@@ -31,7 +31,7 @@
     "result_path": {"type": "string", "pattern": "^/"},
     "summary_path": {"type": "string", "pattern": "^/"},
     "evidence_path": {"type": "string", "pattern": "^/"},
-    "event_id": {"type": "string", "minLength": 1},
+    "event_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"},
     "event_path": {"type": "string", "pattern": "^/"},
     "signal_path": {"type": ["string", "null"]},
     "recovered_at": {"type": "string", "format": "date-time"},

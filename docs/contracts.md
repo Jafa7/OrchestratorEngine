@@ -23,18 +23,20 @@ source distributions and require no runtime dependency.
 `orchestrator-engine schemas` lists names; pass one name to print its schema.
 Catalog and schema output include `schema_version` and `kind`.
 
-Schemas require v0.1 writer fields and enforce version 1, kind constants,
+Schemas require stable writer fields and enforce schema version 1, kind constants,
 status enums, and the host-dependent nested `wake_target` shape. Unknown
 properties remain allowed so compatible optional additions can be introduced.
 Breaking changes to required fields, kinds, path layout, or status names
 require a schema/version bump. `format: date-time` is an annotation unless a
 validator enables format checking.
 
-## v0.1 stability scope
+## Version 1 stability scope
 
-Version 0.1 stabilizes the local file contract, the CLI commands that write
-and read it, and the host-neutral follow-up message. Adopting projects may
-depend on these behaviors:
+Version 1 stabilizes the local file contract, the documented CLI and TOML
+surface that writes and reads it, and the host-neutral follow-up message.
+The canonical compatibility and deprecation rules are in
+[Compatibility Policy](compatibility-policy.md). Adopting projects may depend
+on these behaviors:
 
 - `adopt` creates only missing local orchestration layout files and never
   overwrites existing worker configuration or durable audit artifacts.
@@ -42,6 +44,9 @@ depend on these behaviors:
   `ok`, `warn`, `error` or `skipped` status.
 - Terminal events are written under `.orchestrator/events/` and paired with
   inbox signals under `.orchestrator/inbox/signals/`.
+- Event identifiers are 1 to 128 ASCII characters, start with an alphanumeric
+  character and otherwise contain only alphanumerics, `_`, `.` or `-`. Writers
+  and path helpers reject any other value before touching the filesystem.
 - Deterministic non-worker operations use `ORCHESTRATOR_TERMINAL` and
   `ORCHESTRATOR_FOLLOWUP_SIGNAL`; worker operations retain
   `WORKER_TERMINAL` and `LOCAL_AI_WORKER_FINISHED` unchanged. Both signal
@@ -72,7 +77,7 @@ depend on these behaviors:
   `.orchestrator/artifact-resolutions/`; they never rewrite the historical
   artifact and stop applying if its bytes change.
 
-The following are intentionally not v0.1 core contracts:
+The following are intentionally not version 1 core contracts:
 
 - Product-specific task formats, policy contents, review rules, model choices
   or effort tiers. Core only validates and composes explicitly selected policy
@@ -101,7 +106,7 @@ Codex declares `requirement: "codex queue"` plus a
 `status: "queued"` and records the CLI acknowledgement as `queue_message_id`;
 it confirms acceptance into the live session queue, not completion of the
 subsequent agent turn. Receipt fields use the actual selected delivery mode.
-`ui_injection` is a stable v0.1 protocol identifier for invoking the documented
+`ui_injection` is a stable version 1 protocol identifier for invoking the documented
 VS Code CLI, not a claim that host security is bypassed. The legacy `woken`
 status means completed headless history delivery when the Codex receipt has
 `delivery_mode: "headless_app_server_turn"`.
@@ -1592,7 +1597,7 @@ The watcher writes:
 - `watcher-claude-stream-state.json` — Claude stream seen-event state and
   scan heartbeat.
 - `thread-wakeups/<event_id>.json` — legacy-named host delivery receipt path,
-  retained as a v0.1 file contract.
+  retained as a schema-version-1 file contract.
 
 An event is marked seen only after a successful action, deterministic skip or
 manual acknowledgement. Active target threads remain retryable with

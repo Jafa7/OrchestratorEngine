@@ -41,9 +41,12 @@ jobs:
             'import json; print(json.load(open(".release/source.json"))["commit_sha"])')"
           source_date_epoch="$(python -c \
             'import json; print(json.load(open(".release/source.json"))["source_date_epoch"])')"
+          prerelease="$(python -c \
+            'import json; print(str(json.load(open(".release/source.json"))["prerelease"]).lower())')"
           cat .release/source.json
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
           echo "commit_sha=${commit_sha}" >> "${GITHUB_OUTPUT}"
+          echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
           echo "SOURCE_DATE_EPOCH=${source_date_epoch}" >> "${GITHUB_ENV}"
       - name: Verify successful CI for the exact commit
         env:
@@ -86,8 +89,11 @@ jobs:
         run: |
           set -euo pipefail
           if gh release view "${GITHUB_REF_NAME}" \
-              --repo "${GITHUB_REPOSITORY}" --json isDraft,assets \
+              --repo "${GITHUB_REPOSITORY}" --json isDraft,isPrerelease,assets \
               > .release/existing.json 2>/dev/null; then
+            python -c \
+              'import json, sys; data=json.load(open(sys.argv[1])); expected=sys.argv[2] == "true"; assert data["isPrerelease"] is expected' \
+              .release/existing.json "${{ steps.source.outputs.prerelease }}"
             is_draft="$(python -c \
               'import json; print(json.load(open(".release/existing.json"))["isDraft"])')"
             if [[ "${is_draft}" = "False" ]]; then
@@ -99,12 +105,14 @@ jobs:
               gh release edit "${GITHUB_REF_NAME}" \
                 --repo "${GITHUB_REPOSITORY}" \
                 --title "OrchestratorEngine ${GITHUB_REF_NAME}" \
-                --notes-file .release/release-notes.md
+                --notes-file .release/release-notes.md \
+                --prerelease="${{ steps.source.outputs.prerelease }}"
               echo "already_published=false" >> "${GITHUB_OUTPUT}"
             fi
           else
             gh release create "${GITHUB_REF_NAME}" \
               --repo "${GITHUB_REPOSITORY}" --verify-tag --draft \
+              --prerelease="${{ steps.source.outputs.prerelease }}" \
               --title "OrchestratorEngine ${GITHUB_REF_NAME}" \
               --notes-file .release/release-notes.md
             echo "already_published=false" >> "${GITHUB_OUTPUT}"
@@ -134,6 +142,15 @@ jobs:
         if: steps.release.outputs.already_published != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: >-
-          gh release edit "${GITHUB_REF_NAME}"
-          --repo "${GITHUB_REPOSITORY}" --draft=false --latest
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ steps.source.outputs.prerelease }}" = "true" ]]; then
+            gh release edit "${GITHUB_REF_NAME}" \
+              --repo "${GITHUB_REPOSITORY}" --draft=false \
+              --prerelease --latest=false
+          else
+            gh release edit "${GITHUB_REF_NAME}" \
+              --repo "${GITHUB_REPOSITORY}" --draft=false \
+              --prerelease=false --latest
+          fi
