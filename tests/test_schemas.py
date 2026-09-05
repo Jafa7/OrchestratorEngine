@@ -201,6 +201,33 @@ class SchemaContractTests(unittest.TestCase):
             [],
         )
 
+        repeated_recovery = copy.deepcopy(full)
+        repeated_recovery["recovery_summary"]["scenarios"][3] = {
+            "name": "event_without_signal",
+            "status": "recovered",
+            "event_id": "different-event-id",
+        }
+        self.assertTrue(
+            list(
+                self.validators["conformance-report"].iter_errors(
+                    repeated_recovery
+                )
+            )
+        )
+
+        wrong_host_partition = copy.deepcopy(full)
+        wrong_host_partition["concurrency_summary"]["delivered_host_counts"] = {
+            "codex": 4,
+            "vscode": 2,
+        }
+        self.assertTrue(
+            list(
+                self.validators["conformance-report"].iter_errors(
+                    wrong_host_partition
+                )
+            )
+        )
+
     def test_runtime_conformance_reports_match_packaged_schema(self) -> None:
         passed = conformance.run_conformance(mode="portable")
         with tempfile.TemporaryDirectory() as existing:

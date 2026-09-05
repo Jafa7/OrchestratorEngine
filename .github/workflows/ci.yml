@@ -30,6 +30,8 @@ jobs:
           python -m orchestrator_engine.cli runtime-capabilities
           python -m orchestrator_engine.cli schemas binding
           python -m orchestrator_engine.cli host-capabilities
+      - name: Run installed portable conformance
+        run: python -m orchestrator_engine.cli conformance run --mode portable
       - name: Verify portable core and platform report
         run: python tools/check_portable_core.py --expect-detached unsupported
 
@@ -79,3 +81,4 @@ jobs:
           python -m venv .wheel-smoke
           env -u PYTHONPATH .wheel-smoke/bin/python -m pip install --no-deps dist/*.whl
           env -u PYTHONPATH .wheel-smoke/bin/orchestrator-engine --version | grep -Fx "orchestrator-engine ${expected_version}"
+          env -u PYTHONPATH .wheel-smoke/bin/orchestrator-engine conformance run --mode full --timeout-seconds 15

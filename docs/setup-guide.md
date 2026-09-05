@@ -102,6 +102,10 @@ path for diagnosis. This command becomes a required check when the immutable
 release installed above contains it; do not require it from an older pinned
 release.
 
+The repository CI runs portable conformance from the installed package on
+native Windows and macOS. Its Linux wheel smoke runs full conformance without
+`PYTHONPATH`, covering the packaged CLI, schema and detached supervisor path.
+
 If `orchestrator-engine` is not on PATH, use `python3 -m orchestrator_engine.cli`
 everywhere below — but prefer a real install: the worker supervisor re-executes
 the module with the same interpreter and must be able to import it without a

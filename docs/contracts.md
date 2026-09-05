@@ -248,9 +248,11 @@ Required report shape:
 ```
 
 The packaged `conformance-report` JSON Schema is the machine-readable
-authority for this report. A failed execution exits nonzero, adds bounded
-`failure.type` and `failure.message`, and reports the fixture disposition plus
-its retained path when one was created.
+authority for this report. A passed report requires each named recovery
+scenario exactly once, the complete six-task concurrency result in full mode,
+and the exact three/three host partition. A failed execution exits nonzero,
+adds bounded `failure.type` and `failure.message`, and reports the fixture
+disposition plus its retained path when one was created.
 
 ## Operator diagnostics
 

@@ -160,7 +160,61 @@
           "recovery_summary": {
             "properties": {
               "recovered_count": {"const": 5},
-              "scenarios": {"minItems": 5}
+              "scenarios": {
+                "minItems": 5,
+                "allOf": [
+                  {
+                    "contains": {
+                      "properties": {
+                        "name": {"const": "event_without_signal"}
+                      },
+                      "required": ["name"]
+                    },
+                    "minContains": 1,
+                    "maxContains": 1
+                  },
+                  {
+                    "contains": {
+                      "properties": {
+                        "name": {"const": "notification_without_seen_state"}
+                      },
+                      "required": ["name"]
+                    },
+                    "minContains": 1,
+                    "maxContains": 1
+                  },
+                  {
+                    "contains": {
+                      "properties": {
+                        "name": {"const": "result_without_evidence_or_event"}
+                      },
+                      "required": ["name"]
+                    },
+                    "minContains": 1,
+                    "maxContains": 1
+                  },
+                  {
+                    "contains": {
+                      "properties": {
+                        "name": {"const": "evidence_without_event"}
+                      },
+                      "required": ["name"]
+                    },
+                    "minContains": 1,
+                    "maxContains": 1
+                  },
+                  {
+                    "contains": {
+                      "properties": {
+                        "name": {"const": "empty_result_claim"}
+                      },
+                      "required": ["name"]
+                    },
+                    "minContains": 1,
+                    "maxContains": 1
+                  }
+                ]
+              }
             }
           }
         }
@@ -219,7 +273,19 @@
             "not": {"required": ["reason"]},
             "properties": {
               "task_count": {"const": 6},
-              "wait_all_terminal_count": {"const": 6}
+              "wait_all_terminal_count": {"const": 6},
+              "expected_host_counts": {
+                "properties": {
+                  "codex": {"const": 3},
+                  "vscode": {"const": 3}
+                }
+              },
+              "delivered_host_counts": {
+                "properties": {
+                  "codex": {"const": 3},
+                  "vscode": {"const": 3}
+                }
+              }
             }
           }
         }

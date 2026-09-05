@@ -21,6 +21,9 @@ All notable changes to OrchestratorEngine are documented here.
 - Full conformance also verifies one-shot recovery of an expired unclaimed task
   descriptor through the worker reaper, including durable failure evidence and
   idempotent host-scoped signal consumption.
+- CI runs portable conformance from installed Windows and macOS packages and
+  full conformance from the Linux wheel without `PYTHONPATH`; the report schema
+  requires every recovery scenario and the exact host-routing partition.
 
 ## [0.9.0] - 2026-09-05
 
