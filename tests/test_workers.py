@@ -497,6 +497,14 @@ expect_long_running = "yes"
 
 
 class WorkerRunTests(unittest.TestCase):
+    def test_worker_wake_policy_matches_terminal_outcome(self) -> None:
+        self.assertTrue(workers.should_emit_worker_signal("always", "completed"))
+        self.assertFalse(
+            workers.should_emit_worker_signal("on-failure", "completed")
+        )
+        self.assertTrue(workers.should_emit_worker_signal("on-failure", "failed"))
+        self.assertFalse(workers.should_emit_worker_signal("never", "failed"))
+
     def test_run_fails_before_artifacts_without_detached_lifecycle(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -651,6 +659,28 @@ class WorkerRunTests(unittest.TestCase):
             stored["wake_target"]["codex_command"],
             "/mnt/c/apps/codex.exe",
         )
+
+    def test_run_worker_never_wake_policy_skips_wake_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            binding.write_binding(
+                root,
+                host="codex",
+                target_thread_id="thread-origin",
+            )
+            descriptor = workers.run_worker(
+                root,
+                worker="echo",
+                task_id="T-NO-WAKE",
+                prompt_file=write_prompt(root),
+                wake_policy="never",
+                popen_factory=FakePopen,
+            )
+            stored = core.load_object(Path(descriptor["descriptor_path"]))
+
+        self.assertEqual(stored["wake_policy"], "never")
+        self.assertNotIn("wake_target", stored)
 
     def test_run_worker_returns_profile_warnings(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -953,6 +983,38 @@ class WorkerSuperviseTests(unittest.TestCase):
         self.assertEqual(event["wake_target"]["target_thread_id"], "thread-origin")
         self.assertEqual(signal["wake_target"]["target_thread_id"], "thread-origin")
         self.assertEqual(evidence["wake_target"]["target_thread_id"], "thread-origin")
+
+    def test_supervise_never_wake_policy_keeps_event_without_signal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            prompt = write_prompt(root)
+            task_dir = workers.task_dir_for(root, "T-NO-WAKE")
+            task_dir.mkdir(parents=True)
+            core.atomic_json(
+                task_dir / "task.json",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-NO-WAKE",
+                    "wake_policy": "never",
+                },
+            )
+
+            summary = workers.supervise_worker(
+                root,
+                worker="echo",
+                task_id="T-NO-WAKE",
+                prompt_file=prompt,
+            )
+            event = core.load_object(Path(summary["event_path"]))
+            evidence = core.load_object(task_dir / "evidence.json")
+
+        self.assertEqual(event["task_id"], "T-NO-WAKE")
+        self.assertEqual(evidence["wake_policy"], "never")
+        self.assertFalse(summary["signal_emitted"])
+        self.assertIsNone(summary["signal_path"])
+        self.assertEqual(core.inbox(root), [])
 
     def test_supervise_can_run_reference_verification_runner(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

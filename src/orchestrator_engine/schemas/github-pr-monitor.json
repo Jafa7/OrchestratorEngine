@@ -19,7 +19,7 @@
     "review_policy": {"enum": ["ignore", "approved"]},
     "interval_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 300},
     "timeout_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 604800},
-    "wake_policy": {"enum": ["always", "on-failure", "action-required"]},
+    "wake_policy": {"enum": ["always", "on-failure", "action-required", "never"]},
     "gh_command": {"type": "string", "minLength": 1, "maxLength": 4096},
     "monitor_dir": {"type": "string", "pattern": "^/"},
     "supervisor_log": {"type": "string", "pattern": "^/"},

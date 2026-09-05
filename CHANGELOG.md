@@ -4,6 +4,20 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-06
+
+### Added
+
+- Added `worker run --wake-policy always|on-failure|never` and bounded
+  operation-wait diagnostics for targets that also have host wakeups enabled.
+
+### Changed
+
+- Documented mutually exclusive completion routes: either end the turn and
+  use watcher delivery, or disable wakeup and use one blocking local wait.
+- Reframed the README around the intended user, coordination boundary and
+  token-efficient completion choices before implementation detail.
+
 ## [1.1.0] - 2026-09-06
 
 ### Fixed

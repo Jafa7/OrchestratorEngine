@@ -46,6 +46,32 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(len(inbox), 1)
         self.assertEqual(inbox[0]["task_id"], "TASK-001")
 
+    def test_emit_can_keep_terminal_event_without_wakeup_signal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            result = root / "result.json"
+            evidence = root / "evidence.json"
+            result.write_text('{"status":"ok"}', encoding="utf-8")
+            evidence.write_text('{"review_ready":true}', encoding="utf-8")
+
+            output = core.write_terminal_event(
+                root,
+                task_id="TASK-NO-WAKE",
+                terminal_status="completed",
+                result_path=result,
+                evidence_path=evidence,
+                event_id="event-no-wake",
+                emit_signal=False,
+            )
+
+            event = core.verify_terminal_event(Path(output["event_path"]))
+            inbox = core.inbox(root)
+
+        self.assertEqual(event["task_id"], "TASK-NO-WAKE")
+        self.assertFalse(output["signal_emitted"])
+        self.assertIsNone(output["signal_path"])
+        self.assertEqual(inbox, [])
+
     def test_event_paths_reject_unsafe_identifiers(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

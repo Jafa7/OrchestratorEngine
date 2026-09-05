@@ -740,6 +740,7 @@ class InstallSmokeTests(unittest.TestCase):
         self.assertEqual(worker_diagnostics["kind"], "WORKER_DIAGNOSTICS")
         self.assertEqual(worker_diagnostics["diagnostic_count"], 0)
         self.assertIn("--availability-mode", worker_run_help)
+        self.assertIn("--wake-policy", worker_run_help)
         self.assertIn("--mode", worker_wait_help)
         self.assertIn("--target", operation_wait_help)
         self.assertIn("--target", operation_status_help)

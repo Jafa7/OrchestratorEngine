@@ -11,7 +11,7 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release is `1.1.0` and the durable JSON contract schema version is
+The current release is `1.2.0` and the durable JSON contract schema version is
 `1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
@@ -19,8 +19,24 @@ PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.1.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.2.0"
 ```
+
+## Completion routing in v1.2.0
+
+Version 1.2.0 adds `worker run --wake-policy always|on-failure|never` and
+extends GitHub Actions and pull-request monitors with the explicit `never`
+policy. Existing worker profiles and task descriptors keep `always` behavior.
+
+Choose one completion route before dispatch. For detached work, keep a wake
+policy enabled and end the host turn. For a bounded wait inside the current
+turn, select `never` and call `worker wait` or `operation wait` once. The
+aggregate operation status reports `wakeup_enabled_targets` and
+`duplicate_followup_risk` so mixed routing is visible before more results are
+handled. A signal already submitted to a host queue cannot be recalled.
+
+No durable state migration is required. Restart callback watcher services or
+re-arm a Claude stream so the live process uses the upgraded package.
 
 ## Runtime reliability in v1.1.0
 

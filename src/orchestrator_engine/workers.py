@@ -38,6 +38,7 @@ WORKERS_CONFIG_NAME = "workers.toml"
 PROMPT_MODES = {"arg", "stdin"}
 AVAILABILITY_MODES = {"off", "block-unavailable", "require-available"}
 INTENT_ENFORCEMENT_MODES = {"off", "permissions", "strict"}
+WAKE_POLICIES = {"always", "on-failure", "never"}
 TASK_KIND = "WORKER_TASK"
 EXECUTION_SNAPSHOT_KIND = "WORKER_EXECUTION_SNAPSHOT"
 RESERVED_KEYS = {
@@ -1332,6 +1333,7 @@ def run_worker(
     popen_factory=subprocess.Popen,
     preflight_availability: bool = False,
     availability_mode: str | None = None,
+    wake_policy: str = "always",
     intent_file: Path | None = None,
     allow_duplicate: bool = False,
     duplicate_reason: str | None = None,
@@ -1345,6 +1347,10 @@ def run_worker(
     supervisor's own writes and could resurrect a finished task as `running`.
     """
     platform_runtime.require_detached_lifecycle("worker run")
+    if wake_policy not in WAKE_POLICIES:
+        raise WorkerError(
+            "wake policy must be one of: " + ", ".join(sorted(WAKE_POLICIES))
+        )
     project = project_root.expanduser().resolve()
     config = require_worker(project, worker, state_dir=state_dir)
     if preflight_availability and availability_mode is not None:
@@ -1439,7 +1445,11 @@ def run_worker(
     # Snapshot the dispatching chat BEFORE spawning: the supervisor reads
     # wake_target from task.json, so it must be durable before the child can
     # possibly look for it.
-    wake_target = capture_wake_target(project, state_dir=state_dir)
+    wake_target = (
+        capture_wake_target(project, state_dir=state_dir)
+        if wake_policy != "never"
+        else None
+    )
     descriptor = {
         "schema_version": core.SCHEMA_VERSION,
         "kind": TASK_KIND,
@@ -1451,6 +1461,7 @@ def run_worker(
         "task_dir": str(task_dir),
         "supervisor_log": str(supervisor_log),
         "created_at": core.utc_now(),
+        "wake_policy": wake_policy,
         "runtime_policy": {
             key: config.get(key)
             for key in (
@@ -1714,6 +1725,7 @@ def queued_cancellation_artifacts(
         "started_at": descriptor["created_at"],
         "finished_at": now,
         "cancellation": result["cancellation"],
+        "wake_policy": descriptor.get("wake_policy", "always"),
     }
     for key in ("effective_prompt_file", "effective_prompt_sha256", "worker_policy"):
         if key in descriptor:
@@ -1778,6 +1790,9 @@ def cancel_worker_task(
                         if isinstance(descriptor.get("wake_target"), dict)
                         else None
                     ),
+                    emit_signal=should_emit_worker_signal(
+                        descriptor.get("wake_policy"), "cancelled"
+                    ),
                 )
                 descriptor.update(
                     {
@@ -1785,6 +1800,7 @@ def cancel_worker_task(
                         "finished_at": result["finished_at"],
                         "event_path": finalized["event_path"],
                         "signal_path": finalized["signal_path"],
+                        "signal_emitted": finalized["signal_emitted"],
                     }
                 )
                 core.atomic_json(descriptor_path, descriptor)
@@ -1892,6 +1908,7 @@ def retry_worker_task(
         prompt_file=Path(task_prompt),
         state_dir=state_dir,
         intent_file=Path(intent_path) if isinstance(intent_path, str) else None,
+        wake_policy=str(parent.get("wake_policy", "always")),
         lineage=lineage,
     )
 
@@ -1948,6 +1965,7 @@ def worker_wait_snapshot(
         "status": status,
         "terminal": terminal,
         "task_path": str(descriptor_path),
+        "wake_policy": descriptor.get("wake_policy", "always"),
     }
     progress = descriptor.get("progress")
     if isinstance(progress, dict):
@@ -2275,6 +2293,17 @@ def validate_worker_wait_group(task_ids: list[str], *, mode: str) -> None:
         raise WorkerError(f"wait mode must be one of: {', '.join(sorted(WAIT_MODES))}")
 
 
+def should_emit_worker_signal(wake_policy: object, terminal_status: str) -> bool:
+    policy = "always" if wake_policy is None else str(wake_policy)
+    if policy not in WAKE_POLICIES:
+        raise WorkerError(
+            "wake policy must be one of: " + ", ".join(sorted(WAKE_POLICIES))
+        )
+    return policy == "always" or (
+        policy == "on-failure" and terminal_status != "completed"
+    )
+
+
 def finalize_terminal_task(
     project_root: Path,
     *,
@@ -2284,6 +2313,7 @@ def finalize_terminal_task(
     evidence: dict[str, Any],
     state_dir: str = core.DEFAULT_STATE_DIR,
     wake_target: dict[str, Any] | None = None,
+    emit_signal: bool = True,
     takeover: bool = False,
 ) -> dict[str, Any]:
     """Write the terminal artifacts for a task as its single elected writer.
@@ -2340,6 +2370,7 @@ def finalize_terminal_task(
         state_dir=state_dir,
         event_id=core.terminal_event_id(project_root, task_id=task_id),
         wake_target=wake_target,
+        emit_signal=emit_signal,
     )
     return {
         "outcome": outcome,
@@ -2349,6 +2380,7 @@ def finalize_terminal_task(
         "evidence_path": str(evidence_path),
         "event_path": emitted["event_path"],
         "signal_path": emitted["signal_path"],
+        "signal_emitted": emitted["signal_emitted"],
     }
 
 
@@ -2721,6 +2753,7 @@ def supervise_worker(
         },
         "started_at": started_at,
         "finished_at": result["finished_at"],
+        "wake_policy": descriptor_snapshot.get("wake_policy", "always"),
     }
     availability_preflight = descriptor_snapshot.get("availability_preflight")
     if isinstance(availability_preflight, dict):
@@ -2775,6 +2808,9 @@ def supervise_worker(
         evidence=evidence,
         state_dir=state_dir,
         wake_target=wake_target,
+        emit_signal=should_emit_worker_signal(
+            descriptor_snapshot.get("wake_policy"), terminal_status
+        ),
     )
     final_result = finalized.get("result")
     if isinstance(final_result, dict):
@@ -2802,6 +2838,7 @@ def supervise_worker(
         "finished_at": result["finished_at"],
         "event_path": finalized["event_path"],
         "signal_path": finalized["signal_path"],
+        "signal_emitted": finalized["signal_emitted"],
         "progress": {
             "heartbeat_count": heartbeat_count,
             "stdout_bytes": stdout_path.stat().st_size,
@@ -2947,6 +2984,10 @@ def reap_worker_tasks(
                     wake_target=(
                         wake_target if isinstance(wake_target, dict) else None
                     ),
+                    emit_signal=should_emit_worker_signal(
+                        descriptor.get("wake_policy"),
+                        str(result["terminal_status"]),
+                    ),
                     takeover=True,
                 )
             except (OSError, core.OrchestratorError, WorkerError) as error:
@@ -2974,6 +3015,7 @@ def reap_worker_tasks(
                     "finished_at": final_result["finished_at"],
                     "event_path": finalized["event_path"],
                     "signal_path": finalized["signal_path"],
+                    "signal_emitted": finalized["signal_emitted"],
                     "reconciled_at": core.utc_now(),
                 }
             )
@@ -3056,6 +3098,7 @@ def reap_worker_tasks(
             "worker_config": {"recovered_by": "worker reap"},
             "started_at": descriptor.get("created_at", finished_at),
             "finished_at": finished_at,
+            "wake_policy": descriptor.get("wake_policy", "always"),
             "recovery": {
                 "reason": "supervisor_lost",
                 "lease_path": str(worker_lease.lease_path(task_dir)),
@@ -3078,6 +3121,9 @@ def reap_worker_tasks(
             evidence=evidence,
             state_dir=state_dir,
             wake_target=wake_target if isinstance(wake_target, dict) else None,
+            emit_signal=should_emit_worker_signal(
+                descriptor.get("wake_policy"), str(result["terminal_status"])
+            ),
             takeover=True,
         )
         final_result = finalized.get("result")
@@ -3096,6 +3142,7 @@ def reap_worker_tasks(
                 "finished_at": final_result["finished_at"],
                 "event_path": finalized["event_path"],
                 "signal_path": finalized["signal_path"],
+                "signal_emitted": finalized["signal_emitted"],
                 "reaped_at": core.utc_now(),
             }
         )

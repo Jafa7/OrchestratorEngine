@@ -84,6 +84,7 @@
       },
       "additionalProperties": false
     },
+    "wake_policy": {"enum": ["always", "on-failure", "never"]},
     "dispatch_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "dispatch_claim_path": {"type": "string", "minLength": 1},
     "retry_lineage": {"type": "object"},
@@ -98,7 +99,8 @@
     "created_at": {"type": "string", "format": "date-time"},
     "finished_at": {"type": "string", "format": "date-time"},
     "event_path": {"type": "string"},
-    "signal_path": {"type": "string"},
+    "signal_path": {"type": ["string", "null"]},
+    "signal_emitted": {"type": "boolean"},
     "supervisor_pid": {"type": "integer"},
     "lease_path": {"type": "string", "minLength": 1},
     "worker_pid": {"type": "integer"},

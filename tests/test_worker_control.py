@@ -432,6 +432,7 @@ authorizations = { commit = false, push = false, network = false }
                 worker="slow",
                 task_id="T-RETRY",
                 prompt_file=prompt(root, "retry"),
+                wake_policy="never",
                 popen_factory=FakePopen,
             )
             descriptor_path = Path(original["descriptor_path"])
@@ -456,6 +457,7 @@ authorizations = { commit = false, push = false, network = false }
         self.assertEqual(retried["retry_lineage"]["attempt"], 2)
         self.assertEqual(retried["retry_lineage"]["max_attempts"], 2)
         self.assertEqual(retried["status"], "queued")
+        self.assertEqual(retried["wake_policy"], "never")
         self.assertEqual(tick["admitted_task_ids"], ["T-RETRY-a2"])
         self.assertEqual(admitted["status"], "starting")
 

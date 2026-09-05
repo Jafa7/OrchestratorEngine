@@ -45,7 +45,7 @@
       "additionalProperties": true
     },
     "discovery_query_count": {"type": "integer", "minimum": 0},
-    "wake_policy": {"enum": ["always", "on-failure", "action-required"]},
+    "wake_policy": {"enum": ["always", "on-failure", "action-required", "never"]},
     "timeout_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0},
     "gh_command": {"type": "string", "minLength": 1, "maxLength": 4096},
     "supervisor_pid": {"type": "integer", "minimum": 1},

@@ -68,6 +68,14 @@ expectations. For long checks, prefer the detached verification flow in
 open detailed logs only after a failure. If a dependency is unavailable,
 report the blocker and run the checks that are available.
 
+Choose exactly one completion route for each operation. For long work, enable
+its wake policy and end the turn so the watcher can resume the chat. For a
+bounded in-turn wait, dispatch with `--wake-policy never` and use one
+`worker wait` or `operation wait`. Do not combine a wake-enabled operation with
+a blocking wait unless the user explicitly wants a second queued notification.
+In a multi-stage pipeline, intermediate stages use no wakeup; only the terminal
+stage that actually hands control back to the chat may emit one.
+
 If a final full gate fails, inspect the failed check, fix with focused tests,
 and run the full gate again only when a new final candidate is ready. Do not
 run the complete suite after every intermediate edit.

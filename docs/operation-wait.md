@@ -52,5 +52,25 @@ wait` behavior.
 
 This command is complementary to watcher delivery. For short waits inside an
 active turn, one blocking wait avoids model polling and preserves the current
-agent context. For long work, end the turn and let the host-specific watcher
-wake the dispatching chat after terminal evidence is written.
+agent context. Dispatch those operations with `--wake-policy never`. For long
+work, enable `always`, `on-failure` or the operation's equivalent policy, end
+the turn, and let the host-specific watcher wake the dispatching chat after
+terminal evidence is written. Do not use both routes for the same operation:
+the watcher may queue its message while the blocking wait is already handling
+the result.
+
+The bounded status object includes `wakeup_enabled_targets` and
+`duplicate_followup_risk`. These are diagnostics, not delivery controls: a
+signal already submitted to a host queue cannot be recalled. For a multi-stage
+pipeline, use `never` for intermediate checks and monitors; only the terminal
+handoff boundary should create a wakeup.
+
+Worker tasks support the same choice:
+
+```bash
+orchestrator-engine --project-root /path/to/project worker run \
+  --worker cheap --task-id IMPLEMENT-1 --prompt-file /path/to/prompt.md \
+  --wake-policy never
+orchestrator-engine --project-root /path/to/project operation wait \
+  --target worker:IMPLEMENT-1 --json
+```

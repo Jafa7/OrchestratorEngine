@@ -585,6 +585,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override the configured point-in-time availability preflight mode.",
     )
     worker_run.add_argument("--intent-file", type=Path)
+    worker_run.add_argument(
+        "--wake-policy",
+        choices=("always", "on-failure", "never"),
+        default="always",
+        help=(
+            "Create a host follow-up signal always, only on failure, or never. "
+            "Use never when this turn will use worker/operation wait."
+        ),
+    )
     worker_run.add_argument("--allow-duplicate", action="store_true")
     worker_run.add_argument("--duplicate-reason")
     worker_retry = worker_subparsers.add_parser(
@@ -1499,6 +1508,7 @@ def run_worker_cli_command(args: argparse.Namespace, root: Path) -> object:
             state_dir=args.state_dir,
             preflight_availability=args.preflight_availability,
             availability_mode=args.availability_mode,
+            wake_policy=args.wake_policy,
             intent_file=args.intent_file,
             allow_duplicate=args.allow_duplicate,
             duplicate_reason=args.duplicate_reason,

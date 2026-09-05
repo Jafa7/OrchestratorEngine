@@ -231,8 +231,9 @@ def write_terminal_event(
     state_dir: str = DEFAULT_STATE_DIR,
     event_id: str | None = None,
     wake_target: dict[str, Any] | None = None,
+    emit_signal: bool = True,
 ) -> dict[str, Any]:
-    """Write a terminal event and matching orchestrator inbox signal."""
+    """Write a terminal event and an optional orchestrator inbox signal."""
 
     if not task_id:
         raise OrchestratorError("task_id is required")
@@ -284,11 +285,13 @@ def write_terminal_event(
         event["wake_target"] = wake_target
         signal["wake_target"] = wake_target
     atomic_json(event_path, event)
-    atomic_json(signal_path, signal)
+    if emit_signal:
+        atomic_json(signal_path, signal)
     return {
         "event": event,
         "event_path": str(event_path),
-        "signal_path": str(signal_path),
+        "signal_path": str(signal_path) if emit_signal else None,
+        "signal_emitted": emit_signal,
     }
 
 

@@ -66,6 +66,10 @@ on these behaviors:
   `wake_target` first and the current project binding only as a legacy
   fallback; `watcher stream` emits one JSON line per new signal for
   stream-based hosts.
+- `worker run --wake-policy always|on-failure|never` selects whether terminal
+  evidence also creates an inbox signal. The default remains `always`; legacy
+  task descriptors without the field retain that behavior. Retries inherit the
+  original task's policy.
 - A worker profile may select a provider-neutral behavior policy. `worker run`
   composes and hashes that policy with the task prompt before spawning the
   supervisor, so later policy edits cannot change an already-dispatched task.

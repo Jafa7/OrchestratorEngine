@@ -1350,6 +1350,7 @@ def check_status(
             "status": effective_status,
             "stored_status": descriptor.get("status"),
             "execution": descriptor.get("execution"),
+            "wake_policy": descriptor.get("wake_policy"),
             "duration_seconds": descriptor.get("duration_seconds"),
             "result_path": descriptor.get("result_path"),
             "summary_path": descriptor.get("summary_path"),

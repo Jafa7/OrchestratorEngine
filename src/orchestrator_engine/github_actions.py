@@ -35,7 +35,7 @@ TERMINAL_MONITOR_STATUSES = {
     "unavailable",
     "ambiguous",
 }
-WAKE_POLICIES = {"always", "on-failure", "action-required"}
+WAKE_POLICIES = {"always", "on-failure", "action-required", "never"}
 TERMINAL_GITHUB_STATUS = "completed"
 VIEW_FIELDS = (
     "attempt,conclusion,createdAt,databaseId,event,headBranch,headSha,"
@@ -1629,6 +1629,8 @@ def event_status(observation: dict[str, Any]) -> str:
 def should_wake(wake_policy: str, observation: dict[str, Any]) -> bool:
     if wake_policy == "always":
         return True
+    if wake_policy == "never":
+        return False
     status = verification_status(observation)
     if wake_policy == "on-failure":
         return status != "passed"
@@ -2272,6 +2274,7 @@ def monitor_status(
                 "event_path",
                 "signal_path",
                 "signal_emitted",
+                "wake_policy",
             )
         }
         summary["phase"] = (

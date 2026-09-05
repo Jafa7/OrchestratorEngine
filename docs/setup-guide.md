@@ -58,7 +58,7 @@ For a reproducible adopter install, use an immutable release tag:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.1.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.2.0"
 ```
 
 GitHub Release archives and wheel/sdist assets are published with the tag;
@@ -808,6 +808,12 @@ To delegate a task to a CLI worker:
    bounded local state only; wait preserves the `0`, `2`, `3` and `124` outcome
    classes.
    See [heterogeneous operation wait](operation-wait.md).
+
+   Select one completion route before dispatch. If the current turn will call
+   `worker wait` or `operation wait`, pass `--wake-policy never` when starting
+   every target. If the turn will end, enable wakeup and do not also block on
+   the same operation. For release and other multi-stage pipelines, suppress
+   intermediate wakeups and emit only the final handoff signal.
 
 ## Adopter-neutral public content
 

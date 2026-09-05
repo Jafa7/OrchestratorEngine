@@ -21,6 +21,7 @@ class OperationWaitTests(unittest.TestCase):
                     "status": "completed",
                     "terminal": True,
                     "worker": "cheap",
+                    "wake_policy": "always",
                     "result_path": "/state/tasks/T/result.json",
                 },
             ),
@@ -28,7 +29,13 @@ class OperationWaitTests(unittest.TestCase):
                 operation_wait.local_checks,
                 "check_status",
                 return_value={
-                    "checks": [{"check_id": "C", "status": "passed"}],
+                    "checks": [
+                        {
+                            "check_id": "C",
+                            "status": "passed",
+                            "wake_policy": "never",
+                        }
+                    ],
                     "invalid": [],
                 },
             ),
@@ -41,6 +48,7 @@ class OperationWaitTests(unittest.TestCase):
                             "monitor_id": "G",
                             "status": "completed",
                             "ci_conclusion": "success",
+                            "wake_policy": "never",
                         }
                     ]
                 },
@@ -49,7 +57,13 @@ class OperationWaitTests(unittest.TestCase):
                 operation_wait.github_pull_requests,
                 "monitor_status",
                 return_value={
-                    "monitors": [{"monitor_id": "P", "status": "ready"}]
+                    "monitors": [
+                        {
+                            "monitor_id": "P",
+                            "status": "ready",
+                            "wake_policy": "on-failure",
+                        }
+                    ]
                 },
             ),
         ):
@@ -63,6 +77,11 @@ class OperationWaitTests(unittest.TestCase):
         self.assertEqual(snapshot["terminal_count"], 4)
         self.assertEqual(snapshot["successful_count"], 4)
         self.assertEqual(snapshot["active_count"], 0)
+        self.assertTrue(snapshot["duplicate_followup_risk"])
+        self.assertEqual(
+            snapshot["wakeup_enabled_targets"],
+            ["worker:T", "pr:P"],
+        )
         self.assertNotIn("stdout", json.dumps(snapshot))
 
     @mock.patch.object(operation_wait.github_actions, "monitor_status")
@@ -86,6 +105,8 @@ class OperationWaitTests(unittest.TestCase):
         self.assertEqual(snapshot["status"], "unsuccessful")
         self.assertEqual(snapshot["unsuccessful_count"], 1)
         self.assertFalse(snapshot["targets"][0]["successful"])
+        self.assertEqual(snapshot["wakeup_enabled_targets"], ["ci:G"])
+        self.assertTrue(snapshot["duplicate_followup_risk"])
 
     @mock.patch.object(operation_wait.local_checks, "check_status")
     def test_broken_supervisor_has_priority_over_completion(

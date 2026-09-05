@@ -122,6 +122,7 @@ def operation_snapshot(
         "event_path",
         "finished_at",
         "duration_seconds",
+        "wake_policy",
     ):
         if item.get(key) is not None:
             snapshot[key] = item[key]
@@ -181,6 +182,11 @@ def operation_wait_snapshot(
     action_required = [
         snapshot for snapshot in snapshots if snapshot["action_required"]
     ]
+    wakeup_enabled = [
+        snapshot["target"]
+        for snapshot in snapshots
+        if snapshot.get("wake_policy", "always") != "never"
+    ]
     condition_met = bool(terminal) if mode == "any" else len(terminal) == len(snapshots)
     if action_required:
         status = "action_required"
@@ -220,6 +226,9 @@ def operation_wait_snapshot(
         "action_required_targets": [
             snapshot["target"] for snapshot in action_required
         ],
+        "wakeup_enabled_count": len(wakeup_enabled),
+        "wakeup_enabled_targets": wakeup_enabled,
+        "duplicate_followup_risk": bool(wakeup_enabled),
         "suggested_action": suggested_action,
     }
 

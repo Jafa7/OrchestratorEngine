@@ -1128,6 +1128,7 @@ class GitHubActionsTests(unittest.TestCase):
         }
         self.assertFalse(github_actions.should_wake("on-failure", observation))
         self.assertFalse(github_actions.should_wake("action-required", observation))
+        self.assertFalse(github_actions.should_wake("never", observation))
         self.assertTrue(github_actions.should_wake("always", observation))
 
     def test_capture_is_bounded_and_redacts_tokens(self) -> None:

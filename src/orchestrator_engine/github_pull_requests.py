@@ -1316,6 +1316,7 @@ def monitor_status(
                 "event_path",
                 "signal_path",
                 "signal_emitted",
+                "wake_policy",
             )
         }
         if descriptor.get("status") in {"starting", "running"}:

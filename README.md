@@ -6,48 +6,50 @@
 [![Lint: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Release](https://img.shields.io/github/v/release/Jafa7/OrchestratorEngine?label=release&color=informational)](https://github.com/Jafa7/OrchestratorEngine/releases/latest)
 
-Local event-driven coordination for AI agents and detached CLI workers:
-durable results and evidence, compact status checks, and host-specific
-completion delivery without engine-managed provider API keys.
+OrchestratorEngine is for developers who use an AI coding chat as the
+coordinator for CLI workers, long checks or CI. It lets the chat release its
+turn while work continues locally, then delivers one compact completion back
+to the chat that dispatched it. Full output remains available as durable
+evidence without being loaded into model context by default.
 
-OrchestratorEngine is a small event-driven coordination layer for AI worker
-processes. A user orchestrates from a host chat (Claude Code / Claude for
-Windows, VS Code Copilot, or Codex Desktop), dispatches tasks to CLI workers,
-and ends the turn. Workers run
-detached, write a terminal event to disk when they finish, and a local watcher
-routes the completion through the dispatching host's configured delivery
-channel — without engine-managed provider API keys or token-spending heartbeat
-prompts. Host and worker CLIs retain responsibility for their own local
-authentication.
+## When it helps
 
-Supported host/worker combinations are symmetric: any host chat can manage any
-CLI workers (Claude, Codex, Copilot, or any other command-line worker).
-Long verification runs can use the same flow: run checks detached, keep full
-logs as artifacts, and return a compact pass/fail summary through that channel.
-GitHub Actions runs can also be monitored immediately by full commit SHA, or
-by exact run ID when it is already known, through the local authenticated `gh`
-CLI. CI completion can therefore resume the dispatching chat without model
-polling or engine-managed GitHub credentials.
+Use OrchestratorEngine when you want to:
 
-Host delivery quality is provider-specific. Claude uses its watched session
-stream, VS Code uses its chat CLI, and current Codex Desktop releases use
-`codex queue` to submit the bounded follow-up to the dispatching live task.
-Codex installations without that command retain the older durable headless
-App Server fallback. Codex is also fully supported as a CLI worker through
-`codex exec`.
+- delegate work from Claude, Codex or VS Code to any command-line worker;
+- stop spending model turns on repeated status checks or growing log output;
+- preserve deterministic events, results, evidence and delivery receipts;
+- route parallel completions back to their originating chats;
+- monitor local checks, GitHub Actions or pull-request readiness without an AI
+  process interpreting progress.
 
-Codex can also resume automatically **within an already-active turn** by
-blocking once on deterministic worker state. The cheapest path is a direct
-`worker wait --json`; an optional low-cost relay subagent is only a host-control
-bridge when native agent waiting is more reliable than a direct command wait.
-This is complementary to detached live queue delivery. See
+It is deliberately not an AI runtime, planner or autonomous coding framework.
+It does not choose product requirements, replace the host agent, manage
+provider credentials or treat worker output as instructions. The core is a
+local, provider-neutral coordination and audit layer.
+
+The core loop is small: snapshot the dispatching chat, start a detached
+operation, write a terminal event on completion, and let a host adapter deliver
+a bounded pointer to the durable artifacts. Any supported host can coordinate
+Claude, Codex, Copilot or another CLI worker. Local authentication remains the
+responsibility of those installed tools.
+
+Choose one completion route for each operation:
+
+- **Detached wakeup:** enable the operation's wake policy and end the chat
+  turn. The watcher delivers its terminal event.
+- **In-turn wait:** start the operation with `--wake-policy never` and use one
+  blocking `worker wait` or `operation wait` call.
+
+Combining both routes queues a redundant follow-up. Parallel operations can
+share one aggregate wait, and a multi-stage pipeline should wake only at its
+final handoff boundary. See [operation wait](docs/operation-wait.md) and
 [Codex in-turn continuation](docs/codex-in-turn-continuation.md).
-Parallel workers can share the same deterministic wait by repeating
-`--task-id` and selecting `--mode all` or `--mode any`.
-Mixed worker, local-check, CI and PR operation sets can use one bounded
-`operation status` snapshot or `operation wait --target KIND:ID --mode any|all`;
-both read only local compact state and never query providers or worker logs. See
-[heterogeneous operation wait](docs/operation-wait.md).
+
+Host delivery quality is explicit: Claude uses a watched session stream,
+VS Code uses its chat CLI, and current Codex Desktop releases use `codex queue`
+for the live task. Older Codex installations retain a durable headless fallback.
+See the [host capability matrix](docs/hosts.md).
 
 ## Measured coordination context reduction
 
@@ -106,7 +108,7 @@ Install an immutable release, scaffold the project and bind the host chat:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.1.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.2.0"
 orchestrator-engine runtime-capabilities
 orchestrator-engine --project-root /path/to/project adopt --host HOST
 orchestrator-engine --project-root /path/to/project bind --host HOST
