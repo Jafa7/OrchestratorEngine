@@ -575,7 +575,7 @@ def classify_cli_error(stderr: str) -> str:
     return "gh_command_failed"
 
 
-def _run_bounded_command(
+def run_bounded_command(
     command: list[str],
     *,
     timeout_seconds: float,
@@ -645,7 +645,7 @@ def run_view(
     started = time.monotonic()
     if runner is None:
         try:
-            bounded = _run_bounded_command(
+            bounded = run_bounded_command(
                 command,
                 timeout_seconds=VIEW_TIMEOUT_SECONDS,
             )

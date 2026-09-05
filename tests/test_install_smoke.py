@@ -59,6 +59,19 @@ class InstallSmokeTests(unittest.TestCase):
                         "        'workflowName': 'CI'",
                         "    }))",
                         "    raise SystemExit(0)",
+                        "if sys.argv[1:3] == ['pr', 'view']:",
+                        "    print(json.dumps({",
+                        "        'number': 7, 'state': 'OPEN', 'isDraft': False,",
+                        (
+                            "        'headRefOid': "
+                            "'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',"
+                        ),
+                        "        'reviewDecision': 'APPROVED',",
+                        "        'mergeable': 'MERGEABLE',",
+                        "        'statusCheckRollup': [],",
+                        "        'url': 'https://github.com/Example/Project/pull/7'",
+                        "    }))",
+                        "    raise SystemExit(0)",
                         "raise SystemExit(9)",
                         "",
                     ]
@@ -330,6 +343,30 @@ class InstallSmokeTests(unittest.TestCase):
                 ci_monitor["monitor_id"],
             )
             ci_reap = self.run_cli(cli, project, "ci", "reap")
+            pr_monitor = self.run_cli(
+                cli,
+                project,
+                "pr",
+                "watch",
+                "--repo",
+                "Example/Project",
+                "--pr-number",
+                "7",
+                "--expected-head-sha",
+                "a" * 40,
+                "--review-policy",
+                "approved",
+            )
+            wait_file(Path(pr_monitor["monitor_dir"]) / "evidence.json")
+            pr_status = self.run_cli(
+                cli,
+                project,
+                "pr",
+                "status",
+                "--monitor-id",
+                pr_monitor["monitor_id"],
+            )
+            pr_reap = self.run_cli(cli, project, "pr", "reap")
             workers = self.run_cli(cli, project, "worker", "list")
             worker_diagnostics = self.run_cli(
                 cli,
@@ -354,6 +391,13 @@ class InstallSmokeTests(unittest.TestCase):
             ).stdout
             ci_watch_help = subprocess.run(
                 [str(cli), "ci", "watch", "--help"],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=clean_env(),
+            ).stdout
+            pr_watch_help = subprocess.run(
+                [str(cli), "pr", "watch", "--help"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -620,6 +664,8 @@ class InstallSmokeTests(unittest.TestCase):
         self.assertIn("--mode", worker_wait_help)
         self.assertIn("--expected-head-sha", ci_watch_help)
         self.assertIn("--wake-policy", ci_watch_help)
+        self.assertIn("--expected-head-sha", pr_watch_help)
+        self.assertIn("--review-policy", pr_watch_help)
         self.assertIn("--ready", workstream_checkpoint_help)
         self.assertIn("--execution", local_check_help)
         self.assertIn("--path", artifact_resolve_help)
@@ -660,6 +706,9 @@ class InstallSmokeTests(unittest.TestCase):
         self.assertEqual(ci_status["monitors"][0]["ci_conclusion"], "success")
         self.assertEqual(ci_reap["kind"], "GITHUB_ACTIONS_MONITOR_REAP_REPORT")
         self.assertEqual(ci_reap["reaped_count"], 0)
+        self.assertEqual(pr_status["kind"], "GITHUB_PR_READINESS_STATUS")
+        self.assertEqual(pr_status["monitors"][0]["status"], "ready")
+        self.assertEqual(pr_reap["reaped_count"], 0)
         self.assertIn(aggregate_status_result.returncode, {0, 2})
         self.assertEqual(aggregate_status["kind"], "ORCHESTRATOR_STATUS_REPORT")
         self.assertIn("worker_tasks", aggregate_status["components"])
@@ -672,6 +721,7 @@ class InstallSmokeTests(unittest.TestCase):
         self.assertIn("SMOKE-FAIL", inbox_task_ids)
         self.assertIn("SMOKE-CHECK", inbox_task_ids)
         self.assertIn(ci_monitor["monitor_id"], inbox_operation_ids)
+        self.assertIn(pr_monitor["monitor_id"], inbox_operation_ids)
         self.assertEqual(stream_stderr, "")
         stream_task_ids = {line["task_id"] for line in lines}
         self.assertTrue(stream_task_ids & {"SMOKE-1", "SMOKE-FAIL", "SMOKE-CHECK"})

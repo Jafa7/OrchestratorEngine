@@ -14,6 +14,10 @@ Stable names are `worker-task`, `worker-result`, `worker-evidence`,
 `binding`, `wake-target`, `verification-result`, `followup-terminal-event`,
 `followup-signal`, `github-actions-monitor`, `github-actions-evidence`,
 `github-actions-supervisor-launch`, `github-actions-cancel-request`,
+`github-pr-monitor`, `github-pr-evidence`, `github-pr-supervisor-launch`,
+`github-pr-cancel-request`, `workstream`, `workstream-checkpoint`,
+`workstream-result`, `workstream-evidence`, `local-check`,
+`local-check-evidence`, `check-duration-history`,
 `task-resolution`, and `artifact-resolution`. They are included in wheels and
 source distributions and require no runtime dependency.
 `orchestrator-engine schemas` lists names; pass one name to print its schema.
@@ -871,6 +875,64 @@ The durable files are:
 `action-required` remain quiet for confirmed success while preserving the
 result and event. Queue acceptance by a host still means delivery acceptance,
 not completion of the subsequent agent turn.
+
+## GitHub pull-request readiness monitor
+
+`pr watch` is a read-only GitHub adapter for one exact pull request revision.
+It reuses `[integrations.github_actions]`, including `gh_command`, repository
+and host allowlists. It invokes the adopter-installed authenticated `gh` CLI
+with argv and never requests or persists credentials.
+
+```bash
+orchestrator-engine --project-root /path/to/project pr watch \
+  --repo EXAMPLE/PROJECT --pr-number 42 \
+  --expected-head-sha 0123456789abcdef0123456789abcdef01234567 \
+  --review-policy approved --wake-policy always
+```
+
+`--expected-head-sha` is a mandatory full 40-64 digit hexadecimal commit ID.
+The monitor never follows a changed head implicitly. `--review-policy ignore`
+does not gate readiness on reviews; `approved` requires GitHub's review
+decision to be `APPROVED`. In both modes the monitor waits while the PR is a
+draft or checks are pending, and it terminates deterministically when it
+observes one of these states:
+
+- `ready`: exact head, open non-draft PR, GitHub has resolved mergeability, no
+  visible pending or failed checks, and the selected review policy is
+  satisfied;
+- `merged`: the exact monitored head was merged;
+- `failed_checks`, `changes_requested` or `conflicting`: operator action is
+  required;
+- `head_changed`: the PR no longer points at the requested immutable revision;
+- `closed` or `cancelled`: remote closure or local operator cancellation;
+- `timed_out`, `unavailable`, `ambiguous` or `failed`: observation or local
+  monitor lifecycle did not establish readiness.
+
+The adapter polls `gh pr view --json` locally. This is deterministic process
+waiting and consumes no model tokens. Successful output is normalized to a
+bounded snapshot: identity, state, draft/review/mergeability fields, check
+counts and at most 20 failed check names. The rollup reflects checks visible to
+GitHub for the PR; the monitor does not infer branch-protection requirements
+that GitHub omits from that response. Raw successful output is represented
+only by size and SHA-256. Errors retain a redacted bounded tail. A successful
+readiness result does not authorize merge, push, rerun, approval or code edits.
+
+The derived monitor ID includes repository, PR number, expected SHA and review
+policy, so a later revision or a distinct review gate receives a new durable
+operation identity.
+Only one active monitor may own a PR at a time. `pr status [--monitor-id ID]`
+reads local state. `pr cancel` writes a durable
+cancel request. `pr retry` creates a new operation ID with explicit lineage and
+retains the original exact SHA. `pr reap` finalizes only supervisors proven
+gone; if terminal result and evidence were already written, it reconstructs
+the descriptor and idempotent event instead of replacing the observation with
+a crash result.
+
+Durable files are stored under
+`.orchestrator/monitors/github-pull-requests/<monitor_id>/`, with the generic
+verification result under `.orchestrator/checks/<monitor_id>/`. The terminal
+event uses `source_kind: github_pull_request` and the dispatch-time wake target
+snapshot, so rebinding a project later does not reroute this result.
 
 ## Bounded workstream checkpoints
 

@@ -11,7 +11,7 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release is `0.7.0` and the durable JSON contract schema version is
+The current release is `0.8.0` and the durable JSON contract schema version is
 `1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
@@ -19,7 +19,7 @@ PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.7.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.8.0"
 ```
 
 ## Schema Compatibility
@@ -123,6 +123,21 @@ upgrading the engine and Codex CLI:
 Older Codex CLIs remain compatible through the durable headless App Server
 fallback. No state migration or deletion is required. Existing receipts keep
 their original semantics.
+
+## Exact PR readiness after v0.7.0
+
+Version 0.8.0 adds the opt-in `pr watch/status/cancel/retry/reap` adapter. It
+reuses an existing `[integrations.github_actions]` configuration and requires
+the adopter-installed authenticated `gh` CLI, an allowlisted repository, an
+exact PR number and a full expected head SHA. Existing CI monitors, worker
+tasks and watcher state require no migration.
+
+Before first use, verify `gh auth status`, obtain the current full PR head SHA
+and choose `--review-policy ignore` or `approved` explicitly. A changed head,
+failed visible check, requested change, conflict or closed PR terminates the
+monitor without modifying GitHub state. Review bounded evidence before using
+`pr retry`; retries retain the original SHA and therefore never follow newer
+code implicitly.
 
 ## Deterministic external operations after v0.6.0
 

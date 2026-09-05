@@ -4,6 +4,18 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-05
+
+### Added
+
+- Detached exact-PR readiness monitoring through the adopter-authenticated
+  GitHub CLI, pinned to an immutable expected head SHA with optional approval
+  enforcement, bounded evidence, explicit terminal classifications and the
+  existing dispatch-time chat wake target.
+- `pr watch/status/cancel/retry/reap` lifecycle commands and aggregate status
+  visibility for ready, changed-head, failed-check, review, conflict, transport
+  and supervisor-recovery outcomes.
+
 ## [0.7.0] - 2026-09-05
 
 ### Added

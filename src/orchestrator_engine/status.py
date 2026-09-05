@@ -14,6 +14,7 @@ from . import (
     core,
     diagnostics,
     github_actions,
+    github_pull_requests,
     host_capabilities,
     local_checks,
     task_diagnostics,
@@ -59,6 +60,9 @@ def run_status(
     ci_monitors = summarize_ci_monitors(
         github_actions.monitor_status(project, state_dir=state_dir)
     )
+    pr_monitors = summarize_pr_monitors(
+        github_pull_requests.monitor_status(project, state_dir=state_dir)
+    )
     workstream_summary = summarize_workstreams(
         workstreams.workstream_status(project, state_dir=state_dir)
     )
@@ -73,6 +77,7 @@ def run_status(
         "checks": summarize_checks(checks),
         "local_check_runtime": local_check_runtime,
         "ci_monitors": ci_monitors,
+        "pr_monitors": pr_monitors,
         "workstreams": workstream_summary,
     }
     issues = collect_issues(
@@ -82,6 +87,7 @@ def run_status(
         local_check_runtime=local_check_runtime,
         wake_channel=wake_channel,
         ci_monitors=ci_monitors,
+        pr_monitors=pr_monitors,
         workstreams=workstream_summary,
     )
     worst = worst_component_severity(components.values())
@@ -380,6 +386,46 @@ def summarize_ci_monitors(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def summarize_pr_monitors(report: dict[str, Any]) -> dict[str, Any]:
+    monitors = report.get("monitors", [])
+    if not isinstance(monitors, list):
+        monitors = []
+    problems = [
+        item
+        for item in monitors
+        if isinstance(item, dict)
+        and item.get("status")
+        in {
+            "failed_checks",
+            "changes_requested",
+            "conflicting",
+            "head_changed",
+            "closed",
+            "cancelled",
+            "timed_out",
+            "unavailable",
+            "ambiguous",
+            "failed",
+            "crashed",
+            "stalled",
+            "invalid",
+        }
+    ]
+    severe = any(
+        item.get("status") in {"failed", "crashed", "stalled", "invalid"}
+        for item in problems
+    )
+    severity = "error" if severe else "warning" if problems else None
+    return {
+        "status": status_from_severity(severity),
+        "worst_severity": severity,
+        "monitor_count": report.get("monitor_count", 0),
+        "status_counts": report.get("status_counts", {}),
+        "problem_monitor_count": len(problems),
+        "problem_monitors": problems,
+    }
+
+
 def summarize_local_check_runtime(report: dict[str, Any]) -> dict[str, Any]:
     checks = report.get("checks", [])
     if not isinstance(checks, list):
@@ -508,6 +554,7 @@ def collect_issues(
     local_check_runtime: dict[str, Any],
     wake_channel: dict[str, Any],
     ci_monitors: dict[str, Any],
+    pr_monitors: dict[str, Any],
     workstreams: dict[str, Any],
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
@@ -584,6 +631,30 @@ def collect_issues(
                 "suggested_action": (
                     monitor.get("suggested_action")
                     or "Inspect ci status and bounded evidence; retry only after "
+                    "resolving the reported cause."
+                ),
+            }
+        )
+    for monitor in pr_monitors.get("problem_monitors", []):
+        if not isinstance(monitor, dict):
+            continue
+        monitor_status = monitor.get("status")
+        issues.append(
+            {
+                "source": "pr_monitors",
+                "severity": (
+                    "error"
+                    if monitor_status in {"failed", "crashed", "stalled", "invalid"}
+                    else "warning"
+                ),
+                "name": monitor.get("monitor_id"),
+                "message": (
+                    f"GitHub PR monitor status is {monitor_status}; "
+                    f"failure_kind={monitor.get('failure_kind')}"
+                ),
+                "suggested_action": (
+                    monitor.get("suggested_action")
+                    or "Inspect pr status and bounded evidence; retry only after "
                     "resolving the reported cause."
                 ),
             }
@@ -860,7 +931,7 @@ def append_component_details(
             f"enabled=`{component.get('enabled_count')}`, "
             f"profile_warnings=`{component.get('warning_count')}`"
         )
-    elif component_name == "ci_monitors":
+    elif component_name in {"ci_monitors", "pr_monitors"}:
         lines.append(
             "  - monitors: "
             f"count=`{component.get('monitor_count')}`, "

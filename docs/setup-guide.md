@@ -56,7 +56,7 @@ For a reproducible adopter install, use an immutable release tag:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.7.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.8.0"
 ```
 
 GitHub Release archives and wheel/sdist assets are published with the tag;
@@ -514,6 +514,25 @@ reported as `crashed`, run `ci reap`, inspect its bounded recovery evidence,
 and retry only with an explicit reason after fixing the cause. See
 [contracts.md](contracts.md#github-actions-exact-run-monitor) for attempts,
 status, cancellation and failure classification.
+
+The same local configuration supports exact pull-request readiness monitoring.
+Obtain the PR number and its full current head SHA, then choose whether reviews
+are informational or mandatory:
+
+```bash
+orchestrator-engine --project-root /path/to/project pr watch \
+  --repo EXAMPLE/PROJECT --pr-number 42 \
+  --expected-head-sha 0123456789abcdef0123456789abcdef01234567 \
+  --review-policy approved --wake-policy always
+```
+
+The full SHA is mandatory. If the PR head changes, the monitor stops with
+`head_changed` instead of silently following new code. `--review-policy
+approved` waits for GitHub's approved review decision; `ignore` considers
+reviews informational. Unresolved GitHub mergeability remains pending instead
+of being treated as ready. Use `pr status`, `pr cancel`, `pr reap` and `pr retry`
+for the same deterministic operator lifecycle as the CI monitor. The monitor
+never merges, reruns checks, approves reviews or changes repository state.
 
 Use the prompt templates in [`examples/prompts`](../examples/prompts) for
 review, implementation, verification and adopter-report workers. They encode

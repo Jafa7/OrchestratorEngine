@@ -15,6 +15,7 @@ policy for those tools.
 | Copilot worker | GitHub Copilot CLI | only for Copilot profiles | `copilot --version` |
 | VS Code host callback | Visual Studio Code CLI | only for the VS Code host | `code --version` |
 | GitHub Actions monitor | GitHub CLI (`gh`) | only for `ci watch` | `gh --version`; `gh auth status --hostname github.com` |
+| GitHub PR readiness monitor | GitHub CLI (`gh`) | only for `pr watch` | `gh --version`; `gh auth status --hostname github.com` |
 
 Install external tools from their official documentation. For GitHub CLI use
 the official [installation guide](https://github.com/cli/cli#installation)

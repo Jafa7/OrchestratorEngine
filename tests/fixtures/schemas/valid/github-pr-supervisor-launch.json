@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "kind": "GITHUB_PR_MONITOR_SUPERVISOR_LAUNCH",
+  "monitor_id": "ghpr-7-example",
+  "supervisor_pid": 1234,
+  "launched_at": "2026-09-05T12:00:00+00:00"
+}

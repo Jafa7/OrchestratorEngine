@@ -18,6 +18,7 @@ from . import (
     core,
     diagnostics,
     github_actions,
+    github_pull_requests,
     host_capabilities,
     local_checks,
     schemas,
@@ -695,6 +696,60 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ci_supervise.add_argument("--monitor-id", required=True)
 
+    pr = subparsers.add_parser(
+        "pr",
+        help="Monitor one exact GitHub pull request readiness state.",
+    )
+    pr_subparsers = pr.add_subparsers(dest="pr_command", required=True)
+    pr_watch = pr_subparsers.add_parser(
+        "watch",
+        help="Start a detached exact-PR readiness monitor.",
+    )
+    pr_watch.add_argument("--repo", required=True)
+    pr_watch.add_argument("--pr-number", required=True)
+    pr_watch.add_argument("--expected-head-sha", required=True)
+    pr_watch.add_argument("--hostname", default="github.com")
+    pr_watch.add_argument(
+        "--review-policy",
+        choices=sorted(github_pull_requests.REVIEW_POLICIES),
+        default="ignore",
+    )
+    pr_watch.add_argument(
+        "--interval-seconds",
+        type=float,
+        default=github_pull_requests.DEFAULT_INTERVAL_SECONDS,
+    )
+    pr_watch.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=github_pull_requests.DEFAULT_TIMEOUT_SECONDS,
+    )
+    pr_watch.add_argument(
+        "--wake-policy",
+        choices=sorted(github_pull_requests.WAKE_POLICIES),
+        default="always",
+    )
+    pr_watch.add_argument("--gh-command")
+    pr_status = pr_subparsers.add_parser("status", help="Read PR monitor state.")
+    pr_status.add_argument("--monitor-id")
+    pr_cancel = pr_subparsers.add_parser(
+        "cancel", help="Request cancellation of an active PR monitor."
+    )
+    pr_cancel.add_argument("--monitor-id", required=True)
+    pr_cancel.add_argument("--reason", required=True)
+    pr_retry = pr_subparsers.add_parser(
+        "retry", help="Retry one unsuccessful terminal PR monitor."
+    )
+    pr_retry.add_argument("--monitor-id", required=True)
+    pr_retry.add_argument("--reason", required=True)
+    pr_subparsers.add_parser(
+        "reap", help="Finalize PR monitors whose supervisor is proven gone."
+    )
+    pr_supervise = pr_subparsers.add_parser(
+        "supervise", help="Internal: supervise one PR readiness monitor."
+    )
+    pr_supervise.add_argument("--monitor-id", required=True)
+
     watcher_parser = subparsers.add_parser(
         "watcher",
         help="Scan the inbox and act on unseen terminal signals.",
@@ -897,6 +952,10 @@ def main(argv: list[str] | None = None) -> int:
                 raise core.OrchestratorError("ci requires exactly one project root")
             output = run_ci_command(args, roots[0])
             print_json(output)
+        elif args.command == "pr":
+            if len(roots) != 1:
+                raise core.OrchestratorError("pr requires exactly one project root")
+            print_json(run_pr_command(args, roots[0]))
         elif args.command == "doctor":
             if len(roots) != 1:
                 raise core.OrchestratorError("doctor requires exactly one project root")
@@ -1173,6 +1232,54 @@ def run_ci_command(args: argparse.Namespace, root: Path) -> object:
         )
     raise github_actions.GitHubActionsError(
         f"unsupported ci command: {args.ci_command}"
+    )
+
+
+def run_pr_command(args: argparse.Namespace, root: Path) -> object:
+    if args.pr_command == "watch":
+        return github_pull_requests.start_monitor(
+            root,
+            repository=args.repo,
+            pr_number=args.pr_number,
+            expected_head_sha=args.expected_head_sha,
+            state_dir=args.state_dir,
+            hostname=args.hostname,
+            review_policy=args.review_policy,
+            interval_seconds=args.interval_seconds,
+            timeout_seconds=args.timeout_seconds,
+            wake_policy=args.wake_policy,
+            gh_command=args.gh_command,
+        )
+    if args.pr_command == "status":
+        return github_pull_requests.monitor_status(
+            root,
+            state_dir=args.state_dir,
+            monitor_id=args.monitor_id,
+        )
+    if args.pr_command == "cancel":
+        return github_pull_requests.cancel_monitor(
+            root,
+            monitor_id=args.monitor_id,
+            reason=args.reason,
+            state_dir=args.state_dir,
+        )
+    if args.pr_command == "retry":
+        return github_pull_requests.retry_monitor(
+            root,
+            monitor_id=args.monitor_id,
+            reason=args.reason,
+            state_dir=args.state_dir,
+        )
+    if args.pr_command == "reap":
+        return github_pull_requests.reap_monitors(root, state_dir=args.state_dir)
+    if args.pr_command == "supervise":
+        return github_pull_requests.supervise_monitor(
+            root,
+            monitor_id=args.monitor_id,
+            state_dir=args.state_dir,
+        )
+    raise github_pull_requests.GitHubPullRequestError(
+        f"unsupported pr command: {args.pr_command}"
     )
 
 

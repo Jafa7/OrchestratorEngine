@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "kind": "GITHUB_PR_MONITOR_CANCEL_REQUEST",
+  "monitor_id": "ghpr-7-example",
+  "reason": "Operator no longer needs this monitor.",
+  "requested_at": "2026-09-05T12:00:30+00:00"
+}

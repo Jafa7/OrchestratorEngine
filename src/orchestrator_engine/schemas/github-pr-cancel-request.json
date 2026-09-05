@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-engine://schemas/github-pr-cancel-request",
+  "title": "GitHub pull request monitor cancel request",
+  "schema_version": 1,
+  "kind": "GITHUB_PR_MONITOR_CANCEL_REQUEST",
+  "type": "object",
+  "required": ["schema_version", "kind", "monitor_id", "reason", "requested_at"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "GITHUB_PR_MONITOR_CANCEL_REQUEST"},
+    "monitor_id": {"type": "string", "minLength": 1},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "requested_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": false
+}

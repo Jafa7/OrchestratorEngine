@@ -54,9 +54,9 @@ loading growing worker logs. Lower is better.
 
 | Scenario | Full-log polling | Status reads | Context read | Reduction |
 | --- | ---: | ---: | ---: | ---: |
-| Long test | 655.4 KB | 16.6 KB | 2.53% | 97.47% |
-| AI worker | 2.62 MB | 16.6 KB | 0.63% | 99.37% |
-| Three parallel workers | 3.93 MB | 19.2 KB | 0.49% | 99.51% |
+| Long test | 655.4 KB | 17.4 KB | 2.65% | 97.35% |
+| AI worker | 2.62 MB | 17.4 KB | 0.66% | 99.34% |
+| Three parallel workers | 3.93 MB | 19.9 KB | 0.51% | 99.49% |
 
 This is selective inspection, not output truncation. The status report keeps
 task states, diagnostics, log sizes and paths compact; complete stdout,
@@ -96,7 +96,7 @@ Install an immutable release, scaffold the project and bind the host chat:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.7.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.8.0"
 orchestrator-engine --project-root /path/to/project adopt --host HOST
 orchestrator-engine --project-root /path/to/project bind --host HOST
 ```
@@ -184,6 +184,14 @@ a provider-neutral follow-up signal when its wake policy requires one. The
 watcher does not interpret CI logs and no model is used while waiting. Monitor
 status is compact; `ci reap` safely finalizes a monitor only when its recorded
 supervisor identity is proven gone.
+
+`pr watch` provides the corresponding pull-request readiness boundary. It
+requires the exact PR number and full expected head SHA, optionally requires an
+approved review decision, and wakes the dispatching chat only after a terminal
+readiness outcome. Checks, reviews, draft state, merge conflicts, head changes,
+closure and transport failures are classified without model polling. It uses
+the same adopter-installed `gh` prerequisite and repository allowlist as
+`ci watch`.
 
 Local suites can use `check plan` and `check run`. The planner fingerprints
 the declared argv/cwd contract and uses a configured estimate or the median of

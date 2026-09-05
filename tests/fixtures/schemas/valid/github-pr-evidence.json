@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "kind": "GITHUB_PR_READINESS_EVIDENCE",
+  "monitor_id": "ghpr-7-example",
+  "source_kind": "github_pull_request",
+  "hostname": "github.com",
+  "repository": "EXAMPLE/PROJECT",
+  "pr_number": 7,
+  "expected_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "review_policy": "approved",
+  "monitor_status": "ready",
+  "failure_kind": null,
+  "snapshot": {"head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+  "command_evidence": {"exit_code": 0},
+  "sample_count": 2,
+  "started_at": "2026-09-05T12:00:00+00:00",
+  "finished_at": "2026-09-05T12:01:00+00:00",
+  "duration_seconds": 60,
+  "summary": "GitHub PR EXAMPLE/PROJECT#7: status=ready",
+  "result_path": "/tmp/example/.orchestrator/checks/ghpr-7-example/verification-result.json",
+  "summary_path": "/tmp/example/.orchestrator/checks/ghpr-7-example/summary.txt"
+}

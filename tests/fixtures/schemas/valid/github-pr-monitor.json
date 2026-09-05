@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "kind": "GITHUB_PR_READINESS_MONITOR",
+  "monitor_id": "ghpr-7-example",
+  "source_kind": "github_pull_request",
+  "status": "running",
+  "hostname": "github.com",
+  "repository": "EXAMPLE/PROJECT",
+  "pr_number": 7,
+  "expected_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "review_policy": "approved",
+  "interval_seconds": 15,
+  "timeout_seconds": 14400,
+  "wake_policy": "always",
+  "gh_command": "gh",
+  "monitor_dir": "/tmp/example/.orchestrator/monitors/github-pull-requests/ghpr-7-example",
+  "created_at": "2026-09-05T12:00:00+00:00"
+}

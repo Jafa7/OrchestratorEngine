@@ -133,6 +133,28 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(summary["problem_monitor_count"], 1)
         self.assertEqual(summary["conclusion_counts"], {"failure": 1})
 
+    def test_pr_monitor_summary_preserves_action_required_outcome(self) -> None:
+        summary = status.summarize_pr_monitors(
+            {
+                "monitor_count": 1,
+                "status_counts": {"head_changed": 1},
+                "monitors": [
+                    {
+                        "monitor_id": "ghpr-changed",
+                        "status": "head_changed",
+                        "failure_kind": "head_sha_mismatch",
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(summary["status"], "warn")
+        self.assertEqual(summary["problem_monitor_count"], 1)
+        self.assertEqual(
+            summary["problem_monitors"][0]["failure_kind"],
+            "head_sha_mismatch",
+        )
+
     def test_status_reports_crashed_local_check_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
