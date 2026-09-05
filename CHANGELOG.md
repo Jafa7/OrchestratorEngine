@@ -4,6 +4,12 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Release source provenance now has a deterministic helper and temporary-Git
+  regression matrix covering rewritten local tag refs, lightweight remote
+  tags, event-SHA mismatch and release commits outside the main branch.
+
 ## [0.11.1] - 2026-09-05
 
 ### Fixed

@@ -29,6 +29,8 @@ unless all of these conditions hold:
 
 - the tag is exactly `v` plus the version verified by
   `tools/check_release_consistency.py`;
+- the remote tag object is annotated, targets the workflow event SHA and the
+  checkout HEAD exactly, as verified by `tools/validate_release_source.py`;
 - the tagged commit is reachable from `origin/main`;
 - the latest matching `CI` push run for the exact SHA, workflow and branch is
   `completed` with conclusion `success`;
@@ -45,6 +47,10 @@ workflow succeeds only if its existing assets exactly match the rebuilt bundle.
 
 Release notes are generated from the matching version section in
 `CHANGELOG.md`; unrelated historical or unreleased sections are excluded.
+Source provenance is emitted as bounded JSON after fetching the remote tag and
+main branch into temporary internal refs. This deliberately does not trust or
+modify refs produced by `actions/checkout`; both internal refs are removed
+after validation.
 GitHub-hosted `gh` is used only inside the repository workflow. Adopters do not
 need GitHub CLI to install a tagged release; local `gh` remains an optional
 prerequisite only for `ci watch` and `pr watch`.

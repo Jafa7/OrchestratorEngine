@@ -17,12 +17,9 @@ class ReleaseWorkflowTests(unittest.TestCase):
             "actions: read",
             "contents: write",
             "persist-credentials: false",
-            '"refs/tags/${GITHUB_REF_NAME}:${release_ref}"',
-            '"refs/heads/main:${main_ref}"',
-            "git cat-file -t",
-            '"${commit_sha}" != "${GITHUB_SHA}"',
-            "must be annotated",
-            "is not contained in origin/main",
+            "tools/validate_release_source.py",
+            "--expected-sha \"${GITHUB_SHA}\"",
+            ".release/source.json",
             "SOURCE_DATE_EPOCH=",
             "tools/verify_release_ci.py",
             "tools/prepare_release_bundle.py",
@@ -35,7 +32,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
             with self.subTest(marker=marker):
                 self.assertIn(marker, workflow)
 
-        self.assertNotIn('git cat-file -t "${GITHUB_REF_NAME}"', workflow)
+        self.assertNotIn("git cat-file -t", workflow)
+        self.assertNotIn("git merge-base --is-ancestor", workflow)
 
 
 if __name__ == "__main__":
