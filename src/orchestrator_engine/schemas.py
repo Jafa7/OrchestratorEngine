@@ -46,6 +46,7 @@ SCHEMA_NAMES = (
     "check-duration-history",
     "task-resolution",
     "artifact-resolution",
+    "conformance-report",
 )
 KIND = "ORCHESTRATOR_SCHEMA_CATALOG"
 

@@ -121,6 +121,137 @@ the detached lifecycle fail before creating their task, monitor or service
 artifact when that capability is unsupported. See
 [Platform support](platform-support.md).
 
+### Clean-fixture conformance report
+
+`orchestrator-engine conformance run` creates a new isolated fixture and emits
+an `ORCHESTRATOR_CONFORMANCE_REPORT`. It never reads or writes the adopting
+project, invokes an AI provider, or uses provider credentials.
+
+Modes are explicit:
+
+- `auto` selects `full` when the Linux detached lifecycle is available and
+  otherwise selects `portable`;
+- `portable` verifies create-only adoption, a terminal result/evidence pair,
+  hash-bound event and inbox signal, deterministic notification delivery and a
+  second idempotent watcher scan;
+- `full` exercises the same path through a real detached synthetic Python
+  worker and fails closed when detached lifecycle support is unavailable.
+
+Both modes then run the same provider-free crash-recovery matrix:
+
+- an event whose matching signal was not written is re-emitted under the same
+  deterministic event ID;
+- a notification written before watcher state is updated converges to one
+  notification and one seen event;
+- a valid exclusively claimed result without evidence/event is reconciled by
+  a takeover writer;
+- valid result and evidence records without an event are reconciled by a
+  takeover writer;
+- an empty result claim left by an interrupted writer is replaced during an
+  explicit takeover.
+
+Every scenario must finish with exactly one event, signal and notification.
+These are synthetic fixture mutations only; conformance never deletes or
+rewrites artifacts in an adopting project.
+
+Full mode also dispatches six short synthetic workers concurrently. It uses one
+aggregate `wait any` followed by one aggregate `wait all`, verifies every
+result/event chain, and alternates dispatch-time Codex and VS Code wake targets.
+Separate host-scoped watcher state files must each consume exactly three of the
+six signals and consume none on a second scan. Portable mode reports this step
+as `skipped` with reason `full_mode_required`; it does not claim detached
+concurrency support.
+
+Full mode also creates an expired unclaimed task descriptor and runs the worker
+reaper twice. The first pass must finalize it as `failed` with
+`failure_class: "supervisor_lost"`, emit exactly one event and signal, and make
+that signal consumable once by the matching host-scoped watcher state. The
+second pass must be a no-op. Portable mode reports this lifecycle check as
+`skipped` with reason `full_mode_required`.
+
+The report contains only step status/timing, capability metadata, artifact
+counts and bounded failure text. It never copies worker output into the report.
+A successful temporary fixture is removed by default. `--keep-fixture` retains
+it explicitly, and any failed fixture that was created is retained
+automatically so its durable artifacts can be inspected. `--fixture-root` must
+name a path that does not already exist, preserving the clean-fixture
+guarantee. A preparation failure reports `fixture.status: "not_created"` and
+does not modify a pre-existing path.
+
+Required report shape:
+
+```json
+{
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_CONFORMANCE_REPORT",
+  "status": "passed",
+  "requested_mode": "auto",
+  "effective_mode": "full",
+  "started_at": "2026-09-05T00:00:00.000+00:00",
+  "finished_at": "2026-09-05T00:00:01.000+00:00",
+  "duration_seconds": 1.0,
+  "capabilities": {},
+  "steps": [],
+  "artifact_summary": {"event_count": 13, "signal_count": 13},
+  "recovery_summary": {
+    "scenario_count": 5,
+    "recovered_count": 5,
+    "scenarios": [
+      {
+        "name": "event_without_signal",
+        "status": "recovered",
+        "event_id": "EVENT_ID_1"
+      },
+      {
+        "name": "notification_without_seen_state",
+        "status": "recovered",
+        "event_id": "EVENT_ID_2"
+      },
+      {
+        "name": "result_without_evidence_or_event",
+        "status": "recovered",
+        "event_id": "EVENT_ID_3"
+      },
+      {
+        "name": "evidence_without_event",
+        "status": "recovered",
+        "event_id": "EVENT_ID_4"
+      },
+      {
+        "name": "empty_result_claim",
+        "status": "recovered",
+        "event_id": "EVENT_ID_5"
+      }
+    ]
+  },
+  "concurrency_summary": {
+    "status": "passed",
+    "task_count": 6,
+    "wait_any_terminal_count": 1,
+    "wait_all_terminal_count": 6,
+    "expected_host_counts": {"codex": 3, "vscode": 3},
+    "delivered_host_counts": {"codex": 3, "vscode": 3}
+  },
+  "lifecycle_recovery_summary": {
+    "status": "passed",
+    "reaped_count": 1,
+    "second_reaped_count": 0,
+    "terminal_status": "failed",
+    "failure_class": "supervisor_lost"
+  },
+  "fixture": {
+    "status": "removed",
+    "root": null,
+    "reason": "success_cleanup"
+  }
+}
+```
+
+The packaged `conformance-report` JSON Schema is the machine-readable
+authority for this report. A failed execution exits nonzero, adds bounded
+`failure.type` and `failure.message`, and reports the fixture disposition plus
+its retained path when one was created.
+
 ## Operator diagnostics
 
 `adopt` writes missing local layout only:

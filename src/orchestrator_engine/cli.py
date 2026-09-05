@@ -15,6 +15,7 @@ from . import (
     binding,
     claude_stream,
     codex_app,
+    conformance,
     core,
     diagnostics,
     github_actions,
@@ -79,6 +80,39 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "runtime-capabilities",
         help="Print portable-core and detached-runtime platform support.",
+    )
+    conformance_parser = subparsers.add_parser(
+        "conformance",
+        help="Run provider-free clean-fixture conformance checks.",
+    )
+    conformance_subparsers = conformance_parser.add_subparsers(
+        dest="conformance_command", required=True
+    )
+    conformance_run = conformance_subparsers.add_parser(
+        "run",
+        help="Verify durable orchestration in a new isolated fixture.",
+    )
+    conformance_run.add_argument(
+        "--mode",
+        choices=sorted(conformance.CONFORMANCE_MODES),
+        default="auto",
+        help="Use portable core checks, full detached checks, or auto-detect.",
+    )
+    conformance_run.add_argument(
+        "--fixture-root",
+        type=Path,
+        help="Create the clean fixture at this new path instead of a temp path.",
+    )
+    conformance_run.add_argument(
+        "--keep-fixture",
+        action="store_true",
+        help="Keep a successful fixture for inspection; failures are always kept.",
+    )
+    conformance_run.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=30,
+        help="Maximum full-mode synthetic worker wait (default: 30).",
     )
     schema_parser = subparsers.add_parser(
         "schemas", help="List or print packaged durable-artifact schemas."
@@ -905,6 +939,15 @@ def main(argv: list[str] | None = None) -> int:
             print_json(host_capabilities.all_hosts())
         elif args.command == "runtime-capabilities":
             print_json(platform_runtime.capabilities())
+        elif args.command == "conformance":
+            output = conformance.run_conformance(
+                mode=args.mode,
+                fixture_root=args.fixture_root,
+                keep_fixture=args.keep_fixture,
+                timeout_seconds=args.timeout_seconds,
+            )
+            print_json(output)
+            return 0 if output["status"] == "passed" else 1
         elif args.command == "schemas":
             print_json(
                 schemas.catalog() if args.name is None else schemas.load(args.name)

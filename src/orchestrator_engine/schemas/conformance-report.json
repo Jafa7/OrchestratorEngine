@@ -1,0 +1,329 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-engine://schemas/conformance-report",
+  "title": "Clean-fixture conformance report",
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_CONFORMANCE_REPORT",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "kind",
+    "status",
+    "requested_mode",
+    "effective_mode",
+    "started_at",
+    "finished_at",
+    "duration_seconds",
+    "capabilities",
+    "steps",
+    "artifact_summary",
+    "recovery_summary",
+    "concurrency_summary",
+    "lifecycle_recovery_summary",
+    "fixture"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "ORCHESTRATOR_CONFORMANCE_REPORT"},
+    "status": {"enum": ["passed", "failed"]},
+    "requested_mode": {"enum": ["auto", "portable", "full"]},
+    "effective_mode": {"enum": ["portable", "full"]},
+    "started_at": {"type": "string", "format": "date-time"},
+    "finished_at": {"type": "string", "format": "date-time"},
+    "duration_seconds": {"type": "number", "minimum": 0},
+    "capabilities": {"type": "object"},
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "status", "duration_seconds"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "status": {"enum": ["passed", "failed"]},
+          "duration_seconds": {"type": "number", "minimum": 0},
+          "details": {"type": "object"},
+          "error": {"$ref": "#/$defs/error"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "artifact_summary": {
+      "type": "object",
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "recovery_summary": {
+      "type": "object",
+      "required": ["scenario_count", "recovered_count", "scenarios"],
+      "properties": {
+        "scenario_count": {"const": 5},
+        "recovered_count": {"enum": [0, 5]},
+        "scenarios": {
+          "type": "array",
+          "maxItems": 5,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "required": ["name", "status", "event_id"],
+            "properties": {
+              "name": {
+                "enum": [
+                  "event_without_signal",
+                  "notification_without_seen_state",
+                  "result_without_evidence_or_event",
+                  "evidence_without_event",
+                  "empty_result_claim"
+                ]
+              },
+              "status": {"const": "recovered"},
+              "event_id": {"type": "string", "minLength": 1}
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "concurrency_summary": {
+      "type": "object",
+      "required": ["status", "task_count"],
+      "properties": {
+        "status": {"enum": ["passed", "skipped", "not_run"]},
+        "task_count": {"type": "integer", "minimum": 0, "maximum": 6},
+        "reason": {"enum": ["full_mode_required", "earlier_step_failed"]},
+        "wait_any_terminal_count": {"type": "integer", "minimum": 1, "maximum": 6},
+        "wait_all_terminal_count": {"type": "integer", "minimum": 1, "maximum": 6},
+        "expected_host_counts": {
+          "type": "object",
+          "required": ["codex", "vscode"],
+          "properties": {
+            "codex": {"type": "integer", "minimum": 0},
+            "vscode": {"type": "integer", "minimum": 0}
+          },
+          "additionalProperties": false
+        },
+        "delivered_host_counts": {
+          "type": "object",
+          "required": ["codex", "vscode"],
+          "properties": {
+            "codex": {"type": "integer", "minimum": 0},
+            "vscode": {"type": "integer", "minimum": 0}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "lifecycle_recovery_summary": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {"enum": ["passed", "skipped", "not_run"]},
+        "reason": {"enum": ["full_mode_required", "earlier_step_failed"]},
+        "reaped_count": {"const": 1},
+        "second_reaped_count": {"const": 0},
+        "terminal_status": {"const": "failed"},
+        "failure_class": {"const": "supervisor_lost"}
+      },
+      "additionalProperties": false
+    },
+    "fixture": {
+      "type": "object",
+      "required": ["status", "root", "reason"],
+      "properties": {
+        "status": {"enum": ["removed", "retained", "not_created"]},
+        "root": {"type": ["string", "null"]},
+        "reason": {
+          "enum": ["success_cleanup", "requested", "failure", "creation_failed"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "failure": {"$ref": "#/$defs/error"}
+  },
+  "$defs": {
+    "error": {
+      "type": "object",
+      "required": ["type", "message"],
+      "properties": {
+        "type": {"type": "string", "minLength": 1},
+        "message": {"type": "string", "maxLength": 500}
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "passed"}}},
+      "then": {
+        "not": {"required": ["failure"]},
+        "properties": {
+          "recovery_summary": {
+            "properties": {
+              "recovered_count": {"const": 5},
+              "scenarios": {"minItems": 5}
+            }
+          }
+        }
+      },
+      "else": {"required": ["failure"]}
+    },
+    {
+      "if": {"properties": {"fixture": {"properties": {"status": {"const": "removed"}}}}},
+      "then": {
+        "properties": {
+          "fixture": {
+            "properties": {
+              "root": {"type": "null"},
+              "reason": {"const": "success_cleanup"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"fixture": {"properties": {"status": {"const": "not_created"}}}}},
+      "then": {
+        "properties": {
+          "fixture": {"properties": {"reason": {"const": "creation_failed"}}}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"fixture": {"properties": {"status": {"const": "retained"}}}}},
+      "then": {
+        "properties": {
+          "fixture": {
+            "properties": {
+              "root": {"type": "string", "minLength": 1},
+              "reason": {"enum": ["requested", "failure"]}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "concurrency_summary": {"properties": {"status": {"const": "passed"}}}
+        }
+      },
+      "then": {
+        "properties": {
+          "concurrency_summary": {
+            "required": [
+              "wait_any_terminal_count",
+              "wait_all_terminal_count",
+              "expected_host_counts",
+              "delivered_host_counts"
+            ],
+            "not": {"required": ["reason"]},
+            "properties": {
+              "task_count": {"const": 6},
+              "wait_all_terminal_count": {"const": 6}
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "concurrency_summary": {
+            "required": ["reason"],
+            "properties": {"task_count": {"const": 0}}
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"effective_mode": {"const": "portable"}},
+        "required": ["effective_mode"]
+      },
+      "then": {
+        "properties": {
+          "concurrency_summary": {
+            "properties": {
+              "status": {"const": "skipped"},
+              "reason": {"const": "full_mode_required"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "effective_mode": {"const": "full"},
+          "status": {"const": "passed"}
+        },
+        "required": ["effective_mode", "status"]
+      },
+      "then": {
+        "properties": {
+          "concurrency_summary": {
+            "properties": {"status": {"const": "passed"}}
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "lifecycle_recovery_summary": {
+            "properties": {"status": {"const": "passed"}}
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "lifecycle_recovery_summary": {
+            "required": [
+              "reaped_count",
+              "second_reaped_count",
+              "terminal_status",
+              "failure_class"
+            ],
+            "not": {"required": ["reason"]}
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "lifecycle_recovery_summary": {"required": ["reason"]}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"effective_mode": {"const": "portable"}},
+        "required": ["effective_mode"]
+      },
+      "then": {
+        "properties": {
+          "lifecycle_recovery_summary": {
+            "properties": {
+              "status": {"const": "skipped"},
+              "reason": {"const": "full_mode_required"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "effective_mode": {"const": "full"},
+          "status": {"const": "passed"}
+        },
+        "required": ["effective_mode", "status"]
+      },
+      "then": {
+        "properties": {
+          "lifecycle_recovery_summary": {
+            "properties": {"status": {"const": "passed"}}
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false
+}

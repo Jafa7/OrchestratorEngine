@@ -101,6 +101,16 @@ class InstallSmokeTests(unittest.TestCase):
             runtime_capabilities = self.run_cli(
                 cli, project, "runtime-capabilities"
             )
+            conformance = self.run_cli(
+                cli,
+                project,
+                "conformance",
+                "run",
+                "--mode",
+                "full",
+                "--timeout-seconds",
+                "15",
+            )
 
             adoption = self.run_cli(cli, project, "adopt", "--host", "claude")
 
@@ -675,6 +685,10 @@ class InstallSmokeTests(unittest.TestCase):
         self.assertEqual(codex_capability["requirement"], "codex queue")
         self.assertEqual(runtime_capabilities["portable_core"], "supported")
         self.assertEqual(runtime_capabilities["detached_lifecycle"], "supported")
+        self.assertEqual(conformance["kind"], "ORCHESTRATOR_CONFORMANCE_REPORT")
+        self.assertEqual(conformance["status"], "passed")
+        self.assertEqual(conformance["effective_mode"], "full")
+        self.assertEqual(conformance["fixture"]["status"], "removed")
         self.assertEqual(adoption["kind"], "ORCHESTRATOR_ADOPTION")
         self.assertTrue(policy_exists)
         self.assertTrue(workers["workers"]["smoke"]["enabled"])

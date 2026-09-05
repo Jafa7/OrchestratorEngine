@@ -9,10 +9,45 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from orchestrator_engine import binding, cli, core, platform_runtime, watcher, workers
+from orchestrator_engine import (
+    binding,
+    cli,
+    conformance,
+    core,
+    platform_runtime,
+    watcher,
+    workers,
+)
 
 
 class CliTests(unittest.TestCase):
+    def test_conformance_cli_emits_report_and_exit_code(self) -> None:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = cli.main(["conformance", "run", "--mode", "portable"])
+
+        report = json.loads(output.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(report["kind"], conformance.CONFORMANCE_KIND)
+        self.assertEqual(report["status"], "passed")
+
+    def test_conformance_cli_emits_json_when_fixture_creation_fails(self) -> None:
+        output = io.StringIO()
+        with (
+            patch.object(
+                conformance,
+                "_create_fixture",
+                side_effect=PermissionError("fixture denied"),
+            ),
+            contextlib.redirect_stdout(output),
+        ):
+            code = cli.main(["conformance", "run", "--mode", "portable"])
+
+        report = json.loads(output.getvalue())
+        self.assertEqual(code, 1)
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(report["fixture"]["status"], "not_created")
+
     def test_runtime_capabilities_cli_emits_versioned_report(self) -> None:
         output = io.StringIO()
         with contextlib.redirect_stdout(output):

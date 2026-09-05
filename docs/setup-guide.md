@@ -89,6 +89,19 @@ Before continuing with detached workers or a watcher service, expect
 `"detached_lifecycle": "supported"`. An unsupported result is not repaired by
 installing a provider CLI.
 
+When working from a development checkout that exposes `conformance run`, it
+can be run here without a provider CLI or credentials. Its default `auto` mode
+runs the full detached synthetic-worker path when that lifecycle is supported
+and otherwise verifies the portable event, signal, notification and
+idempotency path. Both modes also verify deterministic recovery from bounded
+interrupted-write scenarios. Full mode additionally checks six concurrent
+synthetic workers, aggregate waits, host-scoped signal routing and deterministic
+reaping of an abandoned unclaimed task descriptor. Continue only when its JSON
+report says `"status": "passed"`; a failed fixture is retained at the reported
+path for diagnosis. This command becomes a required check when the immutable
+release installed above contains it; do not require it from an older pinned
+release.
+
 If `orchestrator-engine` is not on PATH, use `python3 -m orchestrator_engine.cli`
 everywhere below — but prefer a real install: the worker supervisor re-executes
 the module with the same interpreter and must be able to import it without a

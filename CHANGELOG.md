@@ -4,6 +4,24 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- A provider-free `conformance run` command verifies a clean installation
+  through an isolated portable or full detached synthetic-worker fixture,
+  bounded machine-readable evidence and idempotent watcher delivery.
+- The packaged `conformance-report` schema makes that self-test result a
+  versioned public contract; successful fixtures are removed by default while
+  failed fixtures are retained for diagnosis.
+- A provider-free crash-recovery matrix verifies convergence at interrupted
+  result, evidence, event, signal, notification and watcher-state boundaries
+  without mutating adopter state.
+- Full conformance runs six concurrent synthetic workers, exercises aggregate
+  wait-any/wait-all behavior and verifies host-scoped signal partitioning from
+  dispatch-time wake-target snapshots.
+- Full conformance also verifies one-shot recovery of an expired unclaimed task
+  descriptor through the worker reaper, including durable failure evidence and
+  idempotent host-scoped signal consumption.
+
 ## [0.9.0] - 2026-09-05
 
 ### Added

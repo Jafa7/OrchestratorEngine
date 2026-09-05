@@ -108,7 +108,19 @@ orchestrator-engine --project-root /path/to/project bind --host HOST
 ```
 
 Replace `HOST` with `codex`, `claude` or `vscode` and run `bind` from the chat
-that should own completions.
+that should own completions. Development checkouts containing the provider-free
+`conformance run` command can additionally verify a new temporary fixture. On
+Linux/WSL it includes a real detached synthetic worker; on native
+Windows/macOS it verifies the portable event, inbox and notification path.
+Successful temporary fixtures are removed, while failures are retained and
+named in the bounded JSON report. Both modes also exercise deterministic
+recovery from five interrupted-write boundaries without touching the adopting
+project. Full mode additionally runs six concurrent synthetic workers, checks
+aggregate `wait any/all`, proves that snapshotted Codex and VS Code targets are
+consumed only by their host-scoped watcher state, and verifies deterministic
+reaping of an abandoned unclaimed task descriptor. It becomes part of the
+required install check when the immutable release pin above includes that
+command.
 
 Edit the generated `.orchestrator/workers.toml`, enabling only profiles whose
 CLI, model and non-interactive permission strategy have been verified. The

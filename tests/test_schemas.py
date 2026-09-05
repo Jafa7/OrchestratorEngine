@@ -4,13 +4,14 @@ import copy
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 from jsonschema import Draft202012Validator, FormatChecker
 from referencing import Registry, Resource
 
-from orchestrator_engine import schemas
+from orchestrator_engine import conformance, schemas
 
 
 class SchemaContractTests(unittest.TestCase):
@@ -110,6 +111,107 @@ class SchemaContractTests(unittest.TestCase):
                 self.assertTrue(
                     list(self.validators[name].iter_errors(artifact))
                 )
+
+    def test_conformance_report_enforces_failure_and_fixture_disposition(self) -> None:
+        path = (
+            Path(__file__).parent
+            / "fixtures"
+            / "schemas"
+            / "valid"
+            / "conformance-report.json"
+        )
+        report = json.loads(path.read_text(encoding="utf-8"))
+
+        failed_without_reason = {**copy.deepcopy(report), "status": "failed"}
+        self.assertTrue(
+            list(
+                self.validators["conformance-report"].iter_errors(
+                    failed_without_reason
+                )
+            )
+        )
+
+        retained_without_path = copy.deepcopy(report)
+        retained_without_path["fixture"] = {
+            "status": "retained",
+            "root": None,
+            "reason": "requested",
+        }
+        self.assertTrue(
+            list(
+                self.validators["conformance-report"].iter_errors(
+                    retained_without_path
+                )
+            )
+        )
+
+        portable_claiming_concurrency = copy.deepcopy(report)
+        portable_claiming_concurrency["concurrency_summary"] = {
+            "status": "passed",
+            "task_count": 6,
+            "wait_any_terminal_count": 1,
+            "wait_all_terminal_count": 6,
+            "expected_host_counts": {"codex": 3, "vscode": 3},
+            "delivered_host_counts": {"codex": 3, "vscode": 3},
+        }
+        self.assertTrue(
+            list(
+                self.validators["conformance-report"].iter_errors(
+                    portable_claiming_concurrency
+                )
+            )
+        )
+
+        portable_claiming_lifecycle_recovery = copy.deepcopy(report)
+        portable_claiming_lifecycle_recovery["lifecycle_recovery_summary"] = {
+            "status": "passed",
+            "reaped_count": 1,
+            "second_reaped_count": 0,
+            "terminal_status": "failed",
+            "failure_class": "supervisor_lost",
+        }
+        self.assertTrue(
+            list(
+                self.validators["conformance-report"].iter_errors(
+                    portable_claiming_lifecycle_recovery
+                )
+            )
+        )
+
+        full = copy.deepcopy(report)
+        full["requested_mode"] = "full"
+        full["effective_mode"] = "full"
+        full["concurrency_summary"] = {
+            "status": "passed",
+            "task_count": 6,
+            "wait_any_terminal_count": 1,
+            "wait_all_terminal_count": 6,
+            "expected_host_counts": {"codex": 3, "vscode": 3},
+            "delivered_host_counts": {"codex": 3, "vscode": 3},
+        }
+        full["lifecycle_recovery_summary"] = {
+            "status": "passed",
+            "reaped_count": 1,
+            "second_reaped_count": 0,
+            "terminal_status": "failed",
+            "failure_class": "supervisor_lost",
+        }
+        self.assertEqual(
+            list(self.validators["conformance-report"].iter_errors(full)),
+            [],
+        )
+
+    def test_runtime_conformance_reports_match_packaged_schema(self) -> None:
+        passed = conformance.run_conformance(mode="portable")
+        with tempfile.TemporaryDirectory() as existing:
+            failed = conformance.run_conformance(
+                mode="portable",
+                fixture_root=Path(existing),
+            )
+
+        validator = self.validators["conformance-report"]
+        self.assertEqual(list(validator.iter_errors(passed)), [])
+        self.assertEqual(list(validator.iter_errors(failed)), [])
 
     def test_cli_lists_and_prints_schema(self) -> None:
         command = [sys.executable, "-m", "orchestrator_engine.cli", "schemas"]
