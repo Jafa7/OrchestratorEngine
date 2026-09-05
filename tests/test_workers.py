@@ -693,6 +693,86 @@ class WorkerRunTests(unittest.TestCase):
             effective_hash,
         )
 
+    def test_supervisor_uses_dispatch_time_execution_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            config = workers.workers_config_path(root)
+            config.parent.mkdir(parents=True)
+            config.write_text(
+                f"""
+[workers.capture]
+command = [
+  "{sys.executable}",
+  "-c",
+  "import sys; print('dispatch:' + sys.stdin.read())",
+]
+prompt_via = "stdin"
+""",
+                encoding="utf-8",
+            )
+            prompt = write_prompt(root)
+            dispatched = workers.run_worker(
+                root,
+                worker="capture",
+                task_id="T-EXECUTION-SNAPSHOT",
+                prompt_file=prompt,
+                popen_factory=FakePopen,
+            )
+            config.write_text(
+                f"""
+[workers.capture]
+command = [
+  "{sys.executable}",
+  "-c",
+  "import sys; print('changed:' + sys.stdin.read())",
+]
+prompt_via = "stdin"
+""",
+                encoding="utf-8",
+            )
+
+            workers.supervise_worker(
+                root,
+                worker="capture",
+                task_id="T-EXECUTION-SNAPSHOT",
+                prompt_file=prompt,
+            )
+            task_dir = workers.task_dir_for(root, "T-EXECUTION-SNAPSHOT")
+            stdout = (task_dir / "worker-stdout.log").read_text(encoding="utf-8")
+            evidence = core.load_object(task_dir / "evidence.json")
+
+        self.assertIn("dispatch:", stdout)
+        self.assertNotIn("changed:", stdout)
+        self.assertEqual(
+            evidence["worker_execution_snapshot"]["config_sha256"],
+            dispatched["worker_execution_snapshot"]["config_sha256"],
+        )
+
+    def test_supervisor_rejects_modified_execution_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            prompt = write_prompt(root)
+            dispatched = workers.run_worker(
+                root,
+                worker="echo",
+                task_id="T-EXECUTION-TAMPER",
+                prompt_file=prompt,
+                popen_factory=FakePopen,
+            )
+            descriptor_path = Path(dispatched["descriptor_path"])
+            stored = core.load_object(descriptor_path)
+            stored["worker_execution_snapshot"]["config"]["command"] = ["false"]
+            core.atomic_json(descriptor_path, stored)
+
+            with self.assertRaisesRegex(workers.WorkerError, "fingerprint mismatch"):
+                workers.supervise_worker(
+                    root,
+                    worker="echo",
+                    task_id="T-EXECUTION-TAMPER",
+                    prompt_file=prompt,
+                )
+
     def test_run_worker_releases_task_claim_when_policy_is_unreadable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

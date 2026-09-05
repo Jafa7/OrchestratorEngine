@@ -378,7 +378,10 @@ class WatcherTests(unittest.TestCase):
                     deferred["status"]
                     != watcher.DEFER_STATUS_MANUAL_REQUIRED
                 ):
-                    deferred["retry_after_at"] = 0
+                    scoped_key = watcher.signal_state_key(root, "event-network")
+                    watcher_state["deferred_signals"][scoped_key][
+                        "retry_after_at"
+                    ] = 0
                     core.atomic_json(state, watcher_state)
             after_limit = watcher.scan_once(
                 [root],
@@ -649,6 +652,59 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(stored["process_identity"], FAKE_PROCESS_IDENTITY)
         self.assertIn("watch", FakePopen.command)
         self.assertTrue(FakePopen.kwargs["start_new_session"])
+
+    def test_concurrent_service_start_spawns_once(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        calls = 0
+        process = mock.Mock(pid=4242)
+
+        def popen_factory(*_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            entered.set()
+            self.assertTrue(release.wait(timeout=2))
+            return process
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            service_file = root / "service.json"
+            results: list[dict] = []
+            errors: list[Exception] = []
+
+            def launch() -> None:
+                try:
+                    results.append(
+                        watcher.start_service(
+                            [root],
+                            interval_seconds=5,
+                            state_path=root / "watcher-state.json",
+                            service_file=service_file,
+                            action="current-thread-callback",
+                            target_thread_id="thread-1",
+                            codex="codex",
+                            popen_factory=popen_factory,
+                            process_identity_reader=fake_process_identity,
+                        )
+                    )
+                except Exception as error:
+                    errors.append(error)
+
+            first = threading.Thread(target=launch)
+            second = threading.Thread(target=launch)
+            with mock.patch.object(watcher, "process_alive", return_value=True):
+                first.start()
+                self.assertTrue(entered.wait(timeout=2))
+                second.start()
+                release.set()
+                first.join(timeout=2)
+                second.join(timeout=2)
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], watcher.WatcherError)
+        self.assertIn("already running", str(errors[0]))
 
     def test_service_stop_refuses_legacy_pid_without_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1352,6 +1408,65 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(result["thread_wakeups"][0]["status"], "woken")
         self.assertEqual(calls[0]["binding"]["target_thread_id"], "thread-origin")
 
+    def test_multi_project_scan_scopes_duplicate_event_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            first_project = base / "one" / "app"
+            second_project = base / "two" / "app"
+            first_project.mkdir(parents=True)
+            second_project.mkdir(parents=True)
+            write_event(first_project, event_id="shared-event")
+            write_event(second_project, event_id="shared-event")
+            state_path = base / "watcher-state.json"
+
+            first = watcher.scan_once(
+                [first_project, second_project],
+                state_path=state_path,
+                action="record",
+            )
+            second = watcher.scan_once(
+                [first_project, second_project],
+                state_path=state_path,
+                action="record",
+            )
+            state = watcher.load_state(state_path)
+
+        self.assertEqual(first["new_count"], 2)
+        self.assertEqual(second["new_count"], 0)
+        self.assertEqual(len(state["seen_signal_keys"]), 2)
+        self.assertEqual(state["seen_event_ids"], ["shared-event"])
+
+    def test_legacy_seen_event_migrates_to_all_configured_projects(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            first_project = base / "one"
+            second_project = base / "two"
+            first_project.mkdir()
+            second_project.mkdir()
+            write_event(first_project, event_id="legacy-event")
+            write_event(second_project, event_id="legacy-event")
+            state_path = base / "watcher-state.json"
+            core.atomic_json(
+                state_path,
+                {
+                    "schema_version": 1,
+                    "kind": watcher.STATE_KIND,
+                    "seen_event_ids": ["legacy-event"],
+                    "deferred_events": {},
+                    "acknowledged_events": {},
+                },
+            )
+
+            result = watcher.scan_once(
+                [first_project, second_project],
+                state_path=state_path,
+                action="record",
+            )
+            state = watcher.load_state(state_path)
+
+        self.assertEqual(result["new_count"], 0)
+        self.assertEqual(len(state["seen_signal_keys"]), 2)
+
     def test_scan_skips_malformed_signal_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -1630,6 +1745,46 @@ class FakeCompleted:
 
 
 class VscodeChatTests(unittest.TestCase):
+    def test_concurrent_wake_chat_delivers_once(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        calls = 0
+
+        def runner(*_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            entered.set()
+            self.assertTrue(release.wait(timeout=2))
+            return FakeCompleted(0)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-vscode-race")
+            signal_record = core.inbox(root)[0]
+            results: list[dict] = []
+            first = threading.Thread(
+                target=lambda: results.append(
+                    vscode_chat.wake_chat(root, signal_record, runner=runner)
+                )
+            )
+            second = threading.Thread(
+                target=lambda: results.append(
+                    vscode_chat.wake_chat(root, signal_record, runner=runner)
+                )
+            )
+            first.start()
+            self.assertTrue(entered.wait(timeout=2))
+            second.start()
+            release.set()
+            first.join(timeout=2)
+            second.join(timeout=2)
+
+        self.assertEqual(calls, 1)
+        self.assertCountEqual(
+            [result["status"] for result in results],
+            ["woken", "skipped"],
+        )
+
     def test_wake_chat_writes_woken_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -1679,6 +1834,99 @@ class VscodeChatTests(unittest.TestCase):
 
 
 class CodexSessionQueueTests(unittest.TestCase):
+    def test_concurrent_queue_delivery_runs_once(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        calls = 0
+
+        def runner(*_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            entered.set()
+            self.assertTrue(release.wait(timeout=2))
+            return FakeCompleted(
+                stdout="Queued message message-race for thread thread-1."
+            )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-queue-race")
+            signal_record = core.inbox(root)[0]
+            results: list[dict] = []
+            first = threading.Thread(
+                target=lambda: results.append(
+                    codex_app.queue_current_thread(
+                        root,
+                        signal_record,
+                        target_thread_id="thread-1",
+                        runner=runner,
+                    )
+                )
+            )
+            second = threading.Thread(
+                target=lambda: results.append(
+                    codex_app.queue_current_thread(
+                        root,
+                        signal_record,
+                        target_thread_id="thread-1",
+                        runner=runner,
+                    )
+                )
+            )
+            first.start()
+            self.assertTrue(entered.wait(timeout=2))
+            second.start()
+            release.set()
+            first.join(timeout=2)
+            second.join(timeout=2)
+
+        self.assertEqual(calls, 1)
+        self.assertCountEqual(
+            [result["status"] for result in results],
+            ["queued", "skipped"],
+        )
+
+    def test_concurrent_ambiguous_queue_delivery_is_not_retried(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        calls = 0
+
+        def runner(command, **_kwargs):
+            nonlocal calls
+            calls += 1
+            entered.set()
+            self.assertTrue(release.wait(timeout=2))
+            raise subprocess.TimeoutExpired(command, 30)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-queue-ambiguous-race")
+            signal_record = core.inbox(root)[0]
+            results: list[dict] = []
+            threads = [
+                threading.Thread(
+                    target=lambda: results.append(
+                        codex_app.queue_current_thread(
+                            root,
+                            signal_record,
+                            target_thread_id="thread-1",
+                            runner=runner,
+                        )
+                    )
+                )
+                for _ in range(2)
+            ]
+            threads[0].start()
+            self.assertTrue(entered.wait(timeout=2))
+            threads[1].start()
+            release.set()
+            for thread in threads:
+                thread.join(timeout=2)
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(len(results), 2)
+        self.assertTrue(all(result["status"] == "deferred" for result in results))
+
     def test_stale_desktop_launcher_resolves_after_app_update(self) -> None:
         stale = "/mnt/c/Users/user/AppData/Local/OpenAI/Codex/bin/old/codex.exe"
         current = "/mnt/c/Users/user/AppData/Local/OpenAI/Codex/bin/new/codex.exe"
@@ -1915,7 +2163,7 @@ class CodexSessionQueueTests(unittest.TestCase):
             )
             receipt = core.load_object(receipt_path)
 
-        self.assertEqual(receipt["status"], "deferred")
+        self.assertEqual(receipt["status"], "retry_requested")
         self.assertIn("retry_requested_at", receipt)
 
     def test_bound_thread_falls_back_when_queue_is_unavailable(self) -> None:

@@ -106,7 +106,7 @@ Install an immutable release, scaffold the project and bind the host chat:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.0.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.0.1"
 orchestrator-engine runtime-capabilities
 orchestrator-engine --project-root /path/to/project adopt --host HOST
 orchestrator-engine --project-root /path/to/project bind --host HOST
@@ -230,11 +230,14 @@ and SHA-256 instead of copying the log into chat.
 
 An agent can also record an explicit bounded phase checkpoint. A
 `workstream checkpoint --decision continue --ready` signal is delivered after
-its configured delay; `needs_user`, `waiting_external`, `blocked`, `complete`
-and `paused` never wake the chat automatically. Ending a turn by itself is not
-continuation authorization. Do not keep an app-level Goal active while waiting
-for watcher delivery: it can retain the current turn and block the queued
-message from becoming the next turn. See
+its configured delay and is suppressed if a later checkpoint revokes it or its
+wall-time expires. `needs_user`, `waiting_external`, `blocked`, `complete` and
+`paused` do not create timer wakeups; the named external operation owns a
+`waiting_external` wakeup. Interrupted checkpoint publication is reconciled by
+the watcher without a model turn. Ending a turn by itself is not continuation
+authorization. Do not keep an app-level Goal active while waiting for watcher
+delivery: it can retain the current turn and block the queued message from
+becoming the next turn. See
 [docs/workstream-continuation.md](docs/workstream-continuation.md).
 
 Per-host setup details: [docs/hosts.md](docs/hosts.md).

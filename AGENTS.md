@@ -32,6 +32,10 @@ documented contracts.
   operation, and end the turn so the watcher can resume the chat. Use an
   in-turn deterministic wait only when deliberately choosing not to use the
   watcher delivery path.
+- On a workstream continuation wakeup, read `workstream status` before acting.
+  Continue only when the descriptor is `active` and the message event ID is
+  still the descriptor's `active_continuation.event_id`; otherwise treat the
+  queued message as revoked evidence and do not execute its next action.
 
 ## Risk-based verification
 

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "kind": "WORKER_EXECUTION_SNAPSHOT",
+  "worker": "codex-review",
+  "captured_at": "2026-09-05T10:00:00.000+00:00",
+  "config": {
+    "command": ["codex", "exec", "--json"],
+    "prompt_via": "arg",
+    "timeout_seconds": null,
+    "expect_long_running": true,
+    "max_concurrent": 1,
+    "usage_adapter": "codex-jsonl",
+    "max_no_progress_seconds": 900,
+    "soft_duration_seconds": 3600,
+    "soft_output_bytes": 1048576,
+    "soft_token_budget": 100000,
+    "availability_probe_configured": true,
+    "policy": "quality-efficient",
+    "warnings": [],
+    "extras": {"permission_profile": "full"}
+  },
+  "config_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}

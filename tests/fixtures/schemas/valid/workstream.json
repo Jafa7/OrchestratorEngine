@@ -5,10 +5,17 @@
   "project_id": "project-123",
   "goal": "Finish the accepted roadmap.",
   "status": "active",
+  "checkpoint_count": 1,
   "continuation_count": 1,
   "max_continuations": 8,
   "delay_seconds": 10.0,
   "max_wall_seconds": 14400,
+  "active_continuation": {
+    "checkpoint_id": "phase-1",
+    "sequence": 1,
+    "event_id": "event-1",
+    "not_before": "2026-09-05T10:10:10.000+00:00"
+  },
   "created_at": "2026-09-05T10:00:00.000+00:00",
   "updated_at": "2026-09-05T10:10:00.000+00:00"
 }

@@ -36,6 +36,9 @@ For autonomous work that must resume after an external operation:
 3. Record a `waiting_external` checkpoint naming that operation.
 4. End the host turn and let the operation's terminal event wake the chat.
 5. On resume, read the checkpoint and bounded result/evidence before acting.
+   For a timer continuation, also confirm that `workstream status` is `active`
+   and its `active_continuation.event_id` matches the received event. A queued
+   message can outlive the state that originally authorized it.
 
 An in-turn blocking wait is a separate mechanism. Use it only when the current
 turn is intentionally kept open and no watcher message is expected to resume
@@ -81,8 +84,10 @@ external prerequisite. Task prose alone cannot provide this declaration.
   until its `not_before` timestamp, without model polling.
 - A checkpoint ID is immutable and idempotent. Repeating the same content is a
   no-op; reusing the ID for different content fails.
-- A workstream defaults to at most eight automatic continuations and four
-  hours. Reaching either limit records `needs_user` and emits no wakeup.
+- A workstream defaults to at most eight automatic resumptions and four hours.
+  Both timer `continue` checkpoints and `waiting_external` checkpoints consume
+  this shared budget. Reaching either limit records `needs_user` and emits no
+  timer wakeup; a timer signal that becomes due after wall-time is suppressed.
 - `needs_user`, `blocked`, `waiting_external` and `paused` require an explicit
   `workstream resume` before another `continue` checkpoint.
 - A completed workstream cannot be resumed.
@@ -91,6 +96,10 @@ external prerequisite. Task prose alone cannot provide this declaration.
 - Core does not parse roadmap documents or create tasks from project content.
   Adopters may export a small machine-readable ready-work item and let the
   host agent validate it before declaring `--ready`.
+- `waiting_on` is a bounded operation identity used for audit and agent
+  verification. It is not proof that the named operation exists or owns a
+  compatible wake channel; start and verify the detached operation before
+  recording the checkpoint.
 
 Do not checkpoint between tiny sequential edits. Continue within the current
 turn while context is useful. Use a checkpoint at a phase boundary, before a
@@ -113,6 +122,14 @@ The result contains only the bounded summary, next action and due time. The
 generic terminal event and inbox signal contain artifact paths and hashes.
 These local artifacts may contain private planning context and must remain out
 of public Git under the adopter's retention policy.
+
+Checkpoint, descriptor and event publication is a recoverable transition. On
+each scan the watcher reconciles a recorded checkpoint that was interrupted
+before descriptor or signal publication. The descriptor holds one
+`active_continuation`; a later stop or continuation checkpoint revokes the
+older timer signal before host delivery. New operation identities use
+`workstream:<workstream_id>:<checkpoint_id>`; legacy checkpoint events remain
+readable and recoverable.
 
 Read compact state with:
 

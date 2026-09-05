@@ -128,6 +128,18 @@ class SchemaContractTests(unittest.TestCase):
                     list(self.validators[name].iter_errors(artifact))
                 )
 
+    def test_worker_execution_snapshot_ref_uses_packaged_registry(self) -> None:
+        root = Path(__file__).parent / "fixtures" / "schemas" / "valid"
+        snapshot = json.loads(
+            (root / "worker-execution-snapshot.json").read_text(encoding="utf-8")
+        )
+        task = json.loads((root / "worker-task.json").read_text(encoding="utf-8"))
+        task["worker_execution_snapshot"] = snapshot
+        self.assertEqual(list(self.validators["worker-task"].iter_errors(task)), [])
+
+        task["worker_execution_snapshot"]["config"]["prompt_via"] = "file"
+        self.assertTrue(list(self.validators["worker-task"].iter_errors(task)))
+
     def test_conformance_report_enforces_failure_and_fixture_disposition(self) -> None:
         path = (
             Path(__file__).parent

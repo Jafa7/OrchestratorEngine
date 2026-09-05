@@ -58,7 +58,7 @@ For a reproducible adopter install, use an immutable release tag:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.0.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.0.1"
 ```
 
 GitHub Release archives and wheel/sdist assets are published with the tag;
@@ -835,13 +835,17 @@ See [operator-reporting.md](operator-reporting.md).
 When a `LOCAL_AI_ORCHESTRATOR_WAKEUP` follow-up message arrives:
 
 1. Read the referenced event, result and evidence files.
-2. If the worker produced an `ORCHESTRATOR_VERIFICATION_RESULT`, read its
+2. For `source: workstream_checkpoint`, run `workstream status` and continue
+   only if the descriptor is `active` and the message event ID still matches
+   `active_continuation.event_id`. A queued continuation may have been revoked
+   after delivery began.
+3. If the worker produced an `ORCHESTRATOR_VERIFICATION_RESULT`, read its
    `verification-result.json` and `summary.txt` first. Do not read full logs
    for a passed check unless the user asks; for failed checks, inspect only
    the failed command logs referenced by the result.
-3. Verify the worker's actual output (diffs, checks) before accepting it.
-4. Decide the next safe action; dispatch follow-up tasks the same way.
-5. Never commit or push unless the user explicitly asked.
+4. Verify the worker's actual output (diffs, checks) before accepting it.
+5. Decide the next safe action; dispatch follow-up tasks the same way.
+6. Never commit or push unless the user explicitly asked.
 ```
 
 Finally, tell the user what was configured: host binding, workers, watcher

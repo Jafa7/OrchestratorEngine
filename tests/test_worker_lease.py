@@ -128,6 +128,79 @@ class WorkerLeaseTests(unittest.TestCase):
         self.assertEqual(stored["status"], "failed")
         self.assertEqual(event["terminal_status"], "failed")
 
+    def test_reap_reconciles_released_lease_with_active_descriptor(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            task_id = "T-RELEASED-GAP"
+            task_dir = workers.task_dir_for(root, task_id)
+            task_dir.mkdir(parents=True)
+            now = core.utc_now()
+            descriptor = {
+                "schema_version": 1,
+                "kind": workers.TASK_KIND,
+                "task_id": task_id,
+                "worker": "test",
+                "status": "running",
+                "prompt_file": str(root / "prompt.md"),
+                "prompt_sha256": "a" * 64,
+                "task_dir": str(task_dir),
+                "created_at": now,
+            }
+            result = {
+                "schema_version": 1,
+                "kind": "WORKER_RESULT",
+                "task_id": task_id,
+                "worker": "test",
+                "terminal_status": "completed",
+                "exit_code": 0,
+                "failure_reason": None,
+                "duration_seconds": 0.0,
+                "stdout_path": str(task_dir / "worker-stdout.log"),
+                "stderr_path": str(task_dir / "worker-stderr.log"),
+                "started_at": now,
+                "finished_at": now,
+            }
+            evidence = {
+                "schema_version": 1,
+                "kind": "WORKER_EVIDENCE",
+                "task_id": task_id,
+                "worker": "test",
+                "command": ["test"],
+                "prompt_file": str(root / "prompt.md"),
+                "prompt_sha256": "a" * 64,
+                "worker_config": {},
+                "started_at": now,
+                "finished_at": now,
+            }
+            workers.finalize_terminal_task(
+                root,
+                task_id=task_id,
+                task_dir=task_dir,
+                result=result,
+                evidence=evidence,
+            )
+            core.atomic_json(task_dir / "task.json", descriptor)
+            core.atomic_json(
+                worker_lease.lease_path(task_dir),
+                {
+                    "schema_version": 1,
+                    "kind": worker_lease.LEASE_KIND,
+                    "task_id": task_id,
+                    "worker": "test",
+                    "status": "released",
+                    "terminal_status": "completed",
+                    "released_at": now,
+                },
+            )
+
+            report = workers.reap_worker_tasks(root)
+            stored = core.load_object(task_dir / "task.json")
+
+        self.assertEqual(report["reconciled_count"], 1)
+        self.assertEqual(report["outcomes"][0]["status"], "reconciled_released")
+        self.assertEqual(stored["status"], "completed")
+        self.assertIn("event_path", stored)
+
     def test_terminal_claim_preserves_first_writer(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

@@ -44,6 +44,61 @@ def base_result(check_id: str, *, status: str = "passed") -> dict:
 
 
 class VerificationStatusTests(unittest.TestCase):
+    def test_check_owner_claim_is_idempotent_for_same_operation_type(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            first = verification.claim_check_owner(
+                root,
+                operation_id="SHARED-ID",
+                operation_type="local_check",
+            )
+            second = verification.claim_check_owner(
+                root,
+                operation_id="SHARED-ID",
+                operation_type="local_check",
+            )
+
+        self.assertEqual(first, second)
+
+    def test_check_owner_claim_rejects_cross_operation_reuse(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            verification.claim_check_owner(
+                root,
+                operation_id="SHARED-ID",
+                operation_type="local_check",
+            )
+            with self.assertRaisesRegex(
+                verification.VerificationError,
+                "already owned by local_check",
+            ):
+                verification.claim_check_owner(
+                    root,
+                    operation_id="SHARED-ID",
+                    operation_type="github_actions",
+                )
+
+    def test_check_owner_claim_respects_legacy_result_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_check(root, "LEGACY-ID", base_result("LEGACY-ID"))
+            owner = verification.claim_check_owner(
+                root,
+                operation_id="LEGACY-ID",
+                operation_type="local_check",
+            )
+            with self.assertRaisesRegex(
+                verification.VerificationError,
+                "already owned by local_check",
+            ):
+                verification.claim_check_owner(
+                    root,
+                    operation_id="LEGACY-ID",
+                    operation_type="github_pull_request",
+                )
+
+        self.assertEqual(owner.name, verification.CHECK_OWNER_NAME)
+
     def test_passed_check_is_clean(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

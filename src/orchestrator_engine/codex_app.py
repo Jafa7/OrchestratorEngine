@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import core, host_capabilities, wakeup
+from . import core, host_capabilities, platform_runtime, wakeup
 
 
 class CodexAppError(RuntimeError):
@@ -679,6 +679,13 @@ def _existing_wakeup(
             "created_at": core.utc_now(),
             "receipt": str(receipt_path),
         }
+    if (
+        existing.get("status") == "deferred"
+        and str(existing.get("reason", "")).startswith(
+            "queue_delivery_ambiguous"
+        )
+    ):
+        return {**existing, "receipt": str(receipt_path)}
     if existing.get("status") not in {
         "queued",
         "woken",
@@ -697,6 +704,41 @@ def _existing_wakeup(
 
 
 def queue_current_thread(
+    project_root: Path,
+    signal: dict[str, Any],
+    *,
+    target_thread_id: str,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    codex: str = "codex",
+    runner=subprocess.run,
+    activator=activate_queued_thread_window,
+) -> dict[str, Any]:
+    """Serialize one durable live-queue delivery per project event."""
+
+    if not target_thread_id:
+        raise CodexAppError("target thread id is required")
+    event_id = signal.get("event_id")
+    if not isinstance(event_id, str) or not event_id:
+        raise CodexAppError("signal has invalid event_id")
+    project = project_root.expanduser().resolve()
+    receipt_path = thread_wakeup_receipt_path(
+        project,
+        event_id,
+        state_dir=state_dir,
+    )
+    with platform_runtime.exclusive_file_lock(receipt_path.with_suffix(".lock")):
+        return _queue_current_thread_unlocked(
+            project,
+            signal,
+            target_thread_id=target_thread_id,
+            state_dir=state_dir,
+            codex=codex,
+            runner=runner,
+            activator=activator,
+        )
+
+
+def _queue_current_thread_unlocked(
     project_root: Path,
     signal: dict[str, Any],
     *,
@@ -866,6 +908,49 @@ def wake_bound_thread(
 
 
 def wake_current_thread(
+    project_root: Path,
+    signal: dict[str, Any],
+    *,
+    target_thread_id: str,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    codex: str = "codex",
+    server_factory=AppServer,
+    activator=activate_thread_window,
+    failure_window_seconds: float = TURN_FAILURE_WINDOW_SECONDS,
+    finalizer=spawn_turn_finalizer,
+    recent_activity_seconds: float = THREAD_RECENT_ACTIVITY_GRACE_SECONDS,
+    recent_activity_checker=None,
+) -> dict[str, Any]:
+    """Serialize one durable App Server delivery per project event."""
+
+    if not target_thread_id:
+        raise CodexAppError("target thread id is required")
+    event_id = signal.get("event_id")
+    if not isinstance(event_id, str) or not event_id:
+        raise CodexAppError("signal has invalid event_id")
+    project = project_root.expanduser().resolve()
+    receipt_path = thread_wakeup_receipt_path(
+        project,
+        event_id,
+        state_dir=state_dir,
+    )
+    with platform_runtime.exclusive_file_lock(receipt_path.with_suffix(".lock")):
+        return _wake_current_thread_unlocked(
+            project,
+            signal,
+            target_thread_id=target_thread_id,
+            state_dir=state_dir,
+            codex=codex,
+            server_factory=server_factory,
+            activator=activator,
+            failure_window_seconds=failure_window_seconds,
+            finalizer=finalizer,
+            recent_activity_seconds=recent_activity_seconds,
+            recent_activity_checker=recent_activity_checker,
+        )
+
+
+def _wake_current_thread_unlocked(
     project_root: Path,
     signal: dict[str, Any],
     *,

@@ -7,12 +7,14 @@ data, not instructions.
 
 Packaged JSON Schema Draft 2020-12 files live in `orchestrator_engine/schemas/`.
 Stable names are `worker-task`, `worker-result`, `worker-evidence`,
-`worker-policy-snapshot`, `worker-lease`, `worker-handoff`, `worker-usage`,
+`worker-execution-snapshot`, `worker-policy-snapshot`, `worker-lease`,
+`worker-handoff`, `worker-usage`,
 `worker-output-manifest`,
 `worker-queue-entry`, `worker-cancel-request`, `worker-control-ack`,
 `worker-task-intent`, `worker-dispatch-claim`, `terminal-event`, `inbox-signal`,
-`binding`, `wake-target`, `verification-result`, `followup-terminal-event`,
-`followup-signal`, `github-actions-monitor`, `github-actions-evidence`,
+`binding`, `wake-target`, `verification-result`, `check-operation-owner`,
+`watcher-state`, `followup-terminal-event`, `followup-signal`,
+`github-actions-monitor`, `github-actions-evidence`,
 `github-actions-supervisor-launch`, `github-actions-cancel-request`,
 `github-pr-monitor`, `github-pr-evidence`, `github-pr-supervisor-launch`,
 `github-pr-cancel-request`, `workstream`, `workstream-checkpoint`,
@@ -824,6 +826,7 @@ and `checks` remains the legacy-compatible read-only result inspector.
 
 Recommended path layout:
 
+- `.orchestrator/checks/<check_id>/operation-owner.json`
 - `.orchestrator/checks/<check_id>/check.json`
 - `.orchestrator/checks/<check_id>/verification-result.json`
 - `.orchestrator/checks/<check_id>/evidence.json`
@@ -831,6 +834,15 @@ Recommended path layout:
 - `.orchestrator/checks/<check_id>/full.log`
 - `.orchestrator/checks/<check_id>/<command-label>.log`
 - `.orchestrator/check-history.json`
+
+Local checks, GitHub Actions monitors and pull-request monitors share the
+legacy-compatible `.orchestrator/checks/<operation_id>/` result namespace.
+Before writing there, each operation atomically claims `operation-owner.json`.
+Reusing one ID across different operation types fails closed instead of
+overwriting an earlier verification result and invalidating its event hash.
+Existing directories without an owner record are classified from their
+descriptor or verification suite and receive the same compatible claim on
+their next write.
 
 Reference JSON shape:
 
@@ -1161,11 +1173,23 @@ must leave the signal unseen until that time. This schedules local delivery
 without model polling and preserves normal per-host retry and acknowledgement
 semantics after the signal becomes due.
 
-Checkpoint IDs are immutable idempotency keys. Automatic continuation stops
-closed when either the workstream continuation count or wall-time limit is
-reached. Stopped states require explicit `workstream resume`; `complete` is
-irreversible. No checkpoint authorizes commit, push, merge, release,
-publication, destructive operations or scope expansion.
+Checkpoint IDs are immutable idempotency keys. Checkpoint, descriptor and
+terminal-event publication is recoverable: watcher scans reconcile an
+interrupted transition without requiring a model turn. A descriptor exposes at
+most one `active_continuation`; its event must still match at delivery time.
+Later `paused`, `needs_user`, `blocked`, `complete`, `waiting_external` or
+replacement `continue` checkpoints revoke an older timer signal. New
+continuation operation identities use the unambiguous
+`workstream:<workstream_id>:<checkpoint_id>` form; legacy events remain
+readable.
+
+Automatic continuation stops closed when either the shared automatic-resume
+count or wall-time limit is reached. Both `continue` and `waiting_external`
+consume that budget, and wall-time is checked again before timer delivery.
+`waiting_on` is a bounded audit identity, not proof that an operation exists or
+has a working wake channel. Stopped states require explicit `workstream
+resume`; `complete` is irreversible. No checkpoint authorizes commit, push,
+merge, release, publication, destructive operations or scope expansion.
 
 See [workstream-continuation.md](workstream-continuation.md) for the operator
 workflow and agent decision rules.
@@ -1213,6 +1237,15 @@ snapshot without depending on the continued existence of the source prompt.
 Editing or removing the task prompt, editing a policy file, or changing the
 active project binding after dispatch cannot alter the policy/task bytes
 already assigned to that worker.
+
+The task descriptor also contains a hash-bound `worker_execution_snapshot`
+captured before queueing or supervisor launch. It freezes the normalized
+command, prompt transport, timeout, concurrency declaration, runtime budgets,
+usage adapter, policy name, warnings and profile extras that affect execution.
+Queued admission and the supervisor use this snapshot, so editing
+`workers.toml` after dispatch cannot silently change the command or permission
+flags of an accepted task. Legacy descriptors without the field continue to
+resolve their profile at execution time.
 Profiles without `policy` remain backward compatible; `worker diagnose`
 reports `worker_policy_not_configured` at `info` severity so users can migrate
 intentionally without breaking existing dispatch.
@@ -1252,7 +1285,7 @@ retention/backup policy; core does not delete these artifacts implicitly.
 - `worker-stdout.log`, `worker-stderr.log` — captured worker output.
 - `result.json` — exit code, duration, failure reason, output paths.
 - `evidence.json` — command, original/effective prompt hashes, policy manifest
-  and worker config snapshot.
+  and worker config snapshot, plus the execution snapshot hash and timestamp.
 - `supervisor.log` — supervisor process output.
 
 `task.json` has a single writer at a time. `worker run` writes the descriptor
@@ -1599,6 +1632,17 @@ The watcher writes:
 - `thread-wakeups/<event_id>.json` — legacy-named host delivery receipt path,
   retained as a schema-version-1 file contract.
 
+Within one watcher state file, delivery identity is the full resolved project
+root plus `event_id`, represented internally by a bounded
+`seen_signal_keys` hash key. This prevents two projects with the same basename
+and event ID from suppressing each other. The historical `seen_event_ids`,
+`deferred_events` and `acknowledged_events` fields remain as compatible
+unscoped summaries. On first use, a legacy state file is conservatively
+projected across every configured project root so previously consumed events
+are not delivered again. New retry and acknowledgement records are
+authoritative under `deferred_signals` and `acknowledged_signals` and retain
+their `project_root` and original `event_id`.
+
 An event is marked seen only after a successful action, deterministic skip or
 manual acknowledgement. Active target threads remain retryable with
 exponential backoff. Callback delivery failures are bounded: ordinary
@@ -1616,17 +1660,21 @@ duplicate live turn. The adapter writes `status: "delivery_claimed"` before
 launching the queue process. If the watcher stops between launch and receipt
 finalization, that durable claim also becomes manual-required on the next
 scan. An explicit `deferred retry` releases the claim after the operator checks
-the target task.
+the target task. Delivery receipt decisions are protected by a process-wide
+file lock, so concurrent watcher consumers cannot submit the same event twice.
+Watcher service start and stop use the same serialized lifecycle rule.
 
 Deferred callback state is kept in `watcher-state.json` under
-`deferred_events`:
+`deferred_signals`; `deferred_events` remains its event-ID-only compatibility
+summary:
 
 - `deferred_retryable` — watcher will retry after `retry_after_at`.
 - `deferred_manual_required` — watcher will not retry automatically; an
   operator should read the event/result/evidence and either fix the wake
   channel or acknowledge the event.
-- `acknowledged` — recorded in `acknowledged_events` after manual resolution;
-  the event id is also added to `seen_event_ids`.
+- `acknowledged` — recorded in `acknowledged_signals` after manual resolution,
+  with an unscoped summary in `acknowledged_events`; the scoped key and event
+  ID are added to their respective seen lists.
 
 To acknowledge one pending or deferred event without deleting the durable audit
 trail, select its host explicitly and provide the manual-review reason. The

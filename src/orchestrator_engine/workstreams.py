@@ -21,6 +21,7 @@ DECISIONS = {
     "complete",
     "paused",
 }
+AUTOMATIC_DECISIONS = {"continue", "waiting_external"}
 ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 DEFAULT_DELAY_SECONDS = 10.0
 DEFAULT_MAX_CONTINUATIONS = 8
@@ -147,6 +148,7 @@ def start_workstream(
         "project_id": core.project_id(project),
         "goal": goal,
         "status": "active",
+        "checkpoint_count": 0,
         "continuation_count": 0,
         "max_continuations": max_continuations,
         "delay_seconds": round(float(delay_seconds), 3),
@@ -211,6 +213,349 @@ def limit_reason(descriptor: dict[str, Any], *, now: datetime) -> str | None:
     return None
 
 
+def wall_limit_reason(descriptor: dict[str, Any], *, now: datetime) -> str | None:
+    created = parse_timestamp(str(descriptor["created_at"]))
+    if (now - created).total_seconds() >= int(descriptor["max_wall_seconds"]):
+        return "maximum automatic continuation wall time reached"
+    return None
+
+
+def continuation_operation_id(workstream_id: str, checkpoint_id: str) -> str:
+    """Encode a workstream/checkpoint pair without delimiter ambiguity."""
+
+    return f"workstream:{workstream_id}:{checkpoint_id}"
+
+
+def parse_continuation_operation_id(operation_id: str) -> tuple[str, str] | None:
+    if not operation_id.startswith("workstream:"):
+        return None
+    try:
+        workstream_id, checkpoint_id = operation_id.removeprefix(
+            "workstream:"
+        ).split(":", maxsplit=1)
+        return (
+            validate_id(workstream_id, field="workstream id"),
+            validate_id(checkpoint_id, field="checkpoint id"),
+        )
+    except (ValueError, WorkstreamError):
+        return None
+
+
+def validate_checkpoint(
+    value: dict[str, Any],
+    *,
+    path: Path,
+    workstream_id: str,
+) -> None:
+    if (
+        not core.is_supported_schema_version(value.get("schema_version"))
+        or value.get("kind") != CHECKPOINT_KIND
+        or value.get("workstream_id") != workstream_id
+        or not isinstance(value.get("checkpoint_id"), str)
+        or not isinstance(value.get("sequence"), int)
+        or value.get("sequence", 0) < 1
+        or value.get("decision") not in DECISIONS
+    ):
+        raise WorkstreamError(f"invalid workstream checkpoint: {path}")
+
+
+def _checkpoint_artifact_paths(path: Path) -> tuple[Path, Path]:
+    checkpoint_id = path.stem
+    return (
+        path.with_name(f"{checkpoint_id}.result.json"),
+        path.with_name(f"{checkpoint_id}.evidence.json"),
+    )
+
+
+def _write_checkpoint_artifacts(path: Path, checkpoint: dict[str, Any]) -> None:
+    result_path, evidence_path = _checkpoint_artifact_paths(path)
+    core.atomic_json(
+        result_path,
+        {
+            "schema_version": core.SCHEMA_VERSION,
+            "kind": "ORCHESTRATOR_WORKSTREAM_CONTINUATION",
+            "workstream_id": checkpoint["workstream_id"],
+            "checkpoint_id": checkpoint["checkpoint_id"],
+            "status": "ready",
+            "summary": checkpoint["summary"],
+            "next_action": checkpoint["next_action"],
+            "not_before": checkpoint["not_before"],
+        },
+    )
+    core.atomic_json(
+        evidence_path,
+        {
+            "schema_version": core.SCHEMA_VERSION,
+            "kind": "ORCHESTRATOR_WORKSTREAM_EVIDENCE",
+            "workstream_id": checkpoint["workstream_id"],
+            "checkpoint_id": checkpoint["checkpoint_id"],
+            "ready_declared": True,
+            "checkpoint_path": str(path),
+            "created_at": checkpoint["created_at"],
+        },
+    )
+
+
+def _apply_checkpoint(
+    project: Path,
+    descriptor: dict[str, Any],
+    checkpoint: dict[str, Any],
+    *,
+    state_dir: str,
+) -> bool:
+    sequence = int(checkpoint["sequence"])
+    applied = int(descriptor.get("checkpoint_count", 0))
+    if sequence <= applied:
+        return False
+    if sequence != applied + 1:
+        raise WorkstreamError(
+            f"checkpoint sequence gap for {descriptor['workstream_id']}: "
+            f"expected {applied + 1}, found {sequence}"
+        )
+
+    decision = str(checkpoint["decision"])
+    descriptor.update(
+        status="active" if decision == "continue" else decision,
+        checkpoint_count=sequence,
+        latest_checkpoint_id=checkpoint["checkpoint_id"],
+        latest_checkpoint_path=str(
+            checkpoint_path(
+                project,
+                str(checkpoint["workstream_id"]),
+                str(checkpoint["checkpoint_id"]),
+                state_dir=state_dir,
+            )
+        ),
+        updated_at=checkpoint["created_at"],
+    )
+    if decision in AUTOMATIC_DECISIONS:
+        descriptor["continuation_count"] = int(
+            descriptor.get("continuation_count", 0)
+        ) + 1
+    if decision == "continue":
+        descriptor["active_continuation"] = {
+            "checkpoint_id": checkpoint["checkpoint_id"],
+            "sequence": sequence,
+            "event_id": checkpoint["event_id"],
+            "not_before": checkpoint["not_before"],
+        }
+        descriptor["last_scheduled_event_id"] = checkpoint["event_id"]
+        descriptor["last_scheduled_wake_at"] = checkpoint["not_before"]
+    else:
+        descriptor.pop("active_continuation", None)
+    if decision == "waiting_external":
+        descriptor["waiting_on"] = checkpoint["waiting_on"]
+    else:
+        descriptor.pop("waiting_on", None)
+    core.atomic_json(
+        descriptor_path(
+            project, str(descriptor["workstream_id"]), state_dir=state_dir
+        ),
+        descriptor,
+    )
+    return True
+
+
+def _ensure_checkpoint_event(
+    project: Path,
+    checkpoint: dict[str, Any],
+    *,
+    path: Path,
+    state_dir: str,
+) -> dict[str, Any] | None:
+    if checkpoint.get("decision") != "continue":
+        return None
+    _write_checkpoint_artifacts(path, checkpoint)
+    result_path, evidence_path = _checkpoint_artifact_paths(path)
+    wake_target = checkpoint.get("wake_target")
+    operation_id = checkpoint.get("operation_id")
+    if not isinstance(operation_id, str):
+        operation_id = (
+            f"{checkpoint['workstream_id']}.{checkpoint['checkpoint_id']}"
+        )
+    return core.write_followup_event(
+        project,
+        operation_id=operation_id,
+        source_kind=SOURCE_KIND,
+        terminal_status="completed",
+        result_path=result_path,
+        evidence_path=evidence_path,
+        state_dir=state_dir,
+        event_id=str(checkpoint["event_id"]),
+        wake_target=wake_target if isinstance(wake_target, dict) else None,
+        not_before=str(checkpoint["not_before"]),
+    )
+
+
+def _checkpoint_files(project: Path, workstream_id: str, *, state_dir: str):
+    directory = (
+        workstream_dir(project, workstream_id, state_dir=state_dir) / "checkpoints"
+    )
+    for path in directory.glob("*.json"):
+        if path.name.endswith((".result.json", ".evidence.json")):
+            continue
+        yield path
+
+
+def _reconcile_locked(
+    project: Path,
+    workstream_id: str,
+    *,
+    state_dir: str,
+    now: datetime,
+) -> dict[str, Any]:
+    descriptor = load_workstream(project, workstream_id, state_dir=state_dir)
+    checkpoints: list[tuple[Path, dict[str, Any]]] = []
+    for path in _checkpoint_files(project, workstream_id, state_dir=state_dir):
+        checkpoint = core.load_object(path)
+        validate_checkpoint(checkpoint, path=path, workstream_id=workstream_id)
+        checkpoints.append((path, checkpoint))
+    checkpoints.sort(key=lambda item: int(item[1]["sequence"]))
+    sequences: set[int] = set()
+    recovered_events = 0
+    applied_checkpoints = 0
+    for path, checkpoint in checkpoints:
+        sequence = int(checkpoint["sequence"])
+        if sequence in sequences:
+            raise WorkstreamError(
+                f"duplicate checkpoint sequence {sequence} for {workstream_id}"
+            )
+        sequences.add(sequence)
+        if _apply_checkpoint(
+            project, descriptor, checkpoint, state_dir=state_dir
+        ):
+            applied_checkpoints += 1
+        if checkpoint.get("decision") == "continue":
+            signal_path = Path(str(checkpoint["signal_path"]))
+            if not signal_path.is_file():
+                _ensure_checkpoint_event(
+                    project, checkpoint, path=path, state_dir=state_dir
+                )
+                recovered_events += 1
+
+    if descriptor.get("status") in {"active", "waiting_external"}:
+        reason = wall_limit_reason(descriptor, now=now)
+        if reason is not None:
+            descriptor["status"] = "needs_user"
+            descriptor["reason"] = reason
+            descriptor["updated_at"] = now.isoformat(timespec="milliseconds")
+            descriptor.pop("active_continuation", None)
+            descriptor.pop("waiting_on", None)
+            core.atomic_json(
+                descriptor_path(project, workstream_id, state_dir=state_dir),
+                descriptor,
+            )
+    return {
+        "workstream_id": workstream_id,
+        "applied_checkpoints": applied_checkpoints,
+        "recovered_events": recovered_events,
+        "status": descriptor["status"],
+    }
+
+
+def reconcile_workstreams(
+    project_root: Path,
+    *,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Recover interrupted checkpoint transitions without a model turn."""
+
+    project = project_root.expanduser().resolve()
+    current = now or datetime.now(UTC)
+    reconciled: list[dict[str, Any]] = []
+    root = workstreams_root(project, state_dir=state_dir)
+    for path in sorted(root.glob("*/workstream.json")):
+        workstream_id = path.parent.name
+        with workstream_lock(project, workstream_id, state_dir=state_dir):
+            reconciled.append(
+                _reconcile_locked(
+                    project, workstream_id, state_dir=state_dir, now=current
+                )
+            )
+    return reconciled
+
+
+@contextlib.contextmanager
+def continuation_delivery_guard(
+    project_root: Path,
+    signal: dict[str, Any],
+    *,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    now: datetime | None = None,
+):
+    """Serialize a continuation delivery with stop/resume state changes."""
+
+    if signal.get("source_kind") != SOURCE_KIND:
+        yield {"deliver": True}
+        return
+    operation_id = signal.get("operation_id")
+    identity = (
+        parse_continuation_operation_id(operation_id)
+        if isinstance(operation_id, str)
+        else None
+    )
+    if identity is None:
+        result_path = signal.get("result_path")
+        try:
+            result = core.load_object(Path(str(result_path)))
+            identity = (
+                validate_id(str(result["workstream_id"]), field="workstream id"),
+                validate_id(str(result["checkpoint_id"]), field="checkpoint id"),
+            )
+        except (KeyError, OSError, RuntimeError, ValueError):
+            yield {"deliver": False, "reason": "invalid_workstream_identity"}
+            return
+    project = project_root.expanduser().resolve()
+    workstream_id, checkpoint_id = identity
+    with workstream_lock(project, workstream_id, state_dir=state_dir):
+        try:
+            descriptor = load_workstream(
+                project, workstream_id, state_dir=state_dir
+            )
+            path = checkpoint_path(
+                project, workstream_id, checkpoint_id, state_dir=state_dir
+            )
+            checkpoint = core.load_object(path)
+            validate_checkpoint(
+                checkpoint, path=path, workstream_id=workstream_id
+            )
+        except (OSError, RuntimeError, ValueError):
+            yield {"deliver": False, "reason": "invalid_workstream_state"}
+            return
+        active = descriptor.get("active_continuation")
+        expected_event = (
+            active.get("event_id") if isinstance(active, dict) else None
+        )
+        if expected_event is None:
+            expected_event = descriptor.get("last_scheduled_event_id")
+        reason = wall_limit_reason(descriptor, now=now or datetime.now(UTC))
+        if reason is not None:
+            descriptor["status"] = "needs_user"
+            descriptor["reason"] = reason
+            descriptor["updated_at"] = core.utc_now()
+            descriptor.pop("active_continuation", None)
+            core.atomic_json(
+                descriptor_path(project, workstream_id, state_dir=state_dir),
+                descriptor,
+            )
+            yield {"deliver": False, "reason": "workstream_expired"}
+            return
+        if (
+            descriptor.get("status") != "active"
+            or checkpoint.get("decision") != "continue"
+            or checkpoint.get("event_id") != signal.get("event_id")
+            or expected_event != signal.get("event_id")
+        ):
+            yield {"deliver": False, "reason": "workstream_continuation_revoked"}
+            return
+        yield {
+            "deliver": True,
+            "workstream_id": workstream_id,
+            "checkpoint_id": checkpoint_id,
+        }
+
+
 def checkpoint_workstream(
     project_root: Path,
     *,
@@ -256,9 +601,10 @@ def checkpoint_workstream(
     with workstream_lock(project, workstream_id, state_dir=state_dir):
         if path.is_file():
             existing = core.load_object(path)
+            validate_checkpoint(existing, path=path, workstream_id=workstream_id)
             expected = (decision, summary, normalized_next, normalized_waiting_on)
             actual = (
-                existing.get("decision"),
+                existing.get("requested_decision", existing.get("decision")),
                 existing.get("summary"),
                 existing.get("next_action"),
                 existing.get("waiting_on"),
@@ -268,6 +614,12 @@ def checkpoint_workstream(
                     "checkpoint id already exists with different content: "
                     f"{checkpoint_id}"
                 )
+            descriptor = load_workstream(
+                project, workstream_id, state_dir=state_dir
+            )
+            _apply_checkpoint(
+                project, descriptor, existing, state_dir=state_dir
+            )
             output = {**existing, "checkpoint_path": str(path), "idempotent": True}
             signal_path = existing.get("signal_path")
             if (
@@ -275,20 +627,8 @@ def checkpoint_workstream(
                 and isinstance(signal_path, str)
                 and not Path(signal_path).is_file()
             ):
-                wake_target = existing.get("wake_target")
-                output["followup"] = core.write_followup_event(
-                    project,
-                    operation_id=f"{workstream_id}.{checkpoint_id}",
-                    source_kind=SOURCE_KIND,
-                    terminal_status="completed",
-                    result_path=path.with_name(f"{checkpoint_id}.result.json"),
-                    evidence_path=path.with_name(f"{checkpoint_id}.evidence.json"),
-                    state_dir=state_dir,
-                    event_id=str(existing["event_id"]),
-                    wake_target=(
-                        wake_target if isinstance(wake_target, dict) else None
-                    ),
-                    not_before=str(existing["not_before"]),
+                output["followup"] = _ensure_checkpoint_event(
+                    project, existing, path=path, state_dir=state_dir
                 )
                 output["recovered_signal"] = True
             return output
@@ -303,8 +643,9 @@ def checkpoint_workstream(
         now = datetime.now(UTC)
         effective_decision = decision
         reason: str | None = None
+        automatic_resume = decision in AUTOMATIC_DECISIONS
         emit_signal = decision == "continue"
-        if emit_signal:
+        if automatic_resume:
             reason = limit_reason(descriptor, now=now)
             if reason is not None:
                 effective_decision = "needs_user"
@@ -334,42 +675,16 @@ def checkpoint_workstream(
             checkpoint["wake_target"] = wake_target
 
         event_result: dict[str, Any] | None = None
-        result_path: Path | None = None
-        evidence_path: Path | None = None
         if emit_signal:
             due_at = now + timedelta(seconds=float(descriptor["delay_seconds"]))
             checkpoint["not_before"] = due_at.isoformat(timespec="milliseconds")
-            result_path = path.with_name(f"{checkpoint_id}.result.json")
-            evidence_path = path.with_name(f"{checkpoint_id}.evidence.json")
-            core.atomic_json(
-                result_path,
-                {
-                    "schema_version": core.SCHEMA_VERSION,
-                    "kind": "ORCHESTRATOR_WORKSTREAM_CONTINUATION",
-                    "workstream_id": workstream_id,
-                    "checkpoint_id": checkpoint_id,
-                    "status": "ready",
-                    "summary": summary,
-                    "next_action": normalized_next,
-                    "not_before": checkpoint["not_before"],
-                },
-            )
-            core.atomic_json(
-                evidence_path,
-                {
-                    "schema_version": core.SCHEMA_VERSION,
-                    "kind": "ORCHESTRATOR_WORKSTREAM_EVIDENCE",
-                    "workstream_id": workstream_id,
-                    "checkpoint_id": checkpoint_id,
-                    "ready_declared": True,
-                    "checkpoint_path": str(path),
-                    "created_at": created_at,
-                },
+            checkpoint["operation_id"] = continuation_operation_id(
+                workstream_id, checkpoint_id
             )
             checkpoint["event_id"] = core.followup_event_id(
                 project,
                 source_kind=SOURCE_KIND,
-                operation_id=f"{workstream_id}.{checkpoint_id}",
+                operation_id=checkpoint["operation_id"],
             )
             checkpoint["event_path"] = str(
                 core.event_path_for(
@@ -383,41 +698,12 @@ def checkpoint_workstream(
             )
 
         core.atomic_json(path, checkpoint)
-        descriptor.update(
-            status=(
-                "active" if effective_decision == "continue" else effective_decision
-            ),
-            checkpoint_count=sequence,
-            latest_checkpoint_id=checkpoint_id,
-            latest_checkpoint_path=str(path),
-            updated_at=created_at,
+        _apply_checkpoint(
+            project, descriptor, checkpoint, state_dir=state_dir
         )
         if emit_signal:
-            descriptor["continuation_count"] = int(
-                descriptor.get("continuation_count", 0)
-            ) + 1
-            descriptor["last_scheduled_event_id"] = checkpoint["event_id"]
-            descriptor["last_scheduled_wake_at"] = checkpoint["not_before"]
-        if normalized_waiting_on is not None:
-            descriptor["waiting_on"] = normalized_waiting_on
-        else:
-            descriptor.pop("waiting_on", None)
-        core.atomic_json(
-            descriptor_path(project, workstream_id, state_dir=state_dir), descriptor
-        )
-        if emit_signal:
-            assert result_path is not None and evidence_path is not None
-            event_result = core.write_followup_event(
-                project,
-                operation_id=f"{workstream_id}.{checkpoint_id}",
-                source_kind=SOURCE_KIND,
-                terminal_status="completed",
-                result_path=result_path,
-                evidence_path=evidence_path,
-                state_dir=state_dir,
-                event_id=str(checkpoint["event_id"]),
-                wake_target=(wake_target if isinstance(wake_target, dict) else None),
-                not_before=checkpoint["not_before"],
+            event_result = _ensure_checkpoint_event(
+                project, checkpoint, path=path, state_dir=state_dir
             )
 
     output = {**checkpoint, "checkpoint_path": str(path), "idempotent": False}
@@ -442,6 +728,8 @@ def resume_workstream(
         descriptor["status"] = "active"
         descriptor["updated_at"] = core.utc_now()
         descriptor.pop("waiting_on", None)
+        descriptor.pop("active_continuation", None)
+        descriptor.pop("reason", None)
         core.atomic_json(
             descriptor_path(project, workstream_id, state_dir=state_dir), descriptor
         )

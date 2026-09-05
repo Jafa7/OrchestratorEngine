@@ -21,6 +21,17 @@ def build_wakeup_message(
             f"operation_id: {event['operation_id']}",
         ]
     )
+    followup_rules = [
+        "Read the event/evidence. Verify state and decide the next safe action.",
+        "If review is required, inspect the real diff and checks before accepting.",
+        "Do not commit or push unless the user explicitly requested it.",
+    ]
+    if event.get("source_kind") == "workstream_checkpoint":
+        followup_rules.insert(
+            1,
+            "Before continuing, verify the workstream is active and this event "
+            "is its current active_continuation.",
+        )
     return "\n".join(
         [
             WAKEUP_HEADER,
@@ -33,8 +44,6 @@ def build_wakeup_message(
             f"result: {event['result_path']}",
             "requires: ORCHESTRATOR_FOLLOWUP",
             "",
-            "Read the event/evidence. Verify state and decide the next safe action.",
-            "If review is required, inspect the real diff and checks before accepting.",
-            "Do not commit or push unless the user explicitly requested it.",
+            *followup_rules,
         ]
     )

@@ -617,6 +617,15 @@ def start_check(
     )
     directory = check_dir(project, check_id, state_dir=state_dir)
     path = directory / "check.json"
+    try:
+        verification.claim_check_owner(
+            project,
+            operation_id=check_id,
+            operation_type="local_check",
+            state_dir=state_dir,
+        )
+    except verification.VerificationError as error:
+        raise LocalCheckError(str(error)) from error
     descriptor: dict[str, Any] = {
         "schema_version": core.SCHEMA_VERSION,
         "kind": CHECK_KIND,
@@ -718,6 +727,15 @@ def supervise_check(
     state_dir: str = core.DEFAULT_STATE_DIR,
 ) -> dict[str, Any]:
     project = project_root.expanduser().resolve()
+    try:
+        verification.claim_check_owner(
+            project,
+            operation_id=check_id,
+            operation_type="local_check",
+            state_dir=state_dir,
+        )
+    except verification.VerificationError as error:
+        raise LocalCheckError(str(error)) from error
     path = descriptor_path(project, check_id, state_dir=state_dir)
     lock = path.with_suffix(".lock")
     with file_lock(lock):

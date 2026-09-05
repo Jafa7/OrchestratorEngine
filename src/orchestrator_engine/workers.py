@@ -39,6 +39,7 @@ PROMPT_MODES = {"arg", "stdin"}
 AVAILABILITY_MODES = {"off", "block-unavailable", "require-available"}
 INTENT_ENFORCEMENT_MODES = {"off", "permissions", "strict"}
 TASK_KIND = "WORKER_TASK"
+EXECUTION_SNAPSHOT_KIND = "WORKER_EXECUTION_SNAPSHOT"
 RESERVED_KEYS = {
     "enabled",
     "command",
@@ -619,6 +620,131 @@ def validate_worker_config(name: str, config: object) -> dict[str, Any]:
     }
 
 
+def worker_execution_snapshot(
+    worker: str,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    """Freeze the normalized profile fields that can affect task execution."""
+
+    captured = {
+        "command": list(config["command"]),
+        "prompt_via": config["prompt_via"],
+        "timeout_seconds": config["timeout_seconds"],
+        "expect_long_running": config["expect_long_running"],
+        "max_concurrent": config["max_concurrent"],
+        "usage_adapter": config["usage_adapter"],
+        "max_no_progress_seconds": config["max_no_progress_seconds"],
+        "soft_duration_seconds": config["soft_duration_seconds"],
+        "soft_output_bytes": config["soft_output_bytes"],
+        "soft_token_budget": config["soft_token_budget"],
+        "availability_probe_configured": config["availability_probe"] is not None,
+        "policy": config["policy"],
+        "warnings": config["warnings"],
+        "extras": config["extras"],
+    }
+    return {
+        "schema_version": core.SCHEMA_VERSION,
+        "kind": EXECUTION_SNAPSHOT_KIND,
+        "worker": worker,
+        "captured_at": core.utc_now(),
+        "config": captured,
+        "config_sha256": canonical_sha256(captured),
+    }
+
+
+def load_worker_execution_snapshot(
+    value: object,
+    *,
+    worker: str,
+) -> dict[str, Any]:
+    """Restore a dispatch-time profile snapshot or fail before execution."""
+
+    if not isinstance(value, dict):
+        raise WorkerError("worker execution snapshot must be an object")
+    if (
+        value.get("schema_version") != core.SCHEMA_VERSION
+        or value.get("kind") != EXECUTION_SNAPSHOT_KIND
+        or value.get("worker") != worker
+    ):
+        raise WorkerError("worker execution snapshot has invalid identity")
+    captured = value.get("config")
+    if not isinstance(captured, dict) or value.get("config_sha256") != canonical_sha256(
+        captured
+    ):
+        raise WorkerError("worker execution snapshot fingerprint mismatch")
+    expected_fields = {
+        "command",
+        "prompt_via",
+        "timeout_seconds",
+        "expect_long_running",
+        "max_concurrent",
+        "usage_adapter",
+        "max_no_progress_seconds",
+        "soft_duration_seconds",
+        "soft_output_bytes",
+        "soft_token_budget",
+        "availability_probe_configured",
+        "policy",
+        "warnings",
+        "extras",
+    }
+    if set(captured) != expected_fields:
+        raise WorkerError("worker execution snapshot has invalid config fields")
+    extras = captured.get("extras")
+    warnings = captured.get("warnings")
+    availability_configured = captured.get("availability_probe_configured")
+    if (
+        not isinstance(extras, dict)
+        or not isinstance(warnings, list)
+        or not isinstance(availability_configured, bool)
+        or set(extras) & RESERVED_KEYS
+    ):
+        raise WorkerError("worker execution snapshot has invalid metadata")
+    normalized = validate_worker_config(
+        worker,
+        {
+            "command": captured["command"],
+            "prompt_via": captured["prompt_via"],
+            "timeout_seconds": captured["timeout_seconds"],
+            "expect_long_running": captured["expect_long_running"],
+            "max_concurrent": captured["max_concurrent"],
+            "usage_adapter": captured["usage_adapter"],
+            "max_no_progress_seconds": captured["max_no_progress_seconds"],
+            "soft_duration_seconds": captured["soft_duration_seconds"],
+            "soft_output_bytes": captured["soft_output_bytes"],
+            "soft_token_budget": captured["soft_token_budget"],
+            "policy": captured["policy"],
+            **extras,
+        },
+    )
+    normalized.update(
+        availability_probe=(
+            ["<dispatch-time profile snapshot>"]
+            if availability_configured
+            else None
+        ),
+        availability_timeout_seconds=None,
+        diagnostics=[],
+        warnings=list(warnings),
+        policy_config=None,
+        bundled_policy=None,
+    )
+    return normalized
+
+
+def worker_config_for_descriptor(
+    project_root: Path,
+    descriptor: dict[str, Any],
+    *,
+    worker: str,
+    state_dir: str,
+) -> dict[str, Any]:
+    snapshot = descriptor.get("worker_execution_snapshot")
+    if snapshot is not None:
+        return load_worker_execution_snapshot(snapshot, worker=worker)
+    return require_worker(project_root, worker, state_dir=state_dir)
+
+
 def worker_profile_warnings(
     *,
     name: str,
@@ -1139,8 +1265,11 @@ def queue_tick(
             descriptor_path = Path(str(entry.get("descriptor_path", "")))
             try:
                 descriptor = core.load_object(descriptor_path)
-                config = require_worker(
-                    project, str(entry["worker"]), state_dir=state_dir
+                config = worker_config_for_descriptor(
+                    project,
+                    descriptor,
+                    worker=str(entry["worker"]),
+                    state_dir=state_dir,
                 )
             except (OSError, KeyError, core.OrchestratorError, WorkerError):
                 continue
@@ -1333,6 +1462,7 @@ def run_worker(
             )
             if config.get(key) is not None
         },
+        "worker_execution_snapshot": worker_execution_snapshot(worker, config),
         "lease_required": True,
     }
     if intent is not None:
@@ -2242,7 +2372,6 @@ def supervise_worker(
     could have changed underneath it.
     """
     project = project_root.expanduser().resolve()
-    config = require_worker(project, worker, state_dir=state_dir)
     prompt = prompt_file.expanduser().resolve()
     task_dir = task_dir_for(project, task_id, state_dir=state_dir)
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -2256,6 +2385,12 @@ def supervise_worker(
             if isinstance(maybe_target, dict):
                 binding.validate_wake_target(maybe_target)
                 wake_target = maybe_target
+    config = worker_config_for_descriptor(
+        project,
+        descriptor_snapshot,
+        worker=worker,
+        state_dir=state_dir,
+    )
 
     def write_descriptor(updates: dict[str, Any]) -> None:
         descriptor_snapshot.update(updates)
@@ -2593,6 +2728,13 @@ def supervise_worker(
     intent_admission = descriptor_snapshot.get("intent_admission")
     if isinstance(intent_admission, dict):
         evidence["intent_admission"] = intent_admission
+    execution_snapshot = descriptor_snapshot.get("worker_execution_snapshot")
+    if isinstance(execution_snapshot, dict):
+        evidence["worker_execution_snapshot"] = {
+            "kind": execution_snapshot.get("kind"),
+            "captured_at": execution_snapshot.get("captured_at"),
+            "config_sha256": execution_snapshot.get("config_sha256"),
+        }
     if wake_target is not None:
         evidence["wake_target"] = wake_target
     if policy_snapshot is not None:
@@ -2638,12 +2780,6 @@ def supervise_worker(
     if isinstance(final_result, dict):
         terminal_status = str(final_result.get("terminal_status", terminal_status))
         result = final_result
-    worker_lease.release_lease(
-        lease,
-        task_dir,
-        released_by="supervisor",
-        terminal_status=terminal_status,
-    )
     if "event_path" not in finalized:
         # Another terminal writer won. It owns evidence/event publication and
         # descriptor completion; this supervisor must not overwrite its state.
@@ -2692,6 +2828,12 @@ def supervise_worker(
         terminal_updates["output_collection_error"] = output_collection_error
     write_descriptor(terminal_updates)
     release_dispatch_claim(project, descriptor_snapshot, state_dir=state_dir)
+    worker_lease.release_lease(
+        lease,
+        task_dir,
+        released_by="supervisor",
+        terminal_status=terminal_status,
+    )
     lineage = descriptor_snapshot.get("retry_lineage")
     if terminal_status == "completed" and isinstance(lineage, dict):
         parent_task_id = lineage.get("parent_task_id")
@@ -2781,6 +2923,69 @@ def reap_worker_tasks(
                 outcomes.append({"task_id": task_id, "status": "legacy_unleased"})
                 continue
         if lease.get("status") == "released":
+            result_path = task_dir / "result.json"
+            evidence_path = task_dir / "evidence.json"
+            result = load_terminal_result(result_path)
+            if result is None or not evidence_path.is_file():
+                outcomes.append(
+                    {
+                        "task_id": task_id,
+                        "status": "released_without_terminal_artifacts",
+                    }
+                )
+                continue
+            try:
+                evidence = core.load_object(evidence_path)
+                wake_target = descriptor.get("wake_target")
+                finalized = finalize_terminal_task(
+                    project,
+                    task_id=task_id,
+                    task_dir=task_dir,
+                    result=result,
+                    evidence=evidence,
+                    state_dir=state_dir,
+                    wake_target=(
+                        wake_target if isinstance(wake_target, dict) else None
+                    ),
+                    takeover=True,
+                )
+            except (OSError, core.OrchestratorError, WorkerError) as error:
+                outcomes.append(
+                    {
+                        "task_id": task_id,
+                        "status": "released_terminal_invalid",
+                        "reason": str(error),
+                    }
+                )
+                continue
+            final_result = finalized.get("result")
+            if not isinstance(final_result, dict) or "event_path" not in finalized:
+                outcomes.append(
+                    {
+                        "task_id": task_id,
+                        "status": "conflict",
+                        "reason": finalized.get("conflict"),
+                    }
+                )
+                continue
+            descriptor.update(
+                {
+                    "status": final_result["terminal_status"],
+                    "finished_at": final_result["finished_at"],
+                    "event_path": finalized["event_path"],
+                    "signal_path": finalized["signal_path"],
+                    "reconciled_at": core.utc_now(),
+                }
+            )
+            core.atomic_json(descriptor_path, descriptor)
+            release_dispatch_claim(project, descriptor, state_dir=state_dir)
+            outcomes.append(
+                {
+                    "task_id": task_id,
+                    "status": "reconciled_released",
+                    "terminal_status": final_result["terminal_status"],
+                }
+            )
             continue
         age = (
             descriptor_age
@@ -2915,5 +3120,8 @@ def reap_worker_tasks(
         "kind": "WORKER_REAP_REPORT",
         "project_root": str(project),
         "reaped_count": sum(item.get("status") == "reaped" for item in outcomes),
+        "reconciled_count": sum(
+            item.get("status") == "reconciled_released" for item in outcomes
+        ),
         "outcomes": outcomes,
     }

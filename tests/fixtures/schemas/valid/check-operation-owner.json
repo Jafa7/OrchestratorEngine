@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_CHECK_RESULT_OWNER",
+  "operation_id": "CHECK-001",
+  "operation_type": "local_check",
+  "created_at": "2026-09-05T10:00:00.000+00:00"
+}

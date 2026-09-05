@@ -49,6 +49,9 @@
         {"type": "null"}
       ]
     },
+    "worker_execution_snapshot": {
+      "$ref": "orchestrator-engine://schemas/worker-execution-snapshot"
+    },
     "task_dir": {"type": "string", "minLength": 1},
     "intent_file": {"type": "string", "minLength": 1},
     "intent_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-engine://schemas/watcher-state",
+  "title": "Watcher delivery state",
+  "schema_version": 1,
+  "kind": "LOCAL_AI_ORCHESTRATOR_WATCHER_STATE",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "kind",
+    "seen_event_ids",
+    "deferred_events",
+    "acknowledged_events"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "LOCAL_AI_ORCHESTRATOR_WATCHER_STATE"},
+    "seen_event_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string"}
+    },
+    "deferred_events": {"type": "object", "additionalProperties": {"type": "object"}},
+    "acknowledged_events": {"type": "object", "additionalProperties": {"type": "object"}},
+    "seen_signal_keys": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{16}:[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+      }
+    },
+    "deferred_signals": {"type": "object", "additionalProperties": {"type": "object"}},
+    "acknowledged_signals": {"type": "object", "additionalProperties": {"type": "object"}},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "seeded_from": {"type": "string"},
+    "seeded_at": {"type": "string", "format": "date-time"},
+    "last_error": {"type": "string"},
+    "last_error_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": false
+}

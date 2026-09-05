@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-engine://schemas/check-operation-owner",
+  "title": "Verification result directory owner",
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_CHECK_RESULT_OWNER",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "kind",
+    "operation_id",
+    "operation_type",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "ORCHESTRATOR_CHECK_RESULT_OWNER"},
+    "operation_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+    },
+    "operation_type": {
+      "enum": ["local_check", "github_actions", "github_pull_request"]
+    },
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": false
+}

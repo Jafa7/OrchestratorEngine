@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "kind": "LOCAL_AI_ORCHESTRATOR_WATCHER_STATE",
+  "seen_event_ids": ["event-1"],
+  "deferred_events": {},
+  "acknowledged_events": {},
+  "seen_signal_keys": ["0123456789abcdef:event-1"],
+  "deferred_signals": {},
+  "acknowledged_signals": {},
+  "updated_at": "2026-09-05T10:00:00.000+00:00"
+}

@@ -4,6 +4,30 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-09-05
+
+### Fixed
+
+- Worker tasks now execute the hash-bound normalized profile captured at
+  dispatch, so later `workers.toml` edits cannot change queued or starting
+  commands and permission flags.
+- Local checks, GitHub Actions monitors and pull-request monitors atomically
+  claim their shared verification-result directory and reject cross-type ID
+  collisions before an earlier result can be overwritten.
+- Codex and VS Code wakeup delivery plus watcher service lifecycle operations
+  are serialized across processes; ambiguous Codex queue outcomes require an
+  explicit retry and cannot be duplicated by a concurrent consumer.
+- Worker terminal descriptors are published before dispatch claims and leases
+  are released, and the reaper reconciles the historical released-lease crash
+  window from existing terminal artifacts.
+- Multi-project watcher state now scopes delivery by resolved project root and
+  event ID while retaining legacy unscoped summary fields and conservative
+  migration behavior.
+- Workstream checkpoints now recover interrupted descriptor/event publication,
+  use unambiguous operation identities, revoke superseded timer continuations,
+  and enforce wall-time at delivery. The continuation budget also covers
+  `waiting_external` resumptions instead of timer signals alone.
+
 ## [1.0.0] - 2026-09-05
 
 ### Changed

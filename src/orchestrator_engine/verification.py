@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,9 @@ CHECK_STATUSES = {
 }
 UNSUCCESSFUL_STATUSES = {"failed", "errored", "cancelled"}
 DEFAULT_LARGE_LOG_BYTES = 1024 * 1024
+CHECK_OWNER_KIND = "ORCHESTRATOR_CHECK_RESULT_OWNER"
+CHECK_OWNER_NAME = "operation-owner.json"
+CHECK_OWNER_TYPES = {"local_check", "github_actions", "github_pull_request"}
 
 
 class VerificationError(RuntimeError):
@@ -34,6 +38,95 @@ def checks_root(
     state_dir: str = core.DEFAULT_STATE_DIR,
 ) -> Path:
     return core.state_root(project_root, state_dir=state_dir) / "checks"
+
+
+def _legacy_check_owner(directory: Path) -> str | None:
+    descriptor = directory / "check.json"
+    if descriptor.is_file():
+        with contextlib.suppress(OSError, core.OrchestratorError):
+            value = core.load_object(descriptor)
+            if value.get("kind") == "ORCHESTRATOR_LOCAL_CHECK":
+                return "local_check"
+    result_path = directory / "verification-result.json"
+    if result_path.is_file():
+        with contextlib.suppress(OSError, core.OrchestratorError):
+            suite = core.load_object(result_path).get("suite")
+            if suite == "github-actions":
+                return "github_actions"
+            if suite == "github-pr-readiness":
+                return "github_pull_request"
+            if isinstance(suite, str):
+                return "local_check"
+    return None
+
+
+def claim_check_owner(
+    project_root: Path,
+    *,
+    operation_id: str,
+    operation_type: str,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+) -> Path:
+    """Atomically bind one legacy check-result directory to one operation type."""
+
+    if operation_type not in CHECK_OWNER_TYPES:
+        raise VerificationError(f"unsupported check owner type: {operation_type}")
+    if not core.EVENT_ID_PATTERN.fullmatch(operation_id):
+        raise VerificationError(f"invalid operation id: {operation_id!r}")
+    directory = checks_root(project_root, state_dir=state_dir) / operation_id
+    owner_path = directory / CHECK_OWNER_NAME
+    if owner_path.is_file():
+        try:
+            owner = core.load_object(owner_path)
+        except (OSError, core.OrchestratorError) as error:
+            raise VerificationError(
+                f"invalid check owner record: {owner_path}"
+            ) from error
+        if (
+            not core.is_supported_schema_version(owner.get("schema_version"))
+            or owner.get("kind") != CHECK_OWNER_KIND
+            or owner.get("operation_id") != operation_id
+        ):
+            raise VerificationError(f"invalid check owner record: {owner_path}")
+        if owner.get("operation_type") != operation_type:
+            raise VerificationError(
+                f"operation id {operation_id} is already owned by "
+                f"{owner.get('operation_type')}"
+            )
+        return owner_path
+
+    legacy_owner = _legacy_check_owner(directory)
+    if legacy_owner is not None and legacy_owner != operation_type:
+        raise VerificationError(
+            f"operation id {operation_id} is already owned by {legacy_owner}"
+        )
+    if directory.exists() and legacy_owner is None and any(directory.iterdir()):
+        raise VerificationError(
+            f"operation id {operation_id} has unowned existing check artifacts"
+        )
+    owner = {
+        "schema_version": core.SCHEMA_VERSION,
+        "kind": CHECK_OWNER_KIND,
+        "operation_id": operation_id,
+        "operation_type": operation_type,
+        "created_at": core.utc_now(),
+    }
+    if core.claim_json(owner_path, owner):
+        return owner_path
+    try:
+        existing = core.load_object(owner_path)
+    except (OSError, core.OrchestratorError) as error:
+        raise VerificationError(f"invalid check owner record: {owner_path}") from error
+    if (
+        existing.get("kind") == CHECK_OWNER_KIND
+        and existing.get("operation_id") == operation_id
+        and existing.get("operation_type") == operation_type
+    ):
+        return owner_path
+    raise VerificationError(
+        f"operation id {operation_id} was concurrently claimed by "
+        f"{existing.get('operation_type')}"
+    )
 
 
 def checks_status(

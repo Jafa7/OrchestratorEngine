@@ -11,7 +11,7 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release is `1.0.0` and the durable JSON contract schema version is
+The current release is `1.0.1` and the durable JSON contract schema version is
 `1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
@@ -19,8 +19,23 @@ PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.0.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.0.1"
 ```
+
+## Reliability fixes in v1.0.1
+
+Version 1.0.1 freezes the normalized worker execution profile at dispatch,
+serializes wakeup delivery and watcher service lifecycle changes, prevents
+different operation types from sharing one verification-result directory, and
+scopes watcher delivery state by project root plus event ID. Existing task and
+watcher files remain readable. Legacy task descriptors continue to resolve the
+current worker profile, while legacy watcher seen IDs are conservatively
+projected across the roots configured for that watcher so old signals are not
+redelivered.
+
+Stop and restart each watcher service after upgrading so the running process
+uses the new locking and project-scoped state behavior. Do not delete durable
+events, signals, task evidence or old watcher state during the upgrade.
 
 ## Version 1
 
@@ -237,6 +252,12 @@ watcher behavior:
 - `workstream start/checkpoint/status/resume` records bounded continuation
   decisions. It never infers continuation from an ending turn and never reads
   project roadmaps.
+
+Version 1.0.1 makes workstream continuation transitions recoverable across
+interrupted descriptor/event writes. Watchers suppress revoked or expired
+timer signals, and `max_continuations` now counts `waiting_external` automatic
+resumptions as well as explicit timer continuations. Existing checkpoint files
+and legacy event identities remain readable.
 
 Run `adopt` to create any missing base directories and bundled worker policy
 without overwriting local config. Create `.orchestrator/checks.toml` from the

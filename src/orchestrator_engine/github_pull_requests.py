@@ -329,6 +329,15 @@ def start_monitor(
                     "an active monitor already owns this repository/PR: "
                     f"{existing.get('monitor_id')}"
                 )
+        try:
+            verification.claim_check_owner(
+                project,
+                operation_id=resolved_id,
+                operation_type="github_pull_request",
+                state_dir=state_dir,
+            )
+        except verification.VerificationError as error:
+            raise GitHubPullRequestError(str(error)) from error
         directory.mkdir(parents=True, exist_ok=True)
         if not core.claim_json(descriptor_path, descriptor):
             raise GitHubPullRequestError(f"monitor already exists: {resolved_id}")
@@ -774,6 +783,15 @@ def finalize_monitor(
     project = project_root.expanduser().resolve()
     monitor_id = str(descriptor["monitor_id"])
     directory = Path(str(descriptor["monitor_dir"]))
+    try:
+        verification.claim_check_owner(
+            project,
+            operation_id=monitor_id,
+            operation_type="github_pull_request",
+            state_dir=state_dir,
+        )
+    except verification.VerificationError as error:
+        raise GitHubPullRequestError(str(error)) from error
     check_dir = verification.checks_root(project, state_dir=state_dir) / monitor_id
     check_dir.mkdir(parents=True, exist_ok=True)
     finished_at = core.utc_now()

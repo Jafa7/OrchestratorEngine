@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import signal as signal_module
@@ -15,7 +16,14 @@ from pathlib import Path
 from typing import Any
 
 from . import binding as binding_module
-from . import codex_app, core, platform_runtime, vscode_chat, worker_lease
+from . import (
+    codex_app,
+    core,
+    platform_runtime,
+    vscode_chat,
+    worker_lease,
+    workstreams,
+)
 
 WATCHER_ACTIONS = {"record", "notify", "callback", "current-thread-callback"}
 DEFER_BASE_SECONDS = 30
@@ -310,7 +318,81 @@ def load_state(path: Path) -> dict[str, Any]:
         for key, item in acknowledged.items()
     ):
         raise WatcherError("watcher state has invalid acknowledged_events")
+    seen_keys = value.get("seen_signal_keys")
+    if seen_keys is not None and (
+        not isinstance(seen_keys, list)
+        or not all(isinstance(item, str) for item in seen_keys)
+    ):
+        raise WatcherError("watcher state has invalid seen_signal_keys")
+    for field in ("deferred_signals", "acknowledged_signals"):
+        records = value.get(field)
+        if records is not None and (
+            not isinstance(records, dict)
+            or not all(
+                isinstance(key, str) and isinstance(item, dict)
+                for key, item in records.items()
+            )
+        ):
+            raise WatcherError(f"watcher state has invalid {field}")
     return value
+
+
+def signal_state_key(project_root: Path, event_id: str) -> str:
+    """Return an internal project-scoped identity without changing event IDs."""
+
+    project = str(project_root.expanduser().resolve())
+    scope = hashlib.sha256(project.encode("utf-8")).hexdigest()[:16]
+    return f"{scope}:{core.validate_event_id(event_id)}"
+
+
+def ensure_project_scoped_state(
+    state: dict[str, Any],
+    project_roots: list[Path],
+) -> None:
+    """Project legacy global event state into the configured project scopes."""
+
+    projects = [path.expanduser().resolve() for path in project_roots]
+    if "seen_signal_keys" not in state:
+        state["seen_signal_keys"] = sorted(
+            signal_state_key(project, event_id)
+            for project in projects
+            for event_id in state["seen_event_ids"]
+        )
+    if "deferred_signals" not in state:
+        scoped: dict[str, dict[str, Any]] = {}
+        for project in projects:
+            for event_id, record in state["deferred_events"].items():
+                scoped[signal_state_key(project, event_id)] = {
+                    **record,
+                    "event_id": event_id,
+                    "project_root": str(project),
+                    "legacy_scope": True,
+                }
+        state["deferred_signals"] = scoped
+    if "acknowledged_signals" not in state:
+        scoped = {}
+        for project in projects:
+            for event_id, record in state["acknowledged_events"].items():
+                scoped[signal_state_key(project, event_id)] = {
+                    **record,
+                    "event_id": event_id,
+                    "project_root": str(project),
+                    "legacy_scope": True,
+                }
+        state["acknowledged_signals"] = scoped
+
+
+def legacy_records(
+    scoped_records: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Collapse scoped records for readers of the v1 unscoped state fields."""
+
+    records: dict[str, dict[str, Any]] = {}
+    for item in scoped_records.values():
+        event_id = item.get("event_id")
+        if isinstance(event_id, str):
+            records[event_id] = item
+    return records
 
 
 def load_optional_object(path: Path) -> dict[str, Any] | None:
@@ -484,7 +566,8 @@ def pending_signal_count(
 ) -> int:
     try:
         state = load_state(state_file)
-        seen = set(state["seen_event_ids"])
+        ensure_project_scoped_state(state, project_roots)
+        seen = set(state["seen_signal_keys"])
     except (OSError, RuntimeError, ValueError):
         seen = set()
     count = 0
@@ -495,7 +578,10 @@ def pending_signal_count(
             continue
         for signal in signals:
             event_id = signal.get("event_id")
-            if isinstance(event_id, str) and event_id not in seen:
+            if (
+                isinstance(event_id, str)
+                and signal_state_key(project, event_id) not in seen
+            ):
                 if host_filter is not None:
                     with contextlib.suppress(RuntimeError, ValueError):
                         host = signal_host(
@@ -567,6 +653,7 @@ def build_deferred_record(
     reason: str,
     previous: dict[str, Any],
     now: float,
+    project_root: Path | None = None,
 ) -> dict[str, Any]:
     attempts = int(previous.get("attempts", 0)) + 1
     reason_code = defer_reason_code(reason)
@@ -592,6 +679,8 @@ def build_deferred_record(
         "last_attempt_at": now,
         "operator_action": deferred_operator_action(status, reason_code),
     }
+    if project_root is not None:
+        record["project_root"] = str(project_root.expanduser().resolve())
     if status == DEFER_STATUS_RETRYABLE:
         delay = min(
             DEFER_BASE_SECONDS * (2 ** (attempts - 1)),
@@ -626,6 +715,7 @@ def deferred_event_summaries(
 ) -> list[dict[str, Any]]:
     try:
         state = load_state(state_file)
+        ensure_project_scoped_state(state, project_roots)
     except (OSError, RuntimeError, ValueError):
         return []
     signal_index: dict[str, dict[str, Any]] = {}
@@ -634,15 +724,17 @@ def deferred_event_summaries(
             for signal in core.inbox(project, state_dir=state_dir, invalid_sink=[]):
                 event_id = signal.get("event_id")
                 if isinstance(event_id, str):
-                    signal_index[event_id] = signal
+                    signal_index[signal_state_key(project, event_id)] = signal
     summaries: list[dict[str, Any]] = []
-    for event_id, item in sorted(state["deferred_events"].items()):
-        signal = signal_index.get(event_id, {})
+    for scoped_key, item in sorted(state["deferred_signals"].items()):
+        event_id = str(item.get("event_id") or scoped_key.rsplit(":", 1)[-1])
+        signal = signal_index.get(scoped_key, {})
         retry_after_at = item.get("retry_after_at")
         status = deferred_status(item)
         summaries.append(
             {
                 "event_id": event_id,
+                "project_root": item.get("project_root"),
                 "task_id": item.get("task_id") or signal.get("task_id"),
                 "operation_id": item.get("operation_id")
                 or signal.get("operation_id"),
@@ -727,10 +819,12 @@ def retry_deferred_event(
     project = project_root.expanduser().resolve()
     state_file = state_path or default_state_path(project, state_dir=state_dir)
     state = load_state(state_file)
-    deferred_events: dict[str, dict[str, Any]] = state["deferred_events"]
-    previous = deferred_events.get(event_id)
+    ensure_project_scoped_state(state, [project])
+    scoped_key = signal_state_key(project, event_id)
+    deferred_signals: dict[str, dict[str, Any]] = state["deferred_signals"]
+    previous = deferred_signals.get(scoped_key)
     if previous is None:
-        if event_id in set(state["seen_event_ids"]):
+        if scoped_key in set(state["seen_signal_keys"]):
             raise WatcherError(f"event is already seen: {event_id}")
         raise WatcherError(f"event is not deferred: {event_id}")
     previous_status = deferred_status(previous)
@@ -753,13 +847,20 @@ def retry_deferred_event(
     )
     with contextlib.suppress(OSError, RuntimeError, ValueError):
         delivery = core.load_object(wakeup_receipt)
-        if delivery.get("status") == "delivery_claimed":
+        if delivery.get("status") == "delivery_claimed" or (
+            delivery.get("status") == "deferred"
+            and str(delivery.get("reason", "")).startswith(
+                "queue_delivery_ambiguous"
+            )
+        ):
             delivery.update(
-                status="deferred",
+                status="retry_requested",
                 retry_requested_at=requested_at,
             )
             core.atomic_json(wakeup_receipt, delivery)
-    state["deferred_events"] = deferred_events
+    deferred_signals[scoped_key] = previous
+    state["deferred_signals"] = deferred_signals
+    state["deferred_events"] = legacy_records(deferred_signals)
     state["updated_at"] = requested_at
     core.atomic_json(state_file, state)
     return {
@@ -806,9 +907,11 @@ def acknowledge_signal(
     )
     existing_receipt = load_optional_object(receipt_path)
     state = load_state(state_file)
-    seen = set(state["seen_event_ids"])
-    deferred_events: dict[str, dict[str, Any]] = state["deferred_events"]
-    previous = deferred_events.get(event_id)
+    ensure_project_scoped_state(state, [project])
+    scoped_key = signal_state_key(project, event_id)
+    seen = set(state["seen_signal_keys"])
+    deferred_signals: dict[str, dict[str, Any]] = state["deferred_signals"]
+    previous = deferred_signals.get(scoped_key)
     signal = None
     fallback_binding = binding_module.load_binding(project, state_dir=state_dir)
     for candidate in core.inbox(project, state_dir=state_dir, invalid_sink=[]):
@@ -830,7 +933,7 @@ def acknowledge_signal(
         ):
             raise WatcherError(f"invalid acknowledgement receipt: {receipt_path}")
         acknowledgement = existing_receipt
-    elif previous is None and signal is None and event_id not in seen:
+    elif previous is None and signal is None and scoped_key not in seen:
         raise WatcherError(f"event is not pending or deferred: {event_id}")
     else:
         acknowledged_at = core.utc_now()
@@ -851,11 +954,19 @@ def acknowledge_signal(
             "receipt_path": str(receipt_path),
         }
         core.atomic_json(receipt_path, acknowledgement)
-    seen.add(event_id)
-    state["seen_event_ids"] = sorted(seen)
-    deferred_events.pop(event_id, None)
-    state["deferred_events"] = deferred_events
+    seen.add(scoped_key)
+    state["seen_signal_keys"] = sorted(seen)
+    state["seen_event_ids"] = sorted(
+        set(state["seen_event_ids"]) | {event_id}
+    )
+    deferred_signals.pop(scoped_key, None)
+    state["deferred_signals"] = deferred_signals
+    state["deferred_events"] = legacy_records(deferred_signals)
     state["acknowledged_events"][event_id] = acknowledgement
+    state["acknowledged_signals"][scoped_key] = {
+        **acknowledgement,
+        "project_root": str(project),
+    }
     state["schema_version"] = core.SCHEMA_VERSION
     state["kind"] = STATE_KIND
     state["updated_at"] = core.utc_now()
@@ -902,12 +1013,16 @@ def acknowledge_pending_signals(
         project, host=host, state_dir=state_dir
     )
     state = load_state(state_file)
-    seen = set(state["seen_event_ids"])
+    ensure_project_scoped_state(state, [project])
+    seen = set(state["seen_signal_keys"])
     fallback_binding = binding_module.load_binding(project, state_dir=state_dir)
     event_ids = []
     for signal in core.inbox(project, state_dir=state_dir, invalid_sink=[]):
         event_id = signal.get("event_id")
-        if not isinstance(event_id, str) or event_id in seen:
+        if (
+            not isinstance(event_id, str)
+            or signal_state_key(project, event_id) in seen
+        ):
             continue
         if signal_host(signal, fallback_binding=fallback_binding) == host:
             event_ids.append(event_id)
@@ -959,13 +1074,79 @@ def scan_once(
     )
     seed_state_from_legacy(projects[0], state_file=state_file, state_dir=state_dir)
     state = load_state(state_file)
-    seen = set(state["seen_event_ids"])
-    deferred_events: dict[str, dict[str, Any]] = state["deferred_events"]
+    ensure_project_scoped_state(state, projects)
+    seen = set(state["seen_signal_keys"])
+    seen_event_ids = set(state["seen_event_ids"])
+    deferred_signals: dict[str, dict[str, Any]] = state["deferred_signals"]
     current_time = unix_now()
     new_signals: list[dict[str, Any]] = []
     notifications: list[str] = []
     thread_wakeups: list[dict[str, Any]] = []
     action_errors: list[dict[str, str]] = []
+    suppressed_signals: list[dict[str, str]] = []
+    workstream_reconciliations: list[dict[str, Any]] = []
+
+    def perform_action(
+        project: Path,
+        signal: dict[str, Any],
+        *,
+        bound: dict[str, Any] | None,
+    ) -> tuple[bool, str | None]:
+        event_id = str(signal["event_id"])
+        mark_seen = True
+        defer_reason: str | None = None
+        try:
+            if action == "record":
+                pass
+            elif action == "notify":
+                notifications.append(
+                    str(notify_signal(project, signal, state_dir=state_dir))
+                )
+            elif action == "current-thread-callback":
+                wakeup = codex_app.wake_current_thread(
+                    project,
+                    signal,
+                    target_thread_id=str(target_thread_id),
+                    state_dir=state_dir,
+                    codex=codex,
+                    server_factory=server_factory,
+                )
+                thread_wakeups.append(wakeup)
+                if wakeup.get("status") == "deferred":
+                    mark_seen = False
+                    defer_reason = str(wakeup.get("reason", "deferred"))
+            elif action == "callback":
+                event_binding = callback_binding_for_signal(
+                    project,
+                    signal,
+                    state_dir=state_dir,
+                    fallback_binding=bound,
+                    host_adapters=adapters,
+                )
+                wake = adapters[event_binding["host"]]
+                wakeup = wake(
+                    project,
+                    signal,
+                    binding=event_binding,
+                    state_dir=state_dir,
+                    codex=codex,
+                    server_factory=server_factory,
+                )
+                thread_wakeups.append(wakeup)
+                if wakeup.get("status") == "deferred":
+                    mark_seen = False
+                    defer_reason = str(wakeup.get("reason", "deferred"))
+        except (OSError, RuntimeError, ValueError) as error:
+            mark_seen = False
+            defer_reason = str(error)
+            action_errors.append(
+                {
+                    "event_id": event_id,
+                    "project_root": str(project),
+                    "error": str(error),
+                }
+            )
+        return mark_seen, defer_reason
 
     for project in projects:
         # A broken fallback binding or an unreadable signal file must degrade
@@ -992,6 +1173,19 @@ def scan_once(
                 action_errors.append(
                     {"project_root": str(project), "error": str(error)}
                 )
+        try:
+            workstream_reconciliations.extend(
+                workstreams.reconcile_workstreams(
+                    project, state_dir=state_dir, now=datetime.now(UTC)
+                )
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            action_errors.append(
+                {
+                    "project_root": str(project),
+                    "error": f"workstream reconciliation failed: {error}",
+                }
+            )
         invalid_signals: list[dict[str, str]] = []
         signals = core.inbox(
             project,
@@ -1002,7 +1196,7 @@ def scan_once(
             action_errors.append({"project_root": str(project), **invalid})
         for signal in signals:
             event_id = signal.get("event_id")
-            if not isinstance(event_id, str) or event_id in seen:
+            if not isinstance(event_id, str):
                 continue
             try:
                 event_id = core.validate_event_id(event_id)
@@ -1014,6 +1208,9 @@ def scan_once(
                         "error": str(error),
                     }
                 )
+                continue
+            scoped_key = signal_state_key(project, event_id)
+            if scoped_key in seen:
                 continue
             try:
                 not_before = signal_not_before_timestamp(signal)
@@ -1043,7 +1240,7 @@ def scan_once(
                 continue
             if host_filter is not None and host not in host_filter:
                 continue
-            deferred = deferred_events.get(event_id)
+            deferred = deferred_signals.get(scoped_key)
             if (
                 deferred is not None
                 and deferred_status(deferred) == DEFER_STATUS_MANUAL_REQUIRED
@@ -1052,77 +1249,38 @@ def scan_once(
             retry_after = deferred.get("retry_after_at") if deferred else None
             if isinstance(retry_after, (int, float)) and retry_after > current_time:
                 continue
-            new_signals.append(signal)
-            mark_seen = True
-            defer_reason: str | None = None
-            try:
-                if action == "record":
-                    pass
-                elif action == "notify":
-                    notifications.append(
-                        str(
-                            notify_signal(
-                                project,
-                                signal,
-                                state_dir=state_dir,
-                            )
-                        )
+            with workstreams.continuation_delivery_guard(
+                project, signal, state_dir=state_dir
+            ) as disposition:
+                if not disposition["deliver"]:
+                    seen.add(scoped_key)
+                    seen_event_ids.add(event_id)
+                    deferred_signals.pop(scoped_key, None)
+                    suppressed_signals.append(
+                        {
+                            "event_id": event_id,
+                            "project_root": str(project),
+                            "reason": str(disposition["reason"]),
+                        }
                     )
-                elif action == "current-thread-callback":
-                    wakeup = codex_app.wake_current_thread(
-                        project,
-                        signal,
-                        target_thread_id=str(target_thread_id),
-                        state_dir=state_dir,
-                        codex=codex,
-                        server_factory=server_factory,
-                    )
-                    thread_wakeups.append(wakeup)
-                    if wakeup.get("status") == "deferred":
-                        mark_seen = False
-                        defer_reason = str(wakeup.get("reason", "deferred"))
-                elif action == "callback":
-                    event_binding = callback_binding_for_signal(
-                        project,
-                        signal,
-                        state_dir=state_dir,
-                        fallback_binding=bound,
-                        host_adapters=adapters,
-                    )
-                    wake = adapters[event_binding["host"]]
-                    wakeup = wake(
-                        project,
-                        signal,
-                        binding=event_binding,
-                        state_dir=state_dir,
-                        codex=codex,
-                        server_factory=server_factory,
-                    )
-                    thread_wakeups.append(wakeup)
-                    if wakeup.get("status") == "deferred":
-                        mark_seen = False
-                        defer_reason = str(wakeup.get("reason", "deferred"))
-            except (OSError, RuntimeError, ValueError) as error:
-                mark_seen = False
-                defer_reason = str(error)
-                action_errors.append(
-                    {
-                        "event_id": event_id,
-                        "project_root": str(project),
-                        "error": str(error),
-                    }
+                    continue
+                new_signals.append(signal)
+                mark_seen, defer_reason = perform_action(
+                    project, signal, bound=bound
                 )
             if mark_seen:
-                seen.add(event_id)
-                deferred_events.pop(event_id, None)
+                seen.add(scoped_key)
+                seen_event_ids.add(event_id)
+                deferred_signals.pop(scoped_key, None)
             elif defer_reason is not None:
-                previous = deferred_events.get(event_id, {})
-                deferred_events[event_id] = build_deferred_record(
+                previous = deferred_signals.get(scoped_key, {})
+                deferred_signals[scoped_key] = build_deferred_record(
                     event_id,
                     signal,
                     reason=defer_reason,
                     previous=previous,
                     now=current_time,
+                    project_root=project,
                 )
 
     output = {
@@ -1133,14 +1291,18 @@ def scan_once(
         "new_signals": new_signals,
         "notifications": notifications,
         "thread_wakeups": thread_wakeups,
+        "suppressed_signals": suppressed_signals,
+        "workstream_reconciliations": workstream_reconciliations,
         "action_errors": action_errors,
         "state_path": str(state_file),
     }
     state.update(
         schema_version=core.SCHEMA_VERSION,
         kind=STATE_KIND,
-        seen_event_ids=sorted(seen),
-        deferred_events=deferred_events,
+        seen_event_ids=sorted(seen_event_ids),
+        seen_signal_keys=sorted(seen),
+        deferred_events=legacy_records(deferred_signals),
+        deferred_signals=deferred_signals,
         updated_at=output["checked_at"],
     )
     core.atomic_json(state_file, state)
@@ -1397,6 +1559,48 @@ def start_service(
     popen_factory=subprocess.Popen,
     process_identity_reader=worker_lease.process_identity,
 ) -> dict[str, Any]:
+    """Serialize watcher service lifecycle changes for one service record."""
+
+    projects = [path.expanduser().resolve() for path in project_roots]
+    if not projects:
+        raise WatcherError("at least one project root is required")
+    service_path = service_file or default_callback_service_path(
+        projects[0],
+        host=host,
+        state_dir=state_dir,
+    )
+    with platform_runtime.exclusive_file_lock(service_path.with_suffix(".lock")):
+        return _start_service_unlocked(
+            projects,
+            state_dir=state_dir,
+            interval_seconds=interval_seconds,
+            state_path=state_path,
+            service_file=service_path,
+            action=action,
+            target_thread_id=target_thread_id,
+            codex=codex,
+            host=host,
+            replace=replace,
+            popen_factory=popen_factory,
+            process_identity_reader=process_identity_reader,
+        )
+
+
+def _start_service_unlocked(
+    project_roots: list[Path],
+    *,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    interval_seconds: float,
+    state_path: Path | None,
+    service_file: Path | None,
+    action: str,
+    target_thread_id: str | None,
+    codex: str,
+    host: str | None = None,
+    replace: bool = False,
+    popen_factory=subprocess.Popen,
+    process_identity_reader=worker_lease.process_identity,
+) -> dict[str, Any]:
     platform_runtime.require_detached_lifecycle("watcher service start")
     if interval_seconds <= 0:
         raise WatcherError("interval must be positive")
@@ -1440,7 +1644,7 @@ def start_service(
                 f"watcher service is already running with pid {existing_pid}; "
                 "use service restart or --replace"
             )
-        stop_service(
+        _stop_service_unlocked(
             projects,
             state_dir=state_dir,
             service_file=service_path,
@@ -1575,6 +1779,38 @@ def terminate_spawned_process(process: Any, *, timeout_seconds: float = 1.0) -> 
 
 
 def stop_service(
+    project_roots: list[Path],
+    *,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    service_file: Path | None = None,
+    host: str | None = None,
+    timeout_seconds: float = 5.0,
+    process_checker=process_alive,
+    kill_group=None,
+) -> dict[str, Any]:
+    """Serialize watcher service shutdown with concurrent starts."""
+
+    projects = [path.expanduser().resolve() for path in project_roots]
+    if not projects:
+        raise WatcherError("at least one project root is required")
+    service_path = service_file or default_callback_service_path(
+        projects[0],
+        host=host,
+        state_dir=state_dir,
+    )
+    with platform_runtime.exclusive_file_lock(service_path.with_suffix(".lock")):
+        return _stop_service_unlocked(
+            projects,
+            state_dir=state_dir,
+            service_file=service_path,
+            host=host,
+            timeout_seconds=timeout_seconds,
+            process_checker=process_checker,
+            kill_group=kill_group,
+        )
+
+
+def _stop_service_unlocked(
     project_roots: list[Path],
     *,
     state_dir: str = core.DEFAULT_STATE_DIR,

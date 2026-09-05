@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-engine://schemas/worker-execution-snapshot",
+  "title": "Dispatch-time worker execution snapshot",
+  "schema_version": 1,
+  "kind": "WORKER_EXECUTION_SNAPSHOT",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "kind",
+    "worker",
+    "captured_at",
+    "config",
+    "config_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "WORKER_EXECUTION_SNAPSHOT"},
+    "worker": {"type": "string", "minLength": 1},
+    "captured_at": {"type": "string", "format": "date-time"},
+    "config": {
+      "type": "object",
+      "required": [
+        "command",
+        "prompt_via",
+        "timeout_seconds",
+        "expect_long_running",
+        "max_concurrent",
+        "usage_adapter",
+        "max_no_progress_seconds",
+        "soft_duration_seconds",
+        "soft_output_bytes",
+        "soft_token_budget",
+        "availability_probe_configured",
+        "policy",
+        "warnings",
+        "extras"
+      ],
+      "properties": {
+        "command": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "prompt_via": {"enum": ["arg", "stdin"]},
+        "timeout_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0},
+        "expect_long_running": {"type": "boolean"},
+        "max_concurrent": {"type": ["integer", "null"], "minimum": 1},
+        "usage_adapter": {"type": ["string", "null"]},
+        "max_no_progress_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0},
+        "soft_duration_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0},
+        "soft_output_bytes": {"type": ["number", "null"], "exclusiveMinimum": 0},
+        "soft_token_budget": {"type": ["number", "null"], "exclusiveMinimum": 0},
+        "availability_probe_configured": {"type": "boolean"},
+        "policy": {"type": ["string", "null"]},
+        "warnings": {"type": "array", "items": {"type": "object"}},
+        "extras": {"type": "object"}
+      },
+      "additionalProperties": false
+    },
+    "config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}

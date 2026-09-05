@@ -13,12 +13,30 @@
     "project_id": {"type": "string", "minLength": 1},
     "goal": {"type": "string", "minLength": 1, "maxLength": 4000},
     "status": {"enum": ["active", "waiting_external", "needs_user", "blocked", "complete", "paused"]},
+    "checkpoint_count": {"type": "integer", "minimum": 0},
     "continuation_count": {"type": "integer", "minimum": 0},
     "max_continuations": {"type": "integer", "minimum": 1, "maximum": 100},
     "delay_seconds": {"type": "number", "minimum": 0, "maximum": 3600},
     "max_wall_seconds": {"type": "integer", "minimum": 1, "maximum": 604800},
     "created_at": {"type": "string", "format": "date-time"},
     "updated_at": {"type": "string", "format": "date-time"},
+    "latest_checkpoint_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"},
+    "latest_checkpoint_path": {"type": "string", "pattern": "^/"},
+    "waiting_on": {"type": "string", "minLength": 1, "maxLength": 4000},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 4000},
+    "last_scheduled_event_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"},
+    "last_scheduled_wake_at": {"type": "string", "format": "date-time"},
+    "active_continuation": {
+      "type": "object",
+      "required": ["checkpoint_id", "sequence", "event_id", "not_before"],
+      "properties": {
+        "checkpoint_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"},
+        "sequence": {"type": "integer", "minimum": 1},
+        "event_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"},
+        "not_before": {"type": "string", "format": "date-time"}
+      },
+      "additionalProperties": false
+    },
     "wake_target": {"$ref": "orchestrator-engine://schemas/wake-target"}
   },
   "additionalProperties": true

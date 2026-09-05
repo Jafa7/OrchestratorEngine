@@ -37,6 +37,16 @@
       "$ref": "orchestrator-engine://schemas/worker-policy-snapshot"
     },
     "worker_config": {"type": "object"},
+    "worker_execution_snapshot": {
+      "type": "object",
+      "required": ["kind", "captured_at", "config_sha256"],
+      "properties": {
+        "kind": {"const": "WORKER_EXECUTION_SNAPSHOT"},
+        "captured_at": {"type": "string", "format": "date-time"},
+        "config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
     "availability_preflight": {
       "type": "object",
       "required": ["mode", "status", "checked_at"],

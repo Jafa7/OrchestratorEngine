@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from . import binding, core, platform_runtime, worker_lease
+from . import binding, core, platform_runtime, verification, worker_lease
 
 CONFIG_NAME = "integrations.toml"
 SOURCE_KIND = "github_actions"
@@ -583,6 +583,15 @@ def start_monitor(
                     "an active monitor already owns this run or discovery: "
                     f"{existing.get('monitor_id')}"
                 )
+        try:
+            verification.claim_check_owner(
+                project,
+                operation_id=resolved_monitor_id,
+                operation_type="github_actions",
+                state_dir=state_dir,
+            )
+        except verification.VerificationError as error:
+            raise GitHubActionsError(str(error)) from error
         directory.mkdir(parents=True, exist_ok=True)
         if not core.claim_json(descriptor_path, descriptor):
             raise GitHubActionsError(f"monitor already exists: {resolved_monitor_id}")
@@ -1637,6 +1646,15 @@ def finalize_monitor(
 ) -> dict[str, Any]:
     monitor_id = str(descriptor["monitor_id"])
     directory = Path(str(descriptor["monitor_dir"]))
+    try:
+        verification.claim_check_owner(
+            project_root,
+            operation_id=monitor_id,
+            operation_type="github_actions",
+            state_dir=state_dir,
+        )
+    except verification.VerificationError as error:
+        raise GitHubActionsError(str(error)) from error
     check_dir = (
         core.state_root(project_root, state_dir=state_dir) / "checks" / monitor_id
     )

@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from . import core, host_capabilities, wakeup
+from . import core, host_capabilities, platform_runtime, wakeup
 
 
 class VscodeChatError(RuntimeError):
@@ -32,6 +32,33 @@ def chat_wakeup_receipt_path(
 
 
 def wake_chat(
+    project_root: Path,
+    signal: dict[str, Any],
+    *,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    code: str = DEFAULT_CODE_COMMAND,
+    runner=subprocess.run,
+) -> dict[str, Any]:
+    event_id = signal.get("event_id")
+    if not isinstance(event_id, str) or not event_id:
+        raise VscodeChatError("signal has invalid event_id")
+    project = project_root.expanduser().resolve()
+    receipt_path = chat_wakeup_receipt_path(
+        project,
+        event_id,
+        state_dir=state_dir,
+    )
+    with platform_runtime.exclusive_file_lock(receipt_path.with_suffix(".lock")):
+        return _wake_chat_unlocked(
+            project,
+            signal,
+            state_dir=state_dir,
+            code=code,
+            runner=runner,
+        )
+
+
+def _wake_chat_unlocked(
     project_root: Path,
     signal: dict[str, Any],
     *,

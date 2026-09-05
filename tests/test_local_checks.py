@@ -47,6 +47,31 @@ def write_config(
 
 
 class LocalCheckTests(unittest.TestCase):
+    def test_start_rejects_check_id_owned_by_another_operation_type(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            verification.claim_check_owner(
+                root,
+                operation_id="SHARED-ID",
+                operation_type="github_actions",
+            )
+
+            with self.assertRaisesRegex(
+                local_checks.LocalCheckError,
+                "already owned by github_actions",
+            ):
+                local_checks.start_check(
+                    root,
+                    check_id="SHARED-ID",
+                    suite="gate",
+                    execution="foreground",
+                )
+
+        self.assertFalse(
+            (verification.checks_root(root) / "SHARED-ID" / "check.json").exists()
+        )
+
     def test_detached_run_fails_before_check_artifacts_when_unsupported(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
