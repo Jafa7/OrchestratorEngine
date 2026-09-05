@@ -11,7 +11,7 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release is `0.9.0` and the durable JSON contract schema version is
+The current release is `0.10.0` and the durable JSON contract schema version is
 `1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
@@ -19,8 +19,21 @@ PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.9.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.10.0"
 ```
+
+## CI discovery and conformance in v0.10.0
+
+Version 0.10.0 adds clean-fixture `conformance run` checks and lets `ci watch`
+start from a full commit SHA before GitHub exposes the run database ID. Existing
+exact `--run-id` monitors remain compatible. No durable state migration is
+required.
+
+Projects using SHA discovery should keep `gh` authenticated and their target
+repository explicitly allowlisted in `.orchestrator/integrations.toml`. Use an
+exact `--workflow-name` when one commit starts multiple workflows. Run
+`conformance run --mode portable` after upgrading; Linux and WSL adopters can
+use `--mode full` to include detached lifecycle and routing checks.
 
 ## Platform capability boundary after v0.8.1
 

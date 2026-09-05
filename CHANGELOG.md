@@ -4,6 +4,8 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-05
+
 ### Added
 
 - GitHub Actions monitors can now start before a run ID is visible, discover
