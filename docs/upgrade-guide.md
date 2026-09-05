@@ -11,7 +11,7 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release is `0.10.0` and the durable JSON contract schema version is
+The current release is `0.11.0` and the durable JSON contract schema version is
 `1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
@@ -19,8 +19,22 @@ PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.10.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.11.0"
 ```
+
+## Release publication and CI diagnostics in v0.11.0
+
+Version 0.11.0 adds a tag-triggered GitHub Release workflow with exact-SHA CI
+provenance, deterministic wheel/sdist assembly, installed-wheel conformance and
+asset digest readback before publication. Maintainers must follow
+[`release-process.md`](release-process.md); pushing an annotated version tag is
+the explicit publication boundary.
+
+Confirmed failing GitHub Actions runs now include bounded problem job/step
+metadata in `github_actions.failure_diagnostics`. Existing monitor commands and
+state remain compatible, and no migration is required. Successful CI runs do
+not make the additional jobs query. Diagnostic-query errors do not replace the
+authoritative CI conclusion.
 
 ## CI discovery and conformance in v0.10.0
 

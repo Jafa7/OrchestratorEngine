@@ -4,6 +4,8 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-05
+
 ### Added
 
 - Confirmed GitHub Actions failures now receive one bounded jobs query and
