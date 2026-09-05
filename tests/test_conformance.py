@@ -23,6 +23,11 @@ class ConformanceTests(unittest.TestCase):
         self.assertEqual(report["effective_mode"], "portable")
         self.assertEqual(report["fixture"]["status"], "removed")
         self.assertFalse(fixture_exists)
+        self.assertEqual(report["adoption_summary"]["status"], "passed")
+        self.assertEqual(report["adoption_summary"]["created_count"], 12)
+        self.assertEqual(report["adoption_summary"]["worker_profile_count"], 1)
+        self.assertEqual(report["adoption_summary"]["enabled_worker_count"], 0)
+        self.assertEqual(report["adoption_summary"]["policy_status"], "current")
         self.assertEqual(report["artifact_summary"]["event_count"], 6)
         self.assertEqual(report["artifact_summary"]["signal_count"], 6)
         self.assertEqual(report["artifact_summary"]["notification_count"], 6)
@@ -154,6 +159,7 @@ class ConformanceTests(unittest.TestCase):
         self.assertEqual(report["fixture"]["reason"], "failure")
         self.assertTrue(fixture_exists)
         self.assertIn("Linux detached-runtime", report["failure"]["message"])
+        self.assertEqual(report["adoption_summary"]["status"], "not_run")
         self.assertEqual(report["concurrency_summary"]["status"], "not_run")
         self.assertEqual(
             report["lifecycle_recovery_summary"]["status"],
@@ -167,6 +173,7 @@ class ConformanceTests(unittest.TestCase):
         self.assertEqual(report["status"], "failed")
         self.assertEqual(report["fixture"]["status"], "not_created")
         self.assertEqual(report["fixture"]["reason"], "creation_failed")
+        self.assertEqual(report["adoption_summary"]["status"], "not_run")
 
     @patch(
         "orchestrator_engine.conformance._create_fixture",

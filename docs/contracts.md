@@ -137,6 +137,12 @@ Modes are explicit:
 - `full` exercises the same path through a real detached synthetic Python
   worker and fails closed when detached lifecycle support is unavailable.
 
+Before either runtime path changes the generated worker configuration,
+conformance verifies the complete create-only layout, parses the disabled
+example profile, compares the generated policy with the bundled policy,
+confirms conservative dispatch defaults, checks that no binding was created,
+and requires a second adoption to return `already_present` without writes.
+
 Both modes then run the same provider-free crash-recovery matrix:
 
 - an event whose matching signal was not written is re-emitted under the same
@@ -192,6 +198,14 @@ Required report shape:
   "duration_seconds": 1.0,
   "capabilities": {},
   "steps": [],
+  "adoption_summary": {
+    "status": "passed",
+    "created_count": 12,
+    "worker_profile_count": 1,
+    "enabled_worker_count": 0,
+    "policy_status": "current",
+    "second_adoption_status": "already_present"
+  },
   "artifact_summary": {"event_count": 13, "signal_count": 13},
   "recovery_summary": {
     "scenario_count": 5,

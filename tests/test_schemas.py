@@ -145,6 +145,19 @@ class SchemaContractTests(unittest.TestCase):
             )
         )
 
+        passed_without_adoption = copy.deepcopy(report)
+        passed_without_adoption["adoption_summary"] = {
+            "status": "not_run",
+            "reason": "earlier_step_failed",
+        }
+        self.assertTrue(
+            list(
+                self.validators["conformance-report"].iter_errors(
+                    passed_without_adoption
+                )
+            )
+        )
+
         portable_claiming_concurrency = copy.deepcopy(report)
         portable_claiming_concurrency["concurrency_summary"] = {
             "status": "passed",

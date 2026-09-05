@@ -93,8 +93,10 @@ When working from a development checkout that exposes `conformance run`, it
 can be run here without a provider CLI or credentials. Its default `auto` mode
 runs the full detached synthetic-worker path when that lifecycle is supported
 and otherwise verifies the portable event, signal, notification and
-idempotency path. Both modes also verify deterministic recovery from bounded
-interrupted-write scenarios. Full mode additionally checks six concurrent
+idempotency path. Both modes validate the generated disabled worker profile,
+bundled policy, safe dispatch defaults and idempotent second adoption before
+verifying deterministic recovery from bounded interrupted-write scenarios.
+Full mode additionally checks six concurrent
 synthetic workers, aggregate waits, host-scoped signal routing and deterministic
 reaping of an abandoned unclaimed task descriptor. Continue only when its JSON
 report says `"status": "passed"`; a failed fixture is retained at the reported

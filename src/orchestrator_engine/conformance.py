@@ -81,6 +81,79 @@ def _create_fixture(fixture_root: Path | None) -> Path:
     return root
 
 
+def _verify_adoption_layout(
+    project: Path,
+    adoption_result: dict[str, Any],
+) -> dict[str, Any]:
+    state = core.state_root(project)
+    required_directories = [
+        state,
+        core.events_root(project),
+        core.inbox_root(project),
+        core.inbox_root(project) / "signals",
+        core.inbox_root(project) / "logs",
+        core.inbox_root(project) / "notifications",
+        core.inbox_root(project) / "thread-wakeups",
+        workers.tasks_root(project),
+        state / "prompts",
+        state / "policies",
+    ]
+    required_files = [
+        workers.workers_config_path(project),
+        state / "policies" / "quality-efficient.md",
+    ]
+    expected_created = {
+        adoption.state_relative(project, path)
+        for path in [*required_directories, *required_files]
+    }
+    if adoption_result.get("status") != "created" or set(
+        adoption_result.get("created", [])
+    ) != expected_created:
+        raise ConformanceError("clean adoption did not create the complete layout")
+    if any(not path.is_dir() for path in required_directories):
+        raise ConformanceError("clean adoption is missing a required directory")
+    if any(not path.is_file() for path in required_files):
+        raise ConformanceError("clean adoption is missing a required file")
+
+    registry = workers.load_registry(project)
+    if set(registry) != {"example"}:
+        raise ConformanceError("generated workers config has unexpected profiles")
+    profile = registry["example"]
+    bundled_policy = profile.get("bundled_policy")
+    if profile.get("enabled") or profile.get("policy") != "quality-efficient":
+        raise ConformanceError("generated worker profile defaults are unsafe")
+    if (
+        not isinstance(bundled_policy, dict)
+        or bundled_policy.get("status") != "current"
+    ):
+        raise ConformanceError(
+            "generated quality policy differs from the bundled policy"
+        )
+    dispatch = workers.load_dispatch_config(project)
+    if (
+        dispatch.get("availability_mode") != "off"
+        or dispatch.get("intent_enforcement") != "off"
+        or dispatch.get("max_concurrent") is not None
+    ):
+        raise ConformanceError("generated dispatch defaults are not conservative")
+
+    repeated = adoption.adopt_project(project)
+    if repeated.get("status") != "already_present" or repeated.get("created"):
+        raise ConformanceError("clean adoption is not idempotent")
+    if binding.binding_path(project).exists():
+        raise ConformanceError("clean adoption unexpectedly created a host binding")
+    return {
+        "status": "passed",
+        "created_count": len(expected_created),
+        "worker_profile_count": len(registry),
+        "enabled_worker_count": sum(
+            1 for item in registry.values() if item.get("enabled")
+        ),
+        "policy_status": "current",
+        "second_adoption_status": "already_present",
+    }
+
+
 def _write_synthetic_profile(project: Path, timeout_seconds: float) -> Path:
     config = workers.workers_config_path(project)
     command = (
@@ -835,6 +908,10 @@ def run_conformance(
         "recovered_count": 0,
         "scenarios": [],
     }
+    adoption_summary: dict[str, Any] = {
+        "status": "not_run",
+        "reason": "earlier_step_failed",
+    }
     concurrency_summary: dict[str, Any] = {
         "status": "not_run" if effective_mode == "full" else "skipped",
         "task_count": 0,
@@ -866,7 +943,7 @@ def run_conformance(
                     "full conformance"
                 ),
             )
-        _run_step(
+        adoption_result = _run_step(
             steps,
             "adopt_clean_fixture",
             lambda: adoption.adopt_project(root),
@@ -874,6 +951,12 @@ def run_conformance(
                 "created_count": len(value["created"]),
                 "status": value["status"],
             },
+        )
+        adoption_summary = _run_step(
+            steps,
+            "verify_adoption_layout",
+            lambda: _verify_adoption_layout(root, adoption_result),
+            summarize=lambda value: value,
         )
         if effective_mode == "full":
             artifacts = _run_step(
@@ -966,6 +1049,7 @@ def run_conformance(
         "duration_seconds": round(time.monotonic() - started, 6),
         "capabilities": platform_runtime.capabilities(),
         "steps": steps,
+        "adoption_summary": adoption_summary,
         "artifact_summary": summary,
         "recovery_summary": recovery_summary,
         "concurrency_summary": concurrency_summary,

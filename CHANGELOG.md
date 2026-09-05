@@ -9,6 +9,9 @@ All notable changes to OrchestratorEngine are documented here.
 - A provider-free `conformance run` command verifies a clean installation
   through an isolated portable or full detached synthetic-worker fixture,
   bounded machine-readable evidence and idempotent watcher delivery.
+- Clean-fixture conformance validates the generated layout, disabled example
+  profile, bundled worker policy, conservative dispatch defaults and
+  create-only adoption idempotency before exercising runtime artifacts.
 - The packaged `conformance-report` schema makes that self-test result a
   versioned public contract; successful fixtures are removed by default while
   failed fixtures are retained for diagnosis.

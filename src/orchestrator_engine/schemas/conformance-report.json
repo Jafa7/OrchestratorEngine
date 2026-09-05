@@ -16,6 +16,7 @@
     "duration_seconds",
     "capabilities",
     "steps",
+    "adoption_summary",
     "artifact_summary",
     "recovery_summary",
     "concurrency_summary",
@@ -46,6 +47,20 @@
         },
         "additionalProperties": false
       }
+    },
+    "adoption_summary": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {"enum": ["passed", "not_run"]},
+        "reason": {"const": "earlier_step_failed"},
+        "created_count": {"const": 12},
+        "worker_profile_count": {"const": 1},
+        "enabled_worker_count": {"const": 0},
+        "policy_status": {"const": "current"},
+        "second_adoption_status": {"const": "already_present"}
+      },
+      "additionalProperties": false
     },
     "artifact_summary": {
       "type": "object",
@@ -216,10 +231,37 @@
                 ]
               }
             }
+          },
+          "adoption_summary": {
+            "properties": {"status": {"const": "passed"}}
           }
         }
       },
       "else": {"required": ["failure"]}
+    },
+    {
+      "if": {
+        "properties": {
+          "adoption_summary": {"properties": {"status": {"const": "passed"}}}
+        }
+      },
+      "then": {
+        "properties": {
+          "adoption_summary": {
+            "required": [
+              "created_count",
+              "worker_profile_count",
+              "enabled_worker_count",
+              "policy_status",
+              "second_adoption_status"
+            ],
+            "not": {"required": ["reason"]}
+          }
+        }
+      },
+      "else": {
+        "properties": {"adoption_summary": {"required": ["reason"]}}
+      }
     },
     {
       "if": {"properties": {"fixture": {"properties": {"status": {"const": "removed"}}}}},

@@ -114,6 +114,8 @@ Linux/WSL it includes a real detached synthetic worker; on native
 Windows/macOS it verifies the portable event, inbox and notification path.
 Successful temporary fixtures are removed, while failures are retained and
 named in the bounded JSON report. Both modes also exercise deterministic
+validation of the generated disabled worker profile, bundled policy, safe
+dispatch defaults and idempotent second adoption, followed by deterministic
 recovery from five interrupted-write boundaries without touching the adopting
 project. Full mode additionally runs six concurrent synthetic workers, checks
 aggregate `wait any/all`, proves that snapshotted Codex and VS Code targets are

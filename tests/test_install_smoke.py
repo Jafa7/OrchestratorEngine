@@ -689,6 +689,8 @@ class InstallSmokeTests(unittest.TestCase):
         self.assertEqual(conformance["status"], "passed")
         self.assertEqual(conformance["effective_mode"], "full")
         self.assertEqual(conformance["fixture"]["status"], "removed")
+        self.assertEqual(conformance["adoption_summary"]["status"], "passed")
+        self.assertEqual(conformance["adoption_summary"]["enabled_worker_count"], 0)
         self.assertEqual(adoption["kind"], "ORCHESTRATOR_ADOPTION")
         self.assertTrue(policy_exists)
         self.assertTrue(workers["workers"]["smoke"]["enabled"])
