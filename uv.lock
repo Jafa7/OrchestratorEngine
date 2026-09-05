@@ -40,7 +40,7 @@ wheels = [
 
 [[package]]
 name = "orchestrator-engine"
-version = "1.0.0rc1"
+version = "1.0.0"
 source = { editable = "." }
 
 [package.optional-dependencies]

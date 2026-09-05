@@ -5,6 +5,11 @@ OrchestratorEngine watcher to submit a message to the shared live task. This
 document covers the complementary case where the original agent turn remains
 active and should block directly on deterministic worker state.
 
+Do not use an app-level Goal to bridge these two modes. For detached queue
+delivery, end the current turn so the queued message can become the next turn.
+For in-turn continuation, use one explicit deterministic wait and do not also
+expect a watcher message to resume that same phase.
+
 Codex App can still continue automatically while the original agent turn
 remains active. The host agent dispatches a detached CLI worker, waits through
 a blocking tool call, and resumes when that call returns. This is **in-turn

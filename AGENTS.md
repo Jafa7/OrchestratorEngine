@@ -25,6 +25,13 @@ documented contracts.
   executable-bit metadata for scripts.
 - Prefer deterministic file contracts, atomic writes and reproducible evidence.
 - Add or update tests for behavioral changes.
+- Do not create or keep an app-level Goal active for work that depends on an
+  OrchestratorEngine watcher wakeup. A Goal can keep the current host turn open
+  and leave queued completion messages unable to become the next turn. Use a
+  bounded `workstream`, record `waiting_external` for a named worker/check/CI
+  operation, and end the turn so the watcher can resume the chat. Use an
+  in-turn deterministic wait only when deliberately choosing not to use the
+  watcher delivery path.
 
 ## Risk-based verification
 

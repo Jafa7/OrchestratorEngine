@@ -106,7 +106,7 @@ Install an immutable release, scaffold the project and bind the host chat:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.0.0rc1"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.0.0"
 orchestrator-engine runtime-capabilities
 orchestrator-engine --project-root /path/to/project adopt --host HOST
 orchestrator-engine --project-root /path/to/project bind --host HOST
@@ -232,7 +232,9 @@ An agent can also record an explicit bounded phase checkpoint. A
 `workstream checkpoint --decision continue --ready` signal is delivered after
 its configured delay; `needs_user`, `waiting_external`, `blocked`, `complete`
 and `paused` never wake the chat automatically. Ending a turn by itself is not
-continuation authorization. See
+continuation authorization. Do not keep an app-level Goal active while waiting
+for watcher delivery: it can retain the current turn and block the queued
+message from becoming the next turn. See
 [docs/workstream-continuation.md](docs/workstream-continuation.md).
 
 Per-host setup details: [docs/hosts.md](docs/hosts.md).

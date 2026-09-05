@@ -21,6 +21,26 @@ orchestrator-engine --project-root /path/to/project workstream start \
 The command snapshots the current binding. Later continuation signals remain
 routed to that host target even if the project is rebound.
 
+## Host turn requirement
+
+Do not combine watcher-driven continuation with an app-level Goal that keeps
+the host turn active. The watcher can queue a completion message, but that
+message cannot become the next turn until the current turn ends. This can make
+a healthy worker, check or CI monitor look as though it failed to wake the
+chat.
+
+For autonomous work that must resume after an external operation:
+
+1. Store the accepted objective and limits with `workstream start`.
+2. Start the worker, check or monitor as a detached operation.
+3. Record a `waiting_external` checkpoint naming that operation.
+4. End the host turn and let the operation's terminal event wake the chat.
+5. On resume, read the checkpoint and bounded result/evidence before acting.
+
+An in-turn blocking wait is a separate mechanism. Use it only when the current
+turn is intentionally kept open and no watcher message is expected to resume
+that phase.
+
 At a genuine phase boundary, an agent records exactly one decision:
 
 - `continue`: a concrete next action is ready and no user decision or external
@@ -53,6 +73,8 @@ external prerequisite. Task prose alone cannot provide this declaration.
 
 - Ending a chat turn does not imply continuation. Absence of a checkpoint is
   always absence of authorization.
+- App-level Goal state is not a workstream contract and must not be used to
+  retain a turn that is waiting for watcher delivery.
 - Starting a workstream requires an existing host binding. Continuation never
   falls through to whichever chat happens to bind the project later.
 - The default delay is 10 seconds. The watcher ignores the durable signal

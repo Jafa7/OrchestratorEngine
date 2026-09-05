@@ -4,6 +4,15 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-05
+
+### Changed
+
+- Graduated the verified `1.0.0rc1` runtime and public contracts to the first
+  stable `1.x` release without additional runtime changes.
+- Marked the package as production/stable and updated canonical installation
+  guidance to the immutable `v1.0.0` tag.
+
 ## [1.0.0rc1] - 2026-09-05
 
 ### Added

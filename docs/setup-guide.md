@@ -58,7 +58,7 @@ For a reproducible adopter install, use an immutable release tag:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.0.0rc1"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.0.0"
 ```
 
 GitHub Release archives and wheel/sdist assets are published with the tag;
@@ -632,7 +632,10 @@ Expect `"status": "running"` and `"heartbeat_healthy": true`. A successful
 delivery receipt has `status: "queued"`, `delivery_mode: "session_queue"` and
 `queue_message_id`. It proves daemon acceptance, not completion of the queued
 agent turn. Older Codex CLIs fall back to durable headless history delivery;
-upgrade the CLI for live delivery.
+upgrade the CLI for live delivery. Do not keep an app-level Goal active while
+waiting for this delivery: the Goal can retain the current turn and prevent
+the queued message from becoming the next turn. Use a bounded workstream and
+end the turn instead.
 
 ### Host claude — stream watch, no service
 
@@ -860,6 +863,7 @@ hosts, or by ending the armed stream command for Claude).
 | Codex receipt `deferred` with `thread_active` or `thread_recently_active` | The CLI lacks `codex queue`, so the compatibility fallback guarded against a parallel headless turn. Upgrade Codex or end the active turn and let the retry proceed. |
 | Codex receipt `submitted` with `turn_status: "running"` | The compatibility fallback started a long headless App Server turn; a background finalizer updates the receipt when it ends. |
 | Codex receipt `queued` but window did not focus | Queue delivery is still valid. Check `activation`; the optional deep link needs `powershell.exe` reachable in WSL and the Desktop app installed. |
+| Codex receipt is `queued`, but the chat does not resume | End the current turn and disable any app-level Goal retaining it. For watcher-driven automation, use a durable workstream with a `waiting_external` checkpoint; do not combine detached queue delivery with an in-turn wait. |
 | Codex receipt uses `headless_app_server_turn`, but no new visible Desktop turn | The installed launcher lacks the live queue capability. Upgrade Codex, re-run `bind --host codex` if the launcher changed, and review the durable history for this event manually. |
 | `code chat` exits non-zero | The reached `code` CLI may lack the documented `chat` subcommand, WSL interop may resolve the wrong wrapper, the chat provider may not be signed in, or no usable window may be active. Check `code --version`, the resolved executable and the host's official chat CLI behavior; delivery stays retryable. |
 | `worker run` → `task already exists` | Task ids are one-shot by design; pick a new id. |

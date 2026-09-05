@@ -11,23 +11,23 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release candidate is `1.0.0rc1` and the durable JSON contract
-schema version is `1`.
+The current release is `1.0.0` and the durable JSON contract schema version is
+`1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
 PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.0.0rc1"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.0.0"
 ```
 
-## Version 1 release candidate
+## Version 1
 
-Version `1.0.0rc1` defines the stable `1.x` compatibility and security
+Version `1.0.0` establishes the stable `1.x` compatibility and security
 boundaries, validates path-safe event identifiers and makes watcher shutdown
-identity-safe. It also adds formal `rcN` GitHub prereleases that do not replace
-the latest stable release.
+identity-safe. Formal `rcN` GitHub prereleases remain available for testing
+future release candidates without replacing the latest stable release.
 
 Stop watcher services before upgrading from an older release. Pre-`1.0.0rc1`
 service state records a PID but not a process identity. The new CLI refuses to
