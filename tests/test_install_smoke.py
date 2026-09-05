@@ -411,6 +411,13 @@ class InstallSmokeTests(unittest.TestCase):
                 text=True,
                 env=clean_env(),
             ).stdout
+            operation_wait_help = subprocess.run(
+                [str(cli), "operation", "wait", "--help"],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=clean_env(),
+            ).stdout
             ci_watch_help = subprocess.run(
                 [str(cli), "ci", "watch", "--help"],
                 check=True,
@@ -534,6 +541,23 @@ class InstallSmokeTests(unittest.TestCase):
                 "SMOKE-1",
                 "--task-id",
                 "SMOKE-CHECK",
+                "--mode",
+                "all",
+                "--json",
+            )
+            operation_wait_status = self.run_cli(
+                cli,
+                project,
+                "operation",
+                "wait",
+                "--target",
+                "worker:SMOKE-1",
+                "--target",
+                "check:INSTALL-FIRST-CLASS",
+                "--target",
+                f"ci:{ci_monitor['monitor_id']}",
+                "--target",
+                f"pr:{pr_monitor['monitor_id']}",
                 "--mode",
                 "all",
                 "--json",
@@ -698,6 +722,7 @@ class InstallSmokeTests(unittest.TestCase):
         self.assertEqual(worker_diagnostics["diagnostic_count"], 0)
         self.assertIn("--availability-mode", worker_run_help)
         self.assertIn("--mode", worker_wait_help)
+        self.assertIn("--target", operation_wait_help)
         self.assertIn("--expected-head-sha", ci_watch_help)
         self.assertIn("--workflow-name", ci_watch_help)
         self.assertIn("--wake-policy", ci_watch_help)
@@ -723,6 +748,11 @@ class InstallSmokeTests(unittest.TestCase):
         self.assertEqual(wait_status["status"], "completed")
         self.assertEqual(group_wait_status["kind"], "WORKER_WAIT_GROUP_STATUS")
         self.assertEqual(group_wait_status["terminal_count"], 2)
+        self.assertEqual(
+            operation_wait_status["kind"],
+            "ORCHESTRATOR_OPERATION_WAIT_STATUS",
+        )
+        self.assertEqual(operation_wait_status["successful_count"], 4)
         self.assertEqual(
             smoke_evidence["worker_policy"]["name"],
             "quality-efficient",

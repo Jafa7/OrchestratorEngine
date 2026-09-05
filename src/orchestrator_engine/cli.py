@@ -22,6 +22,7 @@ from . import (
     github_pull_requests,
     host_capabilities,
     local_checks,
+    operation_wait,
     platform_runtime,
     schemas,
     status,
@@ -183,6 +184,52 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=task_diagnostics.DEFAULT_LARGE_LOG_BYTES,
         help="Worker log size that should be considered too large for chat.",
+    )
+
+    operation = subparsers.add_parser(
+        "operation",
+        help="Wait on a bounded mix of local orchestration operations.",
+    )
+    operation_subparsers = operation.add_subparsers(
+        dest="operation_command", required=True
+    )
+    operation_wait_parser = operation_subparsers.add_parser(
+        "wait",
+        help="Block on worker/check/CI/PR state without model polling.",
+    )
+    operation_wait_parser.add_argument(
+        "--target",
+        action="append",
+        required=True,
+        help="KIND:ID target; KIND is worker, check, ci or pr. Repeat as needed.",
+    )
+    operation_wait_parser.add_argument(
+        "--mode",
+        choices=sorted(operation_wait.WAIT_MODES),
+        default="all",
+    )
+    operation_wait_parser.add_argument(
+        "--interval-seconds",
+        type=float,
+        default=2.0,
+        help="Seconds between bounded local state reads.",
+    )
+    operation_wait_parser.add_argument("--timeout-seconds", type=float)
+    operation_wait_parser.add_argument(
+        "--stale-after-seconds",
+        type=float,
+        default=task_diagnostics.DEFAULT_STALE_AFTER_SECONDS,
+    )
+    operation_wait_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Suppress live display and print one final bounded JSON object.",
+    )
+    operation_wait_parser.add_argument(
+        "--color", choices=("auto", "always", "never"), default="auto"
+    )
+    operation_wait_parser.add_argument(
+        "--bell", choices=("auto", "always", "never"), default="auto"
     )
 
     report = subparsers.add_parser(
@@ -1052,6 +1099,15 @@ def main(argv: list[str] | None = None) -> int:
             )
             print_json(output)
             return status.exit_code(output)
+        elif args.command == "operation":
+            if len(roots) != 1:
+                raise core.OrchestratorError(
+                    "operation wait requires exactly one project root"
+                )
+            output = run_operation_wait_command(args, roots[0])
+            if args.json:
+                print_json(output)
+            return operation_wait_exit_code(output)
         elif args.command == "report":
             if len(roots) != 1:
                 raise core.OrchestratorError("report requires exactly one project root")
@@ -1483,6 +1539,93 @@ def run_worker_wait_command(args: argparse.Namespace, root: Path) -> dict[str, o
         task_ids=args.task_id,
         mode=args.mode,
         **wait_options,
+    )
+
+
+def run_operation_wait_command(
+    args: argparse.Namespace, root: Path
+) -> dict[str, object]:
+    interactive = not args.json
+    is_tty = bool(getattr(sys.stdout, "isatty", lambda: False)())
+    use_color = (interactive and args.color == "always") or (
+        interactive
+        and args.color == "auto"
+        and is_tty
+        and "NO_COLOR" not in os.environ
+    )
+    use_bell = (interactive and args.bell == "always") or (
+        interactive and args.bell == "auto" and is_tty
+    )
+    last_line_width = 0
+
+    def render(snapshot: dict[str, object]) -> None:
+        nonlocal last_line_width
+        final = bool(snapshot.get("condition_met")) or snapshot.get(
+            "wait_status"
+        ) in {"timed_out", "action_required"}
+        if not is_tty and not final:
+            return
+        line = format_operation_wait_line(snapshot, use_color=use_color)
+        if is_tty:
+            padding = " " * max(last_line_width - visible_text_length(line), 0)
+            print(f"\r{line}{padding}", end="\n" if final else "", flush=True)
+            last_line_width = visible_text_length(line)
+        else:
+            print(line, flush=True)
+        if final and use_bell:
+            print("\a", end="", flush=True)
+
+    return operation_wait.wait_for_operations(
+        root,
+        targets=args.target,
+        mode=args.mode,
+        state_dir=args.state_dir,
+        interval_seconds=args.interval_seconds,
+        timeout_seconds=args.timeout_seconds,
+        stale_after_seconds=args.stale_after_seconds,
+        on_update=None if args.json else render,
+    )
+
+
+def operation_wait_exit_code(snapshot: dict[str, object]) -> int:
+    if snapshot.get("wait_status") == "timed_out":
+        return 124
+    if snapshot.get("wait_status") == "action_required":
+        return 3
+    return 0 if snapshot.get("status") == "completed" else 2
+
+
+def format_operation_wait_line(
+    snapshot: dict[str, object], *, use_color: bool
+) -> str:
+    status = str(snapshot.get("status") or "unknown")
+    mode = str(snapshot.get("mode") or "all")
+    terminal_count = int(snapshot.get("terminal_count") or 0)
+    target_count = int(snapshot.get("target_count") or 0)
+    successful_count = int(snapshot.get("successful_count") or 0)
+    waited = float(snapshot.get("waited_seconds") or 0.0)
+    if snapshot.get("wait_status") == "action_required":
+        label, color = "ACTION", "31"
+        count = int(snapshot.get("action_required_count") or 0)
+        detail = f"{count} operation(s) need review; return to the chat"
+    elif snapshot.get("wait_status") == "timed_out":
+        label, color = "WAIT", "33"
+        detail = "operation set still active; re-run this command later"
+    elif snapshot.get("condition_met") and status == "completed":
+        label, color = "DONE", "32"
+        detail = "return to the chat to review results"
+    elif snapshot.get("condition_met"):
+        label, color = "ACTION", "31"
+        detail = "return to the chat to review unsuccessful results"
+    else:
+        label, color = "WORKING", "36"
+        detail = f"waiting {waited:.0f}s"
+    prefix = f"[{label}]"
+    if use_color:
+        prefix = f"\x1b[{color};1m{prefix}\x1b[0m"
+    return (
+        f"{prefix} {terminal_count}/{target_count} operations | {mode} | "
+        f"{successful_count} successful | {detail}"
     )
 
 

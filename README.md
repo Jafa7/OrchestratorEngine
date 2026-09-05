@@ -44,6 +44,10 @@ This is complementary to detached live queue delivery. See
 [Codex in-turn continuation](docs/codex-in-turn-continuation.md).
 Parallel workers can share the same deterministic wait by repeating
 `--task-id` and selecting `--mode all` or `--mode any`.
+Mixed worker, local-check, CI and PR operation sets can use one bounded
+`operation wait --target KIND:ID --mode any|all`; it reads only local compact
+state and never queries providers or worker logs. See
+[heterogeneous operation wait](docs/operation-wait.md).
 
 ## Measured coordination context reduction
 
