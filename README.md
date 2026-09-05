@@ -206,6 +206,8 @@ provider-neutral follow-up signal when its wake policy requires one. The
 watcher does not interpret CI logs and no model is used while waiting. Monitor
 status is compact; `ci reap` safely finalizes a monitor only when its recorded
 supervisor identity is proven gone.
+For a confirmed failing conclusion, one bounded metadata query records only
+the problem jobs and steps; full GitHub logs remain an explicit drill-down.
 
 `pr watch` provides the corresponding pull-request readiness boundary. It
 requires the exact PR number and full expected head SHA, optionally requires an

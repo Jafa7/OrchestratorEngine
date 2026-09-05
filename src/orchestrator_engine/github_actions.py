@@ -44,10 +44,14 @@ VIEW_FIELDS = (
 LIST_FIELDS = (
     "conclusion,createdAt,databaseId,headSha,status,updatedAt,url,workflowName"
 )
+JOBS_FIELDS = "jobs"
 MAX_CAPTURE_BYTES = 64 * 1024
 MAX_VIEW_BYTES = 256 * 1024
 MAX_REASON_LENGTH = 1000
 MAX_COMMAND_LENGTH = 4096
+MAX_PROBLEM_JOBS = 20
+MAX_PROBLEM_STEPS = 50
+MAX_DIAGNOSTIC_NAME_LENGTH = 256
 VIEW_TIMEOUT_SECONDS = 60.0
 HEARTBEAT_INTERVAL_SECONDS = 30.0
 STARTING_GRACE_SECONDS = 30.0
@@ -91,6 +95,14 @@ NETWORK_MARKERS = (
     "context deadline exceeded",
     "temporary failure",
 )
+PROBLEM_CONCLUSIONS = {
+    "action_required",
+    "cancelled",
+    "failure",
+    "startup_failure",
+    "timed_out",
+}
+DIAGNOSTIC_CONCLUSIONS = PROBLEM_CONCLUSIONS - {"cancelled"}
 
 
 class GitHubActionsError(RuntimeError):
@@ -891,6 +903,179 @@ def _parse_view_result(
     return {**evidence, "ok": True, "view": view}
 
 
+def _diagnostic_name(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = " ".join(redact_text(value).split())
+    return normalized[:MAX_DIAGNOSTIC_NAME_LENGTH] or None
+
+
+def summarize_problem_jobs(value: object) -> dict[str, Any]:
+    jobs = value.get("jobs") if isinstance(value, dict) else None
+    if not isinstance(jobs, list) or any(not isinstance(job, dict) for job in jobs):
+        raise GitHubActionsError("jobs output must contain an array of objects")
+    problem_jobs: list[dict[str, Any]] = []
+    problem_job_count = 0
+    problem_step_count = 0
+    retained_step_count = 0
+    truncated = False
+    for job in jobs:
+        conclusion = job.get("conclusion")
+        if conclusion not in PROBLEM_CONCLUSIONS:
+            continue
+        problem_job_count += 1
+        retain_job = len(problem_jobs) < MAX_PROBLEM_JOBS
+        if not retain_job:
+            truncated = True
+        steps = job.get("steps", [])
+        if not isinstance(steps, list):
+            steps = []
+        failed_steps: list[dict[str, Any]] = []
+        for step in steps:
+            if (
+                not isinstance(step, dict)
+                or step.get("conclusion") not in PROBLEM_CONCLUSIONS
+            ):
+                continue
+            problem_step_count += 1
+            if not retain_job or retained_step_count >= MAX_PROBLEM_STEPS:
+                truncated = True
+                continue
+            summary: dict[str, Any] = {
+                "name": _diagnostic_name(step.get("name")) or "unknown",
+                "status": _diagnostic_name(step.get("status")),
+                "conclusion": step.get("conclusion"),
+            }
+            number = step.get("number")
+            if isinstance(number, int) and not isinstance(number, bool) and number > 0:
+                summary["number"] = number
+            failed_steps.append(summary)
+            retained_step_count += 1
+        if not retain_job:
+            continue
+        summary = {
+            "name": _diagnostic_name(job.get("name")) or "unknown",
+            "status": _diagnostic_name(job.get("status")),
+            "conclusion": conclusion,
+            "problem_steps": failed_steps,
+        }
+        database_id = job.get("databaseId")
+        if (
+            isinstance(database_id, int)
+            and not isinstance(database_id, bool)
+            and database_id > 0
+        ):
+            summary["database_id"] = database_id
+        problem_jobs.append(summary)
+    return {
+        "job_count": len(jobs),
+        "problem_job_count": problem_job_count,
+        "problem_step_count": problem_step_count,
+        "truncated": truncated,
+        "problem_jobs": problem_jobs,
+    }
+
+
+def run_failure_diagnostics(
+    descriptor: dict[str, Any],
+    *,
+    runner=None,
+) -> dict[str, Any]:
+    command = [
+        str(descriptor["gh_command"]),
+        "run",
+        "view",
+        str(descriptor["run_id"]),
+        "--repo",
+        repo_argument(str(descriptor["hostname"]), str(descriptor["repository"])),
+        "--json",
+        JOBS_FIELDS,
+    ]
+    if descriptor.get("attempt") is not None:
+        command.extend(["--attempt", str(descriptor["attempt"])])
+    started = time.monotonic()
+    stdout_metadata: dict[str, Any] | None = None
+    stderr_metadata: dict[str, Any] | None = None
+    try:
+        if runner is None:
+            bounded = run_bounded_command(command, timeout_seconds=VIEW_TIMEOUT_SECONDS)
+            stdout = bounded["stdout_bytes"]
+            stderr = bounded["stderr_bytes"]
+            exit_code = bounded["returncode"]
+            timed_out = bounded["timed_out"]
+            stdout_metadata = dict(bounded["stdout"])
+            stderr_metadata = dict(bounded["stderr"])
+        else:
+            completed = runner(
+                command,
+                capture_output=True,
+                check=False,
+                timeout=VIEW_TIMEOUT_SECONDS,
+            )
+            stdout = completed.stdout or b""
+            stderr = completed.stderr or b""
+            if isinstance(stdout, str):
+                stdout = stdout.encode()
+            if isinstance(stderr, str):
+                stderr = stderr.encode()
+            exit_code = int(completed.returncode)
+            timed_out = False
+    except subprocess.TimeoutExpired as error:
+        stdout = error.stdout or b""
+        stderr = error.stderr or b""
+        if isinstance(stdout, str):
+            stdout = stdout.encode()
+        if isinstance(stderr, str):
+            stderr = stderr.encode()
+        exit_code = None
+        timed_out = True
+    except OSError as error:
+        stdout = b""
+        stderr = str(error).encode("utf-8", errors="replace")
+        exit_code = None
+        timed_out = False
+    command_result = {
+        "exit_code": int(exit_code) if exit_code is not None else None,
+        "duration_seconds": round(time.monotonic() - started, 3),
+        "stdout": stdout_metadata or command_capture(stdout, tail=False),
+        "stderr": stderr_metadata or command_capture(stderr, tail=exit_code != 0),
+    }
+    if exit_code == 0:
+        command_result["stderr"].pop("tail", None)
+    if timed_out:
+        return {
+            "status": "unavailable",
+            "failure_kind": "diagnostics_timeout",
+            "command": command_result,
+        }
+    if exit_code != 0:
+        return {
+            "status": "unavailable",
+            "failure_kind": classify_cli_error(bounded_tail(stderr)),
+            "command": command_result,
+        }
+    if command_result["stdout"]["size_bytes"] > MAX_VIEW_BYTES:
+        return {
+            "status": "unavailable",
+            "failure_kind": "diagnostics_output_too_large",
+            "command": command_result,
+        }
+    try:
+        payload = json.loads(stdout.decode("utf-8"))
+        summary = summarize_problem_jobs(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError, GitHubActionsError):
+        return {
+            "status": "unavailable",
+            "failure_kind": "invalid_diagnostics_json",
+            "command": command_result,
+        }
+    return {
+        "status": "available",
+        **summary,
+        "command": command_result,
+    }
+
+
 def run_list(
     descriptor: dict[str, Any],
     *,
@@ -1474,6 +1659,23 @@ def finalize_monitor(
         f"monitor={observation.get('monitor_status')} "
         f"conclusion={observation.get('ci_conclusion') or 'unavailable'}"
     )
+    diagnostics = observation.get("failure_diagnostics")
+    problem_jobs = (
+        diagnostics.get("problem_jobs")
+        if isinstance(diagnostics, dict)
+        and diagnostics.get("status") == "available"
+        else None
+    )
+    if isinstance(problem_jobs, list) and problem_jobs:
+        first_job = problem_jobs[0]
+        if isinstance(first_job, dict):
+            problem = str(first_job.get("name") or "unknown")
+            problem_steps = first_job.get("problem_steps")
+            if isinstance(problem_steps, list) and problem_steps:
+                first_step = problem_steps[0]
+                if isinstance(first_step, dict):
+                    problem += f" / {first_step.get('name') or 'unknown'}"
+            summary += f" problem={problem}"
     summary_path = check_dir / "summary.txt"
     _write_text(summary_path, summary + "\n")
     check_log = check_dir / "full.log"
@@ -1514,6 +1716,10 @@ def finalize_monitor(
         result["github_actions"]["error"] = redact_text(
             observation["error"]
         )[:MAX_REASON_LENGTH]
+    if isinstance(observation.get("failure_diagnostics"), dict):
+        result["github_actions"]["failure_diagnostics"] = observation[
+            "failure_diagnostics"
+        ]
     core.atomic_json(result_path, result)
     evidence_path = directory / "evidence.json"
     evidence = {
@@ -1548,6 +1754,8 @@ def finalize_monitor(
         ]
     if isinstance(observation.get("recovery"), dict):
         evidence["recovery"] = observation["recovery"]
+    if isinstance(observation.get("failure_diagnostics"), dict):
+        evidence["failure_diagnostics"] = observation["failure_diagnostics"]
     if isinstance(descriptor.get("wake_target"), dict):
         evidence["wake_target"] = descriptor["wake_target"]
     core.atomic_json(evidence_path, evidence)
@@ -1587,6 +1795,20 @@ def finalize_monitor(
         final_descriptor["discovery_query_count"] = int(
             observation["discovery"].get("query_count", 0)
         )
+    if isinstance(observation.get("failure_diagnostics"), dict):
+        diagnostics = observation["failure_diagnostics"]
+        final_descriptor["failure_diagnostics"] = {
+            key: diagnostics[key]
+            for key in (
+                "status",
+                "failure_kind",
+                "job_count",
+                "problem_job_count",
+                "problem_step_count",
+                "truncated",
+            )
+            if key in diagnostics
+        }
     core.atomic_json(directory / "monitor.json", final_descriptor)
     return final_descriptor
 
@@ -1598,6 +1820,7 @@ def supervise_monitor(
     state_dir: str = core.DEFAULT_STATE_DIR,
     view_runner=None,
     list_runner=None,
+    diagnostics_runner=None,
     watch_popen_factory=subprocess.Popen,
 ) -> dict[str, Any]:
     project = project_root.expanduser().resolve()
@@ -1714,6 +1937,22 @@ def supervise_monitor(
             view_runner=view_runner,
             watch_popen_factory=watch_popen_factory,
         )
+        if (
+            observation.get("monitor_status") == "completed"
+            and observation.get("ci_conclusion") in DIAGNOSTIC_CONCLUSIONS
+        ):
+            try:
+                observation["failure_diagnostics"] = run_failure_diagnostics(
+                    runtime_descriptor,
+                    runner=diagnostics_runner,
+                )
+            except Exception as error:
+                observation["failure_diagnostics"] = {
+                    "status": "unavailable",
+                    "failure_kind": "diagnostics_process_failure",
+                    "error": redact_text(str(error))[:MAX_REASON_LENGTH],
+                    "command": {},
+                }
         if discovery is not None:
             observation["discovery"] = discovery
     except Exception as error:  # supervisor must always leave terminal evidence

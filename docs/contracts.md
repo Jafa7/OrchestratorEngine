@@ -1052,6 +1052,16 @@ adapter stores hashes, sizes and redacted bounded tails rather than sending CI
 output to the host chat. Complete CI logs stay on GitHub and are fetched only
 when targeted diagnosis is required.
 
+For a confirmed `failure`, `startup_failure`, `timed_out` or
+`action_required` conclusion, the monitor makes one additional bounded
+`gh run view --json jobs` request. `failure_diagnostics` in result/evidence
+contains counts and at most 20 problem jobs and 50 problem steps; names are
+redacted and bounded, successful jobs/steps and log bodies are omitted. A
+diagnostic-query failure is recorded as `status: unavailable` but never changes
+the already confirmed CI conclusion or starts a retry. This compact structure
+is the first troubleshooting artifact to read before fetching a failed-step
+log from GitHub.
+
 The durable files are:
 
 - `.orchestrator/monitors/github-actions/<monitor_id>/monitor.json`;

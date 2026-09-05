@@ -49,6 +49,58 @@
     "initial_view": {"type": ["object", "null"]},
     "watch": {"type": ["object", "null"]},
     "final_view": {"type": ["object", "null"]},
+    "failure_diagnostics": {
+      "type": "object",
+      "required": ["status", "command"],
+      "properties": {
+        "status": {"enum": ["available", "unavailable"]},
+        "failure_kind": {"type": "string", "minLength": 1},
+        "job_count": {"type": "integer", "minimum": 0},
+        "problem_job_count": {"type": "integer", "minimum": 0},
+        "problem_step_count": {"type": "integer", "minimum": 0},
+        "truncated": {"type": "boolean"},
+        "problem_jobs": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "required": ["name", "status", "conclusion", "problem_steps"],
+            "properties": {
+              "name": {"type": "string", "minLength": 1, "maxLength": 256},
+              "status": {"type": ["string", "null"], "maxLength": 256},
+              "conclusion": {"enum": ["action_required", "cancelled", "failure", "startup_failure", "timed_out"]},
+              "database_id": {"type": "integer", "minimum": 1},
+              "problem_steps": {
+                "type": "array",
+                "maxItems": 50,
+                "items": {
+                  "type": "object",
+                  "required": ["name", "status", "conclusion"],
+                  "properties": {
+                    "name": {"type": "string", "minLength": 1, "maxLength": 256},
+                    "status": {"type": ["string", "null"], "maxLength": 256},
+                    "conclusion": {"enum": ["action_required", "cancelled", "failure", "startup_failure", "timed_out"]},
+                    "number": {"type": "integer", "minimum": 1}
+                  },
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "error": {"type": "string", "maxLength": 1000},
+        "command": {"type": "object"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "available"}}},
+          "then": {"required": ["job_count", "problem_job_count", "problem_step_count", "truncated", "problem_jobs"]},
+          "else": {"required": ["failure_kind"]}
+        }
+      ],
+      "additionalProperties": true
+    },
     "recovery": {"type": "object"},
     "summary": {"type": "string", "maxLength": 1000},
     "result_path": {"type": "string", "pattern": "^/"},

@@ -739,6 +739,174 @@ class GitHubActionsTests(unittest.TestCase):
         self.assertEqual(observation["failure_kind"], "authentication_failed")
         self.assertNotIn("ci_conclusion", observation)
 
+    def test_failure_diagnostics_keep_only_problem_jobs_and_steps(self) -> None:
+        jobs = {
+            "jobs": [
+                {
+                    "databaseId": 1,
+                    "name": "Portable core",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "url": "https://github.com/Example/Project/actions/runs/123/job/1",
+                    "steps": [],
+                },
+                {
+                    "databaseId": 2,
+                    "name": "Unit ghp_" + "a" * 30,
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "url": "https://github.com/Example/Project/actions/runs/123/job/2",
+                    "steps": [
+                        {
+                            "number": 1,
+                            "name": "Install",
+                            "status": "completed",
+                            "conclusion": "success",
+                        },
+                        {
+                            "number": 2,
+                            "name": "Run tests",
+                            "status": "completed",
+                            "conclusion": "failure",
+                        },
+                    ],
+                },
+            ]
+        }
+        runner = mock.Mock(
+            return_value=subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps(jobs).encode(),
+                stderr=b"",
+            )
+        )
+
+        report = github_actions.run_failure_diagnostics(
+            {
+                "gh_command": "gh",
+                "run_id": 123,
+                "attempt": 2,
+                "hostname": "github.com",
+                "repository": "Example/Project",
+            },
+            runner=runner,
+        )
+
+        self.assertEqual(report["status"], "available")
+        self.assertEqual(report["job_count"], 2)
+        self.assertEqual(report["problem_job_count"], 1)
+        self.assertEqual(report["problem_step_count"], 1)
+        self.assertEqual(report["problem_jobs"][0]["database_id"], 2)
+        self.assertEqual(
+            report["problem_jobs"][0]["problem_steps"][0]["name"],
+            "Run tests",
+        )
+        self.assertIn("[REDACTED]", report["problem_jobs"][0]["name"])
+        self.assertNotIn("tail", report["command"]["stdout"])
+        command = runner.call_args.args[0]
+        self.assertIn("jobs", command)
+        self.assertEqual(command[-2:], ["--attempt", "2"])
+
+    def test_failure_diagnostics_failure_does_not_claim_ci_failed(self) -> None:
+        runner = mock.Mock(
+            return_value=subprocess.CompletedProcess(
+                args=[],
+                returncode=1,
+                stdout=b"",
+                stderr=b"authentication required; run gh auth login",
+            )
+        )
+
+        report = github_actions.run_failure_diagnostics(
+            {
+                "gh_command": "gh",
+                "run_id": 123,
+                "hostname": "github.com",
+                "repository": "Example/Project",
+            },
+            runner=runner,
+        )
+
+        self.assertEqual(report["status"], "unavailable")
+        self.assertEqual(report["failure_kind"], "authentication_failed")
+        self.assertIn("authentication required", report["command"]["stderr"]["tail"])
+
+    def test_failure_diagnostics_bound_problem_jobs_and_steps(self) -> None:
+        jobs = {
+            "jobs": [
+                {
+                    "name": f"Job {job}",
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "steps": [
+                        {
+                            "number": step,
+                            "name": f"Step {step}",
+                            "status": "completed",
+                            "conclusion": "failure",
+                        }
+                        for step in range(1, 4)
+                    ],
+                }
+                for job in range(21)
+            ]
+        }
+        runner = mock.Mock(
+            return_value=subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps(jobs).encode(),
+                stderr=b"",
+            )
+        )
+
+        report = github_actions.run_failure_diagnostics(
+            {
+                "gh_command": "gh",
+                "run_id": 123,
+                "hostname": "github.com",
+                "repository": "Example/Project",
+            },
+            runner=runner,
+        )
+
+        self.assertEqual(report["problem_job_count"], 21)
+        self.assertEqual(report["problem_step_count"], 63)
+        self.assertEqual(len(report["problem_jobs"]), 20)
+        self.assertEqual(
+            sum(len(job["problem_steps"]) for job in report["problem_jobs"]),
+            50,
+        )
+        self.assertTrue(report["truncated"])
+
+    def test_default_failure_diagnostics_detect_oversized_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            executable = Path(temporary) / "fake-gh"
+            executable.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                f"sys.stdout.write('x' * {github_actions.MAX_VIEW_BYTES + 1})\n",
+                encoding="utf-8",
+            )
+            executable.chmod(0o755)
+            report = github_actions.run_failure_diagnostics(
+                {
+                    "gh_command": str(executable),
+                    "run_id": 123,
+                    "hostname": "github.com",
+                    "repository": "Example/Project",
+                }
+            )
+
+        self.assertEqual(report["status"], "unavailable")
+        self.assertEqual(report["failure_kind"], "diagnostics_output_too_large")
+        self.assertEqual(
+            report["command"]["stdout"]["size_bytes"],
+            github_actions.MAX_VIEW_BYTES + 1,
+        )
+        self.assertNotIn("tail", report["command"]["stdout"])
+
     def test_default_run_view_bounds_output_while_reading(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             executable = Path(temporary) / "fake-gh"
@@ -1185,6 +1353,141 @@ class GitHubActionsTests(unittest.TestCase):
         self.assertEqual(final["status"], "completed")
         self.assertEqual(final["ci_conclusion"], "success")
         self.assertTrue(final["signal_emitted"])
+
+    def test_supervise_attaches_diagnostics_to_confirmed_ci_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            directory = github_actions.monitor_dir_for(root, "gha-failure")
+            directory.mkdir(parents=True)
+            descriptor = {
+                "schema_version": 1,
+                "kind": github_actions.MONITOR_KIND,
+                "monitor_id": "gha-failure",
+                "source_kind": github_actions.SOURCE_KIND,
+                "status": "starting",
+                "hostname": "github.com",
+                "repository": "Example/Project",
+                "run_id": 123,
+                "attempt": 1,
+                "expected_head_sha": "abcdef1",
+                "gh_command": "gh",
+                "wake_policy": "always",
+                "timeout_seconds": None,
+                "monitor_dir": str(directory),
+                "supervisor_log": str(directory / "supervisor.log"),
+                "created_at": core.utc_now(),
+            }
+            core.atomic_json(directory / "monitor.json", descriptor)
+            observation = {
+                "monitor_status": "completed",
+                "ci_conclusion": "failure",
+                "initial_view": {"ok": True, "view": gh_view(conclusion="failure")},
+                "watch": None,
+                "final_view": {"ok": True, "view": gh_view(conclusion="failure")},
+            }
+            diagnostics = {
+                "status": "available",
+                "job_count": 1,
+                "problem_job_count": 1,
+                "problem_step_count": 1,
+                "truncated": False,
+                "problem_jobs": [
+                    {
+                        "name": "Unit tests",
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "problem_steps": [
+                            {
+                                "number": 2,
+                                "name": "Run unit tests",
+                                "status": "completed",
+                                "conclusion": "failure",
+                            }
+                        ],
+                    }
+                ],
+                "command": {},
+            }
+            with mock.patch.object(
+                github_actions,
+                "observe_run",
+                return_value=observation,
+            ), mock.patch.object(
+                github_actions,
+                "run_failure_diagnostics",
+                return_value=diagnostics,
+            ) as query:
+                final = github_actions.supervise_monitor(
+                    root,
+                    monitor_id="gha-failure",
+                )
+            result = core.load_object(Path(final["result_path"]))
+            evidence = core.load_object(Path(final["evidence_path"]))
+            summary = Path(final["summary_path"]).read_text(encoding="utf-8")
+
+        query.assert_called_once()
+        self.assertEqual(final["status"], "completed")
+        self.assertEqual(final["ci_conclusion"], "failure")
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(
+            result["github_actions"]["failure_diagnostics"], diagnostics
+        )
+        self.assertEqual(evidence["failure_diagnostics"], diagnostics)
+        self.assertIn("problem=Unit tests / Run unit tests", summary)
+
+    def test_diagnostics_exception_preserves_confirmed_ci_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            directory = github_actions.monitor_dir_for(root, "gha-diagnostic-error")
+            directory.mkdir(parents=True)
+            descriptor = {
+                "schema_version": 1,
+                "kind": github_actions.MONITOR_KIND,
+                "monitor_id": "gha-diagnostic-error",
+                "source_kind": github_actions.SOURCE_KIND,
+                "status": "starting",
+                "hostname": "github.com",
+                "repository": "Example/Project",
+                "run_id": 123,
+                "attempt": 1,
+                "expected_head_sha": "abcdef1",
+                "gh_command": "gh",
+                "wake_policy": "always",
+                "timeout_seconds": None,
+                "monitor_dir": str(directory),
+                "supervisor_log": str(directory / "supervisor.log"),
+                "created_at": core.utc_now(),
+            }
+            core.atomic_json(directory / "monitor.json", descriptor)
+            observation = {
+                "monitor_status": "completed",
+                "ci_conclusion": "failure",
+                "initial_view": {"ok": True, "view": gh_view(conclusion="failure")},
+                "watch": None,
+                "final_view": {"ok": True, "view": gh_view(conclusion="failure")},
+            }
+            with mock.patch.object(
+                github_actions,
+                "observe_run",
+                return_value=observation,
+            ), mock.patch.object(
+                github_actions,
+                "run_failure_diagnostics",
+                side_effect=RuntimeError("diagnostic adapter failed"),
+            ):
+                final = github_actions.supervise_monitor(
+                    root,
+                    monitor_id="gha-diagnostic-error",
+                )
+            result = core.load_object(Path(final["result_path"]))
+
+        self.assertEqual(final["status"], "completed")
+        self.assertEqual(final["ci_conclusion"], "failure")
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(
+            result["github_actions"]["failure_diagnostics"]["failure_kind"],
+            "diagnostics_process_failure",
+        )
 
     def test_second_supervisor_cannot_take_over_a_live_monitor(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

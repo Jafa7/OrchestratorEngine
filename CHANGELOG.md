@@ -6,6 +6,9 @@ All notable changes to OrchestratorEngine are documented here.
 
 ### Added
 
+- Confirmed GitHub Actions failures now receive one bounded jobs query and
+  retain compact problem job/step metadata without downloading CI logs or
+  changing the authoritative monitor result when diagnostics are unavailable.
 - A tag-triggered release workflow verifies exact-SHA branch CI, builds and
   smoke-tests wheel/sdist artifacts, publishes through a draft boundary and
   checks GitHub asset digests before making the release public.

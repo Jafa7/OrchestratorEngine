@@ -548,6 +548,12 @@ and retry only with an explicit reason after fixing the cause. See
 [contracts.md](contracts.md#github-actions-exact-run-monitor) for attempts,
 status, cancellation and failure classification.
 
+When GitHub confirms a failing conclusion, inspect
+`github_actions.failure_diagnostics` in the monitor's
+`verification-result.json` first. It contains bounded problem job/step names
+and counts, not log bodies. Fetch a targeted GitHub step log only when those
+fields are insufficient.
+
 The same local configuration supports exact pull-request readiness monitoring.
 Obtain the PR number and its full current head SHA, then choose whether reviews
 are informational or mandatory:
