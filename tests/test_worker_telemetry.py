@@ -15,8 +15,20 @@ from orchestrator_engine import (
     schemas,
     task_diagnostics,
     telemetry_adapters,
+    worker_lease,
     workers,
 )
+
+
+def wait_for_released_worker(task_dir: Path, *, deadline: datetime) -> None:
+    path = worker_lease.lease_path(task_dir)
+    while True:
+        lease = worker_lease.load_lease(path)
+        if lease is not None and lease.get("status") == "released":
+            return
+        if datetime.now(UTC) >= deadline:
+            raise AssertionError("worker supervisor did not release its lease")
+        time.sleep(0.01)
 
 
 class WorkerTelemetryTests(unittest.TestCase):
@@ -83,11 +95,11 @@ soft_token_budget = 5
                 if (task_dir / "task.json").is_file():
                     current = core.load_object(task_dir / "task.json")
                     if current.get("status") == "completed":
-                        time.sleep(0.1)
                         break
                 if datetime.now(UTC) >= deadline:
                     self.fail("worker did not finish")
                 time.sleep(0.05)
+            wait_for_released_worker(task_dir, deadline=deadline)
             result = core.load_object(task_dir / "result.json")
             descriptor = core.load_object(task_dir / "task.json")
             output_manifest = core.load_object(task_dir / "worker-outputs.json")
@@ -142,6 +154,7 @@ print("done")
                 if datetime.now(UTC) >= deadline:
                     self.fail("worker did not finish")
                 time.sleep(0.05)
+            wait_for_released_worker(task_dir, deadline=deadline)
             handoff = core.load_object(task_dir / "worker-handoff.json")
             evidence = core.load_object(task_dir / "evidence.json")
 
