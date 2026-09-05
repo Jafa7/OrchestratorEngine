@@ -4,12 +4,7 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
-### Fixed
-
-- Worker and heterogeneous waits no longer misclassify the normal
-  result-to-descriptor finalization window as a dead supervisor when the
-  supervisor exits between two bounded state reads; genuinely stalled
-  finalization remains detectable through the stale-heartbeat threshold.
+## [0.12.0] - 2026-09-05
 
 ### Added
 
@@ -21,6 +16,13 @@ All notable changes to OrchestratorEngine are documented here.
   model calls, provider queries or log reads.
 - `operation status` exposes the same bounded mixed-operation snapshot without
   blocking, for scripts, dashboards and operator diagnostics.
+
+### Fixed
+
+- Worker and heterogeneous waits no longer misclassify the normal
+  result-to-descriptor finalization window as a dead supervisor when the
+  supervisor exits between two bounded state reads; genuinely stalled
+  finalization remains detectable through the stale-heartbeat threshold.
 
 ## [0.11.1] - 2026-09-05
 

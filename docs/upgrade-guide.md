@@ -11,7 +11,7 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release is `0.11.1` and the durable JSON contract schema version is
+The current release is `0.12.0` and the durable JSON contract schema version is
 `1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
@@ -19,8 +19,17 @@ PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.11.1"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v0.12.0"
 ```
+
+## Heterogeneous operation observation in v0.12.0
+
+Version 0.12.0 adds bounded `operation status` and `operation wait` commands
+for mixed worker, local-check, GitHub Actions and pull-request monitor sets.
+They reuse existing descriptors and do not query providers or read logs. The
+release also prevents a normal result-to-descriptor finalization window from
+being misclassified as a dead supervisor. Existing commands and durable state
+remain compatible; no migration is required.
 
 ## Release tag validation fix in v0.11.1
 
