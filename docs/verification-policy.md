@@ -50,6 +50,11 @@ OrchestratorEngine release candidates also run
 compares package/source/lock versions and the current release markers in the
 changelog, setup guide and upgrade guide. CI uses its `--print-version` output
 for wheel smoke instead of maintaining another hard-coded version.
+After an exact-SHA branch CI success, the tag-triggered release workflow runs
+only packaging-specific verification: tag/source consistency, build,
+installed-wheel smoke, clean-fixture conformance and asset digest readback. It
+does not repeat the complete unit-test matrix. See the
+[release process](release-process.md).
 
 ## Gate validity
 

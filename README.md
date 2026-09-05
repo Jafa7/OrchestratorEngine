@@ -511,6 +511,7 @@ Additional documentation:
 - [Worker behavior policies](docs/worker-policies.md)
 - [Adopter upgrade checklist](docs/adopter-upgrade-checklist.md)
 - [Project integration and legacy adoption](docs/project-adoption.md)
+- [Release process](docs/release-process.md)
 
 ## License
 

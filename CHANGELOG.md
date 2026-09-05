@@ -4,6 +4,15 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- A tag-triggered release workflow verifies exact-SHA branch CI, builds and
+  smoke-tests wheel/sdist artifacts, publishes through a draft boundary and
+  checks GitHub asset digests before making the release public.
+- Deterministic release helpers validate CI provenance, extract one versioned
+  changelog section and generate `SHA256SUMS`; focused tests cover stale runs,
+  failed reruns, tag/version mismatches and remote asset drift.
+
 ## [0.10.0] - 2026-09-05
 
 ### Added

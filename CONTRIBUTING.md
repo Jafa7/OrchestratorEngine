@@ -38,4 +38,6 @@ risk. Do not repeatedly run the complete suite between intermediate edits.
 
 For setup, architecture and reporting details, see the
 [setup guide](docs/setup-guide.md), [contracts](docs/contracts.md) and
-[operator reporting policy](docs/operator-reporting.md).
+[operator reporting policy](docs/operator-reporting.md). Maintainers preparing
+a tag must also follow the [release process](docs/release-process.md); pushing
+the tag is the explicit publication authorization boundary.

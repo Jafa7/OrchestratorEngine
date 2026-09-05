@@ -1,0 +1,134 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Verify, build, and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Validate tag and source commit
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(python tools/check_release_consistency.py --print-version)"
+          test "${GITHUB_REF_NAME}" = "v${version}"
+          test "$(git cat-file -t "${GITHUB_REF_NAME}")" = "tag"
+          commit_sha="$(git rev-list -n 1 "${GITHUB_REF_NAME}")"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "${commit_sha}" refs/remotes/origin/main
+          source_date_epoch="$(git show -s --format=%ct "${commit_sha}")"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "commit_sha=${commit_sha}" >> "${GITHUB_OUTPUT}"
+          echo "SOURCE_DATE_EPOCH=${source_date_epoch}" >> "${GITHUB_ENV}"
+      - name: Verify successful CI for the exact commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .release
+          gh run list --repo "${GITHUB_REPOSITORY}" --workflow CI --branch main \
+            --limit 100 \
+            --json conclusion,databaseId,event,headBranch,headSha,status,url,workflowName \
+            > .release/ci-runs.json
+          python tools/verify_release_ci.py \
+            --input .release/ci-runs.json \
+            --expected-sha "${{ steps.source.outputs.commit_sha }}" \
+            --repository "${GITHUB_REPOSITORY}" --workflow-name CI --branch main
+      - name: Build distributions
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+      - name: Smoke test the built wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv .release-smoke
+          .release-smoke/bin/python -m pip install --no-deps dist/*.whl
+          .release-smoke/bin/orchestrator-engine --version \
+            | grep -Fx "orchestrator-engine ${{ steps.source.outputs.version }}"
+          .release-smoke/bin/orchestrator-engine conformance run \
+            --mode full --timeout-seconds 15
+      - name: Prepare release bundle
+        run: |
+          python tools/prepare_release_bundle.py \
+            --tag "${GITHUB_REF_NAME}" --dist-dir dist --output-dir .release
+      - name: Create or validate release draft
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "${GITHUB_REF_NAME}" \
+              --repo "${GITHUB_REPOSITORY}" --json isDraft,assets \
+              > .release/existing.json 2>/dev/null; then
+            is_draft="$(python -c \
+              'import json; print(json.load(open(".release/existing.json"))["isDraft"])')"
+            if [[ "${is_draft}" = "False" ]]; then
+              python tools/prepare_release_bundle.py \
+                --tag "${GITHUB_REF_NAME}" --dist-dir dist \
+                --output-dir .release --verify-assets .release/existing.json
+              echo "already_published=true" >> "${GITHUB_OUTPUT}"
+            else
+              gh release edit "${GITHUB_REF_NAME}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                --title "OrchestratorEngine ${GITHUB_REF_NAME}" \
+                --notes-file .release/release-notes.md
+              echo "already_published=false" >> "${GITHUB_OUTPUT}"
+            fi
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --repo "${GITHUB_REPOSITORY}" --verify-tag --draft \
+              --title "OrchestratorEngine ${GITHUB_REF_NAME}" \
+              --notes-file .release/release-notes.md
+            echo "already_published=false" >> "${GITHUB_OUTPUT}"
+          fi
+      - name: Upload and verify release assets
+        if: steps.release.outputs.already_published != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release view "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" --json isDraft \
+            > .release/draft-state.json
+          python -c \
+            'import json; assert json.load(open(".release/draft-state.json"))["isDraft"] is True'
+          gh release upload "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            dist/*.whl dist/*.tar.gz .release/SHA256SUMS --clobber
+          gh release view "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" --json assets \
+            > .release/uploaded.json
+          python tools/prepare_release_bundle.py \
+            --tag "${GITHUB_REF_NAME}" --dist-dir dist \
+            --output-dir .release --verify-assets .release/uploaded.json
+      - name: Publish verified release
+        if: steps.release.outputs.already_published != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          gh release edit "${GITHUB_REF_NAME}"
+          --repo "${GITHUB_REPOSITORY}" --draft=false --latest
