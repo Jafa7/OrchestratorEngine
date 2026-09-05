@@ -4,6 +4,14 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-09-05
+
+### Fixed
+
+- The detached local-check integration test now waits for the terminal check
+  descriptor rather than the earlier result artifact, removing a Python 3.11
+  CI race without changing runtime contracts.
+
 ## [0.8.0] - 2026-09-05
 
 ### Added

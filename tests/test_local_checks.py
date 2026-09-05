@@ -136,21 +136,17 @@ class LocalCheckTests(unittest.TestCase):
                 suite="gate",
             )
             binding.write_binding(root, host="codex", target_thread_id="thread-2")
-            result_path = (
-                root
-                / ".orchestrator"
-                / "checks"
-                / "CHECK-DETACHED"
-                / "verification-result.json"
-            )
             for _ in range(100):
-                if result_path.is_file():
+                status = local_checks.check_status(
+                    root,
+                    check_id="CHECK-DETACHED",
+                )
+                if status["checks"][0]["status"] == "passed":
                     break
                 time.sleep(0.05)
             else:
                 self.fail("detached check did not finish")
             signals = core.inbox(root)
-            status = local_checks.check_status(root, check_id="CHECK-DETACHED")
 
         self.assertEqual(dispatched["execution"], "detached")
         self.assertEqual(status["checks"][0]["status"], "passed")
