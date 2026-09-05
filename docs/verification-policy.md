@@ -109,12 +109,13 @@ worker may inspect only the failed-command logs and return a short triage
 handoff. The host agent remains responsible for validating that diagnosis and
 deciding the fix; worker output is evidence, not authority.
 
-For a GitHub Actions gate, use `ci watch` with the exact run ID and expected
-commit SHA instead of asking an agent to revisit the Actions page. The local
-`gh` process waits without model tokens, stores a compact verification result,
-and wakes the dispatching chat only under the selected wake policy. A confirmed
-success needs no CI log read; a failure starts with the result and summary,
-then only the failed job evidence needed for diagnosis.
+For a GitHub Actions gate, use `ci watch` with the full expected commit SHA, or
+with an exact run ID when it is already known, instead of asking an agent to
+revisit the Actions page. The local `gh` process discovers and waits without
+model tokens, stores a compact verification result, and wakes the dispatching
+chat only under the selected wake policy. A confirmed success needs no CI log
+read; a failure starts with the result and summary, then only the failed job
+evidence needed for diagnosis.
 
 This saves coordination context independently of the host wake mechanism. If
 the Codex chat turn ends, a current CLI can deliver completion through

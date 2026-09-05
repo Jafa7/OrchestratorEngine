@@ -24,9 +24,10 @@ Supported host/worker combinations are symmetric: any host chat can manage any
 CLI workers (Claude, Codex, Copilot, or any other command-line worker).
 Long verification runs can use the same flow: run checks detached, keep full
 logs as artifacts, and return a compact pass/fail summary through that channel.
-GitHub Actions runs can also be monitored by exact run ID through the local
-authenticated `gh` CLI, so CI completion can resume the dispatching chat
-without model polling or engine-managed GitHub credentials.
+GitHub Actions runs can also be monitored immediately by full commit SHA, or
+by exact run ID when it is already known, through the local authenticated `gh`
+CLI. CI completion can therefore resume the dispatching chat without model
+polling or engine-managed GitHub credentials.
 
 Host delivery quality is provider-specific. Claude uses its watched session
 stream, VS Code uses its chat CLI, and current Codex Desktop releases use
@@ -199,8 +200,9 @@ orchestrator-engine --project-root /path/to/project status
    signals.
 
 Deterministic sources can use the same delivery path. For example, `ci watch`
-runs a detached GitHub Actions monitor, writes a verification result, and emits
-a provider-neutral follow-up signal when its wake policy requires one. The
+runs a detached GitHub Actions monitor, discovers one exact run from a full SHA
+or accepts its database ID directly, writes a verification result, and emits a
+provider-neutral follow-up signal when its wake policy requires one. The
 watcher does not interpret CI logs and no model is used while waiting. Monitor
 status is compact; `ci reap` safely finalizes a monitor only when its recorded
 supervisor identity is proven gone.

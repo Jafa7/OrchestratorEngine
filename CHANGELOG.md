@@ -6,6 +6,12 @@ All notable changes to OrchestratorEngine are documented here.
 
 ### Added
 
+- GitHub Actions monitors can now start before a run ID is visible, discover
+  one exact allowlisted run from a full commit SHA and optional workflow name,
+  then reuse the existing detached exact-run observation and wakeup lifecycle.
+- SHA discovery filters bounded `gh run list` metadata locally, fails closed on
+  multiple matches or duplicate active run ownership, and preserves compact
+  discovery evidence without storing provider output.
 - A provider-free `conformance run` command verifies a clean installation
   through an isolated portable or full detached synthetic-worker fixture,
   bounded machine-readable evidence and idempotent watcher delivery.

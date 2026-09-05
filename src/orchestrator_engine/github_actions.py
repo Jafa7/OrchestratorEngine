@@ -41,6 +41,9 @@ VIEW_FIELDS = (
     "attempt,conclusion,createdAt,databaseId,event,headBranch,headSha,"
     "startedAt,status,updatedAt,url,workflowDatabaseId,workflowName"
 )
+LIST_FIELDS = (
+    "conclusion,createdAt,databaseId,headSha,status,updatedAt,url,workflowName"
+)
 MAX_CAPTURE_BYTES = 64 * 1024
 MAX_VIEW_BYTES = 256 * 1024
 MAX_REASON_LENGTH = 1000
@@ -49,7 +52,10 @@ VIEW_TIMEOUT_SECONDS = 60.0
 HEARTBEAT_INTERVAL_SECONDS = 30.0
 STARTING_GRACE_SECONDS = 30.0
 CONTROL_POLL_SECONDS = 1.0
+DISCOVERY_POLL_SECONDS = 5.0
+DEFAULT_DISCOVERY_TIMEOUT_SECONDS = 900.0
 TERMINATION_GRACE_SECONDS = 5.0
+MAX_WORKFLOW_NAME_LENGTH = 256
 REPOSITORY_PATTERN = re.compile(
     r"^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})/"
     r"[A-Za-z0-9_.-](?:[A-Za-z0-9_.-]{0,99})$"
@@ -230,6 +236,21 @@ def default_monitor_id(
     return f"gha-{run_id}{attempt_part}-{suffix}"
 
 
+def default_discovery_monitor_id(
+    *,
+    hostname: str,
+    repository: str,
+    expected_head_sha: str,
+    workflow_name: str | None,
+) -> str:
+    identity = (
+        f"{hostname}/{repository.casefold()}/{expected_head_sha}/"
+        f"{workflow_name or '*'}"
+    )
+    suffix = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:10]
+    return f"gha-sha-{expected_head_sha[:12]}-{suffix}"
+
+
 def repo_argument(hostname: str, repository: str) -> str:
     return f"{hostname}/{repository}"
 
@@ -324,11 +345,12 @@ def start_monitor(
     project_root: Path,
     *,
     repository: str,
-    run_id: int | str,
+    run_id: int | str | None = None,
     state_dir: str = core.DEFAULT_STATE_DIR,
     hostname: str = "github.com",
     attempt: int | str | None = None,
     expected_head_sha: str | None = None,
+    workflow_name: str | None = None,
     gh_command: str | None = None,
     timeout_seconds: float | None = None,
     wake_policy: str = "always",
@@ -342,7 +364,9 @@ def start_monitor(
     config = load_config(project, state_dir=state_dir)
     normalized_repo = normalize_repository(repository)
     normalized_host = normalize_hostname(hostname)
-    parsed_run_id = positive_integer(run_id, field="run-id")
+    parsed_run_id = (
+        positive_integer(run_id, field="run-id") if run_id is not None else None
+    )
     parsed_attempt = (
         positive_integer(attempt, field="attempt") if attempt is not None else None
     )
@@ -375,6 +399,29 @@ def start_monitor(
             raise GitHubActionsError(
                 "expected-head-sha must be a hexadecimal commit id"
             )
+    if parsed_run_id is None:
+        if attempt is not None:
+            raise GitHubActionsError("attempt requires an explicit run-id")
+        if expected_head_sha is None or len(expected_head_sha) not in {40, 64}:
+            raise GitHubActionsError(
+                "run discovery requires a full 40- or 64-character "
+                "expected-head-sha"
+            )
+        if timeout_seconds is None:
+            timeout_seconds = DEFAULT_DISCOVERY_TIMEOUT_SECONDS
+    if workflow_name is not None:
+        workflow_name = workflow_name.strip()
+        if not workflow_name or len(workflow_name) > MAX_WORKFLOW_NAME_LENGTH:
+            raise GitHubActionsError(
+                "workflow-name must contain 1 to "
+                f"{MAX_WORKFLOW_NAME_LENGTH} characters"
+            )
+        if any(character in workflow_name for character in ("\n", "\r", "\x00")):
+            raise GitHubActionsError("workflow-name contains invalid characters")
+        if parsed_run_id is not None:
+            raise GitHubActionsError(
+                "workflow-name is only valid when discovering a run"
+            )
     executable = (gh_command or config["gh_command"]).strip()
     if not executable or any(
         character in executable for character in ("\n", "\r", "\x00")
@@ -393,10 +440,16 @@ def start_monitor(
         "hostname": normalized_host,
         "repository": normalized_repo,
         "run_id": parsed_run_id,
+        "requested_run_id": parsed_run_id,
         "attempt": parsed_attempt,
+        "workflow_name": workflow_name,
     }
     dispatch_identity = {
-        **run_identity,
+        "hostname": normalized_host,
+        "repository": normalized_repo,
+        "requested_run_id": parsed_run_id,
+        "attempt": parsed_attempt,
+        "workflow_name": workflow_name,
         "expected_head_sha": expected_head_sha,
         "wake_policy": wake_policy,
         "timeout_seconds": timeout_seconds,
@@ -406,11 +459,20 @@ def start_monitor(
     }
     resolved_monitor_id = validate_monitor_id(
         monitor_id
-        or default_monitor_id(
-            hostname=normalized_host,
-            repository=normalized_repo,
-            run_id=parsed_run_id,
-            attempt=parsed_attempt,
+        or (
+            default_monitor_id(
+                hostname=normalized_host,
+                repository=normalized_repo,
+                run_id=parsed_run_id,
+                attempt=parsed_attempt,
+            )
+            if parsed_run_id is not None
+            else default_discovery_monitor_id(
+                hostname=normalized_host,
+                repository=normalized_repo,
+                expected_head_sha=str(expected_head_sha),
+                workflow_name=workflow_name,
+            )
         )
     )
     directory = monitor_dir_for(project, resolved_monitor_id, state_dir=state_dir)
@@ -430,6 +492,8 @@ def start_monitor(
         "supervisor_log": str(directory / "supervisor.log"),
         "created_at": core.utc_now(),
     }
+    if parsed_run_id is None:
+        descriptor["discovery_query_count"] = 0
     if retry_of is not None:
         descriptor["retry_of"] = validate_monitor_id(retry_of)
         descriptor["retry_reason"] = normalized_retry_reason
@@ -441,25 +505,19 @@ def start_monitor(
             monitor_root(project, state_dir=state_dir).glob("*/monitor.json")
         ):
             existing = core.load_object(existing_path)
-            existing_run = {
-                key: existing.get(key)
-                for key in ("hostname", "repository", "run_id", "attempt")
-            }
-            if (
-                existing_run["hostname"] != run_identity["hostname"]
-                or not same_repository(
-                    existing_run["repository"], run_identity["repository"]
-                )
-                or existing_run["run_id"] != run_identity["run_id"]
-            ):
-                continue
             existing_dispatch = {
-                key: existing.get(key)
+                key: (
+                    existing.get("run_id")
+                    if key == "requested_run_id"
+                    and "requested_run_id" not in existing
+                    else existing.get(key)
+                )
                 for key in (
                     "hostname",
                     "repository",
-                    "run_id",
+                    "requested_run_id",
                     "attempt",
+                    "workflow_name",
                     "expected_head_sha",
                     "wake_policy",
                     "timeout_seconds",
@@ -487,9 +545,30 @@ def start_monitor(
                     "descriptor_path": str(existing_path),
                     "idempotent": True,
                 }
-            if existing.get("status") not in TERMINAL_MONITOR_STATUSES:
+            if existing.get("status") in TERMINAL_MONITOR_STATUSES:
+                continue
+            same_host_repo = (
+                existing.get("hostname") == run_identity["hostname"]
+                and same_repository(
+                    existing.get("repository"), run_identity["repository"]
+                )
+            )
+            same_exact_run = (
+                parsed_run_id is not None
+                and existing.get("run_id") == parsed_run_id
+            )
+            existing_requested = existing.get(
+                "requested_run_id", existing.get("run_id")
+            )
+            same_discovery = (
+                parsed_run_id is None
+                and existing_requested is None
+                and existing.get("expected_head_sha") == expected_head_sha
+                and existing.get("workflow_name") == workflow_name
+            )
+            if same_host_repo and (same_exact_run or same_discovery):
                 raise GitHubActionsError(
-                    "an active monitor already owns this repository/run/attempt: "
+                    "an active monitor already owns this run or discovery: "
                     f"{existing.get('monitor_id')}"
                 )
         directory.mkdir(parents=True, exist_ok=True)
@@ -812,6 +891,280 @@ def _parse_view_result(
     return {**evidence, "ok": True, "view": view}
 
 
+def run_list(
+    descriptor: dict[str, Any],
+    *,
+    runner=None,
+) -> dict[str, Any]:
+    command = [
+        str(descriptor["gh_command"]),
+        "run",
+        "list",
+        "--repo",
+        repo_argument(str(descriptor["hostname"]), str(descriptor["repository"])),
+        "--limit",
+        "100",
+        "--json",
+        LIST_FIELDS,
+    ]
+    started = time.monotonic()
+    if runner is None:
+        try:
+            bounded = run_bounded_command(
+                command,
+                timeout_seconds=VIEW_TIMEOUT_SECONDS,
+            )
+        except OSError as error:
+            data = str(error).encode("utf-8", errors="replace")
+            return {
+                "ok": False,
+                "failure_kind": "gh_command_failed",
+                "exit_code": None,
+                "duration_seconds": round(time.monotonic() - started, 3),
+                "stdout": command_capture(b"", tail=False),
+                "stderr": command_capture(data),
+            }
+        evidence = {
+            "exit_code": (
+                int(bounded["returncode"])
+                if bounded["returncode"] is not None
+                else None
+            ),
+            "duration_seconds": round(time.monotonic() - started, 3),
+            "stdout": bounded["stdout"],
+            "stderr": bounded["stderr"],
+        }
+        if bounded["timed_out"]:
+            return {**evidence, "ok": False, "failure_kind": "view_timeout"}
+        if bounded["stdout"]["size_bytes"] > MAX_VIEW_BYTES:
+            return {
+                **evidence,
+                "ok": False,
+                "failure_kind": "view_output_too_large",
+            }
+        return _parse_list_result(
+            stdout=bounded["stdout_bytes"],
+            stderr=bounded["stderr_bytes"],
+            evidence=evidence,
+        )
+    try:
+        completed = runner(
+            command,
+            capture_output=True,
+            check=False,
+            timeout=VIEW_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as error:
+        stdout = error.stdout or b""
+        stderr = error.stderr or b""
+        if isinstance(stdout, str):
+            stdout = stdout.encode()
+        if isinstance(stderr, str):
+            stderr = stderr.encode()
+        return {
+            "ok": False,
+            "failure_kind": "view_timeout",
+            "exit_code": None,
+            "duration_seconds": round(time.monotonic() - started, 3),
+            "stdout": command_capture(stdout, tail=False),
+            "stderr": command_capture(stderr),
+        }
+    except OSError as error:
+        data = str(error).encode("utf-8", errors="replace")
+        return {
+            "ok": False,
+            "failure_kind": "gh_command_failed",
+            "exit_code": None,
+            "duration_seconds": round(time.monotonic() - started, 3),
+            "stdout": command_capture(b"", tail=False),
+            "stderr": command_capture(data),
+        }
+    stdout = completed.stdout or b""
+    stderr = completed.stderr or b""
+    if isinstance(stdout, str):
+        stdout = stdout.encode()
+    if isinstance(stderr, str):
+        stderr = stderr.encode()
+    evidence = {
+        "exit_code": int(completed.returncode),
+        "duration_seconds": round(time.monotonic() - started, 3),
+        "stdout": command_capture(stdout, tail=False),
+        "stderr": command_capture(stderr),
+    }
+    if len(stdout) > MAX_VIEW_BYTES:
+        return {**evidence, "ok": False, "failure_kind": "view_output_too_large"}
+    return _parse_list_result(stdout=stdout, stderr=stderr, evidence=evidence)
+
+
+def _parse_list_result(
+    *,
+    stdout: bytes,
+    stderr: bytes,
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    if evidence.get("exit_code") != 0:
+        return {
+            **evidence,
+            "ok": False,
+            "failure_kind": classify_cli_error(bounded_tail(stderr)),
+        }
+    try:
+        runs = json.loads(stdout.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return {**evidence, "ok": False, "failure_kind": "invalid_view_json"}
+    if not isinstance(runs, list) or any(not isinstance(item, dict) for item in runs):
+        return {**evidence, "ok": False, "failure_kind": "invalid_view_json"}
+    return {**evidence, "ok": True, "runs": runs}
+
+
+def discover_run(
+    project_root: Path,
+    descriptor: dict[str, Any],
+    *,
+    state_dir: str,
+    list_runner=None,
+    sleep=time.sleep,
+) -> dict[str, Any]:
+    directory = Path(str(descriptor["monitor_dir"]))
+    expected_sha = str(descriptor["expected_head_sha"])
+    workflow_name = descriptor.get("workflow_name")
+    timeout_seconds = float(descriptor["timeout_seconds"])
+    started = time.monotonic()
+    deadline = started + timeout_seconds
+    query_count = 0
+    last_query: dict[str, Any] | None = None
+    last_heartbeat = started
+    while True:
+        if (directory / "cancel-request.json").is_file():
+            return {
+                "status": "cancelled",
+                "failure_kind": "operator_cancelled",
+                "query_count": query_count,
+                "duration_seconds": round(time.monotonic() - started, 3),
+                "last_query": last_query,
+            }
+        query = run_list(descriptor, runner=list_runner)
+        query_count += 1
+        last_query = {key: value for key, value in query.items() if key != "runs"}
+        if not query.get("ok"):
+            return {
+                "status": "unavailable",
+                "failure_kind": query.get("failure_kind"),
+                "query_count": query_count,
+                "duration_seconds": round(time.monotonic() - started, 3),
+                "last_query": last_query,
+            }
+        matching: dict[int, dict[str, Any]] = {}
+        identity_error = None
+        for candidate in query["runs"]:
+            head_sha = candidate.get("headSha")
+            if not isinstance(head_sha, str) or head_sha.lower() != expected_sha:
+                continue
+            if (
+                workflow_name is not None
+                and candidate.get("workflowName") != workflow_name
+            ):
+                continue
+            if not repository_url_matches(
+                candidate.get("url"),
+                hostname=str(descriptor["hostname"]),
+                repository=str(descriptor["repository"]),
+            ):
+                identity_error = "repository_url_mismatch"
+                continue
+            candidate_id = candidate.get("databaseId")
+            if isinstance(candidate_id, int) and candidate_id > 0:
+                matching[candidate_id] = candidate
+            else:
+                identity_error = "run_id_mismatch"
+        if identity_error is not None:
+            return {
+                "status": "ambiguous",
+                "failure_kind": identity_error,
+                "query_count": query_count,
+                "candidate_count": len(matching),
+                "duration_seconds": round(time.monotonic() - started, 3),
+                "last_query": last_query,
+            }
+        if len(matching) > 1:
+            return {
+                "status": "ambiguous",
+                "failure_kind": "multiple_matching_runs",
+                "query_count": query_count,
+                "candidate_count": len(matching),
+                "duration_seconds": round(time.monotonic() - started, 3),
+                "last_query": last_query,
+            }
+        if matching:
+            run_id, selected = next(iter(matching.items()))
+            return {
+                "status": "resolved",
+                "run_id": run_id,
+                "workflow_name": selected.get("workflowName"),
+                "query_count": query_count,
+                "candidate_count": 1,
+                "duration_seconds": round(time.monotonic() - started, 3),
+                "last_query": last_query,
+            }
+        now = time.monotonic()
+        if now >= deadline:
+            return {
+                "status": "timed_out",
+                "failure_kind": "run_discovery_timeout",
+                "query_count": query_count,
+                "candidate_count": 0,
+                "duration_seconds": round(now - started, 3),
+                "last_query": last_query,
+            }
+        if now - last_heartbeat >= HEARTBEAT_INTERVAL_SECONDS:
+            current = core.load_object(directory / "monitor.json")
+            current["last_alive_at"] = core.utc_now()
+            current["discovery_query_count"] = query_count
+            core.atomic_json(directory / "monitor.json", current)
+            last_heartbeat = now
+        sleep(min(DISCOVERY_POLL_SECONDS, deadline - now))
+
+
+def claim_discovered_run(
+    project_root: Path,
+    descriptor: dict[str, Any],
+    discovery: dict[str, Any],
+    *,
+    state_dir: str,
+) -> tuple[dict[str, Any], str | None]:
+    """Persist one discovered run while preventing duplicate active ownership."""
+
+    run_id = int(discovery["run_id"])
+    descriptor_path = Path(str(descriptor["monitor_dir"])) / "monitor.json"
+    owner = None
+    with monitor_admission_lock(project_root, state_dir=state_dir):
+        current = core.load_object(descriptor_path)
+        for existing_path in sorted(
+            monitor_root(project_root, state_dir=state_dir).glob("*/monitor.json")
+        ):
+            if existing_path == descriptor_path:
+                continue
+            existing = core.load_object(existing_path)
+            if existing.get("status") in TERMINAL_MONITOR_STATUSES:
+                continue
+            if (
+                existing.get("hostname") == current.get("hostname")
+                and same_repository(
+                    existing.get("repository"), current.get("repository")
+                )
+                and existing.get("run_id") == run_id
+            ):
+                owner = str(existing.get("monitor_id") or existing_path.parent.name)
+                break
+        if owner is None:
+            current["run_id"] = run_id
+            current["discovery"] = discovery
+            current["discovery_query_count"] = int(discovery["query_count"])
+            current["last_alive_at"] = core.utc_now()
+            core.atomic_json(descriptor_path, current)
+    return current, owner
+
+
 def _write_text(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -1114,7 +1467,8 @@ def finalize_monitor(
     )
     status = verification_status(observation)
     summary = (
-        f"GitHub Actions {descriptor['repository']} run {descriptor['run_id']} "
+        f"GitHub Actions {descriptor['repository']} "
+        f"run {descriptor.get('run_id') or '?'} "
         "attempt "
         f"{(final_view or {}).get('attempt') or descriptor.get('attempt') or '?'}: "
         f"monitor={observation.get('monitor_status')} "
@@ -1142,7 +1496,7 @@ def finalize_monitor(
         "github_actions": {
             "hostname": descriptor["hostname"],
             "repository": descriptor["repository"],
-            "run_id": descriptor["run_id"],
+            "run_id": descriptor.get("run_id"),
             "attempt": (final_view or {}).get("attempt") or descriptor.get("attempt"),
             "head_sha": (final_view or {}).get("headSha"),
             "workflow_name": (final_view or {}).get("workflowName"),
@@ -1154,6 +1508,8 @@ def finalize_monitor(
             "failure_kind": observation.get("failure_kind"),
         },
     }
+    if isinstance(observation.get("discovery"), dict):
+        result["github_actions"]["discovery"] = observation["discovery"]
     if isinstance(observation.get("error"), str):
         result["github_actions"]["error"] = redact_text(
             observation["error"]
@@ -1167,7 +1523,7 @@ def finalize_monitor(
         "source_kind": SOURCE_KIND,
         "hostname": descriptor["hostname"],
         "repository": descriptor["repository"],
-        "run_id": descriptor["run_id"],
+        "run_id": descriptor.get("run_id"),
         "requested_attempt": descriptor.get("attempt"),
         "expected_head_sha": descriptor.get("expected_head_sha"),
         "monitor_status": observation.get("monitor_status"),
@@ -1184,6 +1540,8 @@ def finalize_monitor(
         "summary_path": str(summary_path),
         "log_path": str(log_path),
     }
+    if isinstance(observation.get("discovery"), dict):
+        evidence["discovery"] = observation["discovery"]
     if isinstance(observation.get("error"), str):
         evidence["error"] = redact_text(observation["error"])[
             :MAX_REASON_LENGTH
@@ -1224,6 +1582,11 @@ def finalize_monitor(
         "signal_path": emitted["signal_path"],
         "signal_emitted": emitted["signal_emitted"],
     }
+    if isinstance(observation.get("discovery"), dict):
+        final_descriptor["discovery"] = observation["discovery"]
+        final_descriptor["discovery_query_count"] = int(
+            observation["discovery"].get("query_count", 0)
+        )
     core.atomic_json(directory / "monitor.json", final_descriptor)
     return final_descriptor
 
@@ -1234,6 +1597,7 @@ def supervise_monitor(
     monitor_id: str,
     state_dir: str = core.DEFAULT_STATE_DIR,
     view_runner=None,
+    list_runner=None,
     watch_popen_factory=subprocess.Popen,
 ) -> dict[str, Any]:
     project = project_root.expanduser().resolve()
@@ -1269,14 +1633,89 @@ def supervise_monitor(
         )
         core.atomic_json(descriptor_path, descriptor)
     started = time.monotonic()
+    discovery = None
     try:
+        runtime_descriptor = descriptor
+        if descriptor.get("run_id") is None:
+            discovery = discover_run(
+                project,
+                descriptor,
+                state_dir=state_dir,
+                list_runner=list_runner,
+            )
+            if discovery.get("status") != "resolved":
+                observation = {
+                    "monitor_status": discovery.get("status"),
+                    "failure_kind": discovery.get("failure_kind"),
+                    "initial_view": None,
+                    "watch": None,
+                    "final_view": None,
+                    "discovery": discovery,
+                }
+                return finalize_monitor(
+                    project,
+                    descriptor,
+                    observation,
+                    state_dir=state_dir,
+                    started_at=started_at,
+                    duration_seconds=time.monotonic() - started,
+                )
+            descriptor, active_owner = claim_discovered_run(
+                project,
+                descriptor,
+                discovery,
+                state_dir=state_dir,
+            )
+            if active_owner is not None:
+                discovery["active_monitor_id"] = active_owner
+                observation = {
+                    "monitor_status": "ambiguous",
+                    "failure_kind": "run_already_monitored",
+                    "initial_view": None,
+                    "watch": None,
+                    "final_view": None,
+                    "discovery": discovery,
+                }
+                return finalize_monitor(
+                    project,
+                    descriptor,
+                    observation,
+                    state_dir=state_dir,
+                    started_at=started_at,
+                    duration_seconds=time.monotonic() - started,
+                )
+            runtime_descriptor = dict(descriptor)
+            if descriptor.get("timeout_seconds") is not None:
+                remaining = float(descriptor["timeout_seconds"]) - (
+                    time.monotonic() - started
+                )
+                if remaining <= 0:
+                    observation = {
+                        "monitor_status": "timed_out",
+                        "failure_kind": "run_discovery_timeout",
+                        "initial_view": None,
+                        "watch": None,
+                        "final_view": None,
+                        "discovery": discovery,
+                    }
+                    return finalize_monitor(
+                        project,
+                        descriptor,
+                        observation,
+                        state_dir=state_dir,
+                        started_at=started_at,
+                        duration_seconds=time.monotonic() - started,
+                    )
+                runtime_descriptor["timeout_seconds"] = remaining
         observation = observe_run(
             project,
-            descriptor,
+            runtime_descriptor,
             state_dir=state_dir,
             view_runner=view_runner,
             watch_popen_factory=watch_popen_factory,
         )
+        if discovery is not None:
+            observation["discovery"] = discovery
     except Exception as error:  # supervisor must always leave terminal evidence
         observation = {
             "monitor_status": "failed",
@@ -1286,6 +1725,8 @@ def supervise_monitor(
             "watch": None,
             "final_view": None,
         }
+        if isinstance(discovery, dict):
+            observation["discovery"] = discovery
     return finalize_monitor(
         project,
         descriptor,
@@ -1354,11 +1795,12 @@ def retry_monitor(
     return start_monitor(
         project,
         repository=str(original["repository"]),
-        run_id=int(original["run_id"]),
+        run_id=original.get("requested_run_id", original.get("run_id")),
         state_dir=state_dir,
         hostname=str(original["hostname"]),
         attempt=original.get("attempt"),
         expected_head_sha=original.get("expected_head_sha"),
+        workflow_name=original.get("workflow_name"),
         gh_command=None,
         timeout_seconds=original.get("timeout_seconds"),
         wake_policy=str(original["wake_policy"]),
@@ -1557,7 +1999,11 @@ def monitor_status(
                 "hostname",
                 "repository",
                 "run_id",
+                "requested_run_id",
                 "attempt",
+                "expected_head_sha",
+                "workflow_name",
+                "discovery_query_count",
                 "ci_conclusion",
                 "failure_kind",
                 "created_at",
@@ -1571,6 +2017,14 @@ def monitor_status(
                 "signal_emitted",
             )
         }
+        summary["phase"] = (
+            "discovering"
+            if descriptor.get("run_id") is None
+            and descriptor.get("status") in {"starting", "running"}
+            else "watching"
+            if descriptor.get("status") in {"starting", "running"}
+            else "terminal"
+        )
         if descriptor.get("status") in {"starting", "running"}:
             process_state = supervisor_process_state(path.parent, descriptor)
             summary["supervisor_state"] = process_state["state"]

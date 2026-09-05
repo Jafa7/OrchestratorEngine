@@ -699,6 +699,7 @@ class InstallSmokeTests(unittest.TestCase):
         self.assertIn("--availability-mode", worker_run_help)
         self.assertIn("--mode", worker_wait_help)
         self.assertIn("--expected-head-sha", ci_watch_help)
+        self.assertIn("--workflow-name", ci_watch_help)
         self.assertIn("--wake-policy", ci_watch_help)
         self.assertIn("--expected-head-sha", pr_watch_help)
         self.assertIn("--review-policy", pr_watch_help)

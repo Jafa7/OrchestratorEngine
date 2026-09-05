@@ -73,6 +73,29 @@ def completed_view(value: dict[str, object]) -> subprocess.CompletedProcess[byte
     )
 
 
+def completed_list(
+    values: list[dict[str, object]],
+) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout=json.dumps(values).encode(),
+        stderr=b"",
+    )
+
+
+def gh_list_item(
+    *,
+    run_id: int,
+    head_sha: str,
+    workflow_name: str = "CI",
+) -> dict[str, object]:
+    item = gh_view(run_id=run_id, head_sha=head_sha)
+    item["url"] = f"https://github.com/Example/Project/actions/runs/{run_id}"
+    item["workflowName"] = workflow_name
+    return item
+
+
 class DummyProcess:
     pid = 4321
 
@@ -89,6 +112,381 @@ class RunningProcess:
 
 
 class GitHubActionsTests(unittest.TestCase):
+    def test_start_can_discover_run_from_full_sha_idempotently(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            popen = mock.Mock(return_value=DummyProcess())
+            sha = "a" * 40
+            first = github_actions.start_monitor(
+                root,
+                repository="Example/Project",
+                expected_head_sha=sha,
+                workflow_name="CI",
+                popen_factory=popen,
+            )
+            second = github_actions.start_monitor(
+                root,
+                repository="example/project",
+                expected_head_sha=sha,
+                workflow_name="CI",
+                popen_factory=popen,
+            )
+            descriptor_path = Path(first["descriptor_path"])
+            descriptor = core.load_object(descriptor_path)
+            descriptor["run_id"] = 123
+            descriptor["status"] = "running"
+            core.atomic_json(descriptor_path, descriptor)
+            after_resolution = github_actions.start_monitor(
+                root,
+                repository="Example/Project",
+                expected_head_sha=sha,
+                workflow_name="CI",
+                popen_factory=popen,
+            )
+
+        self.assertIsNone(first["run_id"])
+        self.assertIsNone(first["requested_run_id"])
+        self.assertEqual(first["timeout_seconds"], 900.0)
+        self.assertTrue(first["monitor_id"].startswith("gha-sha-"))
+        self.assertFalse(first["idempotent"])
+        self.assertTrue(second["idempotent"])
+        self.assertTrue(after_resolution["idempotent"])
+        self.assertEqual(after_resolution["run_id"], 123)
+        self.assertEqual(popen.call_count, 1)
+
+    def test_discovery_admission_requires_unambiguous_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            cases = [
+                ({}, "requires a full"),
+                ({"expected_head_sha": "a" * 12}, "requires a full"),
+                (
+                    {"expected_head_sha": "a" * 40, "attempt": 1},
+                    "attempt requires",
+                ),
+                (
+                    {
+                        "run_id": 123,
+                        "expected_head_sha": "a" * 40,
+                        "workflow_name": "CI",
+                    },
+                    "only valid when discovering",
+                ),
+            ]
+            for options, message in cases:
+                with self.subTest(options=options), self.assertRaisesRegex(
+                    github_actions.GitHubActionsError,
+                    message,
+                ):
+                    github_actions.start_monitor(
+                        root,
+                        repository="Example/Project",
+                        popen_factory=mock.Mock(return_value=DummyProcess()),
+                        **options,
+                    )
+
+    def test_discovery_filters_exact_sha_without_trusting_gh_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            directory = github_actions.monitor_dir_for(root, "gha-discovery")
+            directory.mkdir(parents=True)
+            sha = "a" * 40
+            descriptor = {
+                "gh_command": "gh",
+                "hostname": "github.com",
+                "repository": "Example/Project",
+                "expected_head_sha": sha,
+                "workflow_name": "CI",
+                "timeout_seconds": 30.0,
+                "monitor_dir": str(directory),
+            }
+            runner = mock.Mock(
+                side_effect=[
+                    completed_list([gh_list_item(run_id=100, head_sha="b" * 40)]),
+                    completed_list(
+                        [
+                            gh_list_item(run_id=100, head_sha="b" * 40),
+                            gh_list_item(run_id=123, head_sha=sha),
+                        ]
+                    ),
+                ]
+            )
+            result = github_actions.discover_run(
+                root,
+                descriptor,
+                state_dir=core.DEFAULT_STATE_DIR,
+                list_runner=runner,
+                sleep=mock.Mock(),
+            )
+
+        self.assertEqual(result["status"], "resolved")
+        self.assertEqual(result["run_id"], 123)
+        self.assertEqual(result["query_count"], 2)
+        command = runner.call_args_list[0].args[0]
+        self.assertNotIn("--commit", command)
+
+    def test_discovery_fails_closed_on_multiple_exact_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            directory = github_actions.monitor_dir_for(root, "gha-ambiguous")
+            directory.mkdir(parents=True)
+            sha = "a" * 40
+            result = github_actions.discover_run(
+                root,
+                {
+                    "gh_command": "gh",
+                    "hostname": "github.com",
+                    "repository": "Example/Project",
+                    "expected_head_sha": sha,
+                    "workflow_name": "CI",
+                    "timeout_seconds": 30.0,
+                    "monitor_dir": str(directory),
+                },
+                state_dir=core.DEFAULT_STATE_DIR,
+                list_runner=mock.Mock(
+                    return_value=completed_list(
+                        [
+                            gh_list_item(run_id=123, head_sha=sha),
+                            gh_list_item(run_id=124, head_sha=sha),
+                        ]
+                    )
+                ),
+            )
+
+        self.assertEqual(result["status"], "ambiguous")
+        self.assertEqual(result["failure_kind"], "multiple_matching_runs")
+        self.assertEqual(result["candidate_count"], 2)
+
+    def test_discovery_uses_exact_workflow_name_to_disambiguate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            directory = github_actions.monitor_dir_for(root, "gha-workflow")
+            directory.mkdir(parents=True)
+            sha = "a" * 40
+            result = github_actions.discover_run(
+                root,
+                {
+                    "gh_command": "gh",
+                    "hostname": "github.com",
+                    "repository": "Example/Project",
+                    "expected_head_sha": sha,
+                    "workflow_name": "CI",
+                    "timeout_seconds": 30.0,
+                    "monitor_dir": str(directory),
+                },
+                state_dir=core.DEFAULT_STATE_DIR,
+                list_runner=mock.Mock(
+                    return_value=completed_list(
+                        [
+                            gh_list_item(
+                                run_id=123,
+                                head_sha=sha,
+                                workflow_name="Docs",
+                            ),
+                            gh_list_item(run_id=124, head_sha=sha),
+                        ]
+                    )
+                ),
+            )
+
+        self.assertEqual(result["status"], "resolved")
+        self.assertEqual(result["run_id"], 124)
+        self.assertEqual(result["workflow_name"], "CI")
+
+    def test_discovery_timeout_is_terminal_after_bounded_query(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            directory = github_actions.monitor_dir_for(root, "gha-timeout")
+            directory.mkdir(parents=True)
+            runner = mock.Mock(return_value=completed_list([]))
+            result = github_actions.discover_run(
+                root,
+                {
+                    "gh_command": "gh",
+                    "hostname": "github.com",
+                    "repository": "Example/Project",
+                    "expected_head_sha": "a" * 40,
+                    "workflow_name": None,
+                    "timeout_seconds": 0.000001,
+                    "monitor_dir": str(directory),
+                },
+                state_dir=core.DEFAULT_STATE_DIR,
+                list_runner=runner,
+                sleep=mock.Mock(),
+            )
+
+        self.assertEqual(result["status"], "timed_out")
+        self.assertEqual(result["failure_kind"], "run_discovery_timeout")
+        self.assertEqual(result["query_count"], 1)
+        runner.assert_called_once()
+
+    def test_discovery_honors_cancel_before_query(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            directory = github_actions.monitor_dir_for(root, "gha-cancel-discovery")
+            directory.mkdir(parents=True)
+            core.atomic_json(directory / "cancel-request.json", {"reason": "stop"})
+            runner = mock.Mock()
+            result = github_actions.discover_run(
+                root,
+                {
+                    "gh_command": "gh",
+                    "hostname": "github.com",
+                    "repository": "Example/Project",
+                    "expected_head_sha": "a" * 40,
+                    "workflow_name": None,
+                    "timeout_seconds": 30.0,
+                    "monitor_dir": str(directory),
+                },
+                state_dir=core.DEFAULT_STATE_DIR,
+                list_runner=runner,
+            )
+
+        self.assertEqual(result["status"], "cancelled")
+        self.assertEqual(result["query_count"], 0)
+        runner.assert_not_called()
+
+    def test_discovery_classifies_auth_failure_without_retry_loop(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            directory = github_actions.monitor_dir_for(root, "gha-auth-discovery")
+            directory.mkdir(parents=True)
+            runner = mock.Mock(
+                return_value=subprocess.CompletedProcess(
+                    args=[],
+                    returncode=1,
+                    stdout=b"",
+                    stderr=b"authentication required; run gh auth login",
+                )
+            )
+            result = github_actions.discover_run(
+                root,
+                {
+                    "gh_command": "gh",
+                    "hostname": "github.com",
+                    "repository": "Example/Project",
+                    "expected_head_sha": "a" * 40,
+                    "workflow_name": None,
+                    "timeout_seconds": 30.0,
+                    "monitor_dir": str(directory),
+                },
+                state_dir=core.DEFAULT_STATE_DIR,
+                list_runner=runner,
+            )
+
+        self.assertEqual(result["status"], "unavailable")
+        self.assertEqual(result["failure_kind"], "authentication_failed")
+        self.assertEqual(result["query_count"], 1)
+
+    def test_supervisor_discovers_then_uses_exact_run_monitor(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            directory = github_actions.monitor_dir_for(root, "gha-discover-supervise")
+            directory.mkdir(parents=True)
+            sha = "a" * 40
+            descriptor = {
+                "schema_version": 1,
+                "kind": github_actions.MONITOR_KIND,
+                "monitor_id": "gha-discover-supervise",
+                "source_kind": github_actions.SOURCE_KIND,
+                "status": "starting",
+                "hostname": "github.com",
+                "repository": "Example/Project",
+                "run_id": None,
+                "requested_run_id": None,
+                "attempt": None,
+                "workflow_name": "CI",
+                "expected_head_sha": sha,
+                "gh_command": "gh",
+                "wake_policy": "always",
+                "timeout_seconds": 30.0,
+                "monitor_dir": str(directory),
+                "supervisor_log": str(directory / "supervisor.log"),
+                "created_at": core.utc_now(),
+            }
+            core.atomic_json(directory / "monitor.json", descriptor)
+            final = github_actions.supervise_monitor(
+                root,
+                monitor_id="gha-discover-supervise",
+                list_runner=mock.Mock(
+                    return_value=completed_list(
+                        [gh_list_item(run_id=123, head_sha=sha)]
+                    )
+                ),
+                view_runner=mock.Mock(
+                    return_value=completed_view(gh_view(head_sha=sha))
+                ),
+            )
+            evidence = core.load_object(Path(final["evidence_path"]))
+
+        self.assertEqual(final["status"], "completed")
+        self.assertEqual(final["run_id"], 123)
+        self.assertEqual(final["discovery"]["status"], "resolved")
+        self.assertEqual(evidence["discovery"]["query_count"], 1)
+        self.assertEqual(evidence["final_view"]["view"]["databaseId"], 123)
+
+    def test_supervisor_does_not_duplicate_active_exact_run_monitor(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            sha = "a" * 40
+            owner_dir = github_actions.monitor_dir_for(root, "gha-owner")
+            owner_dir.mkdir(parents=True)
+            core.atomic_json(
+                owner_dir / "monitor.json",
+                {
+                    "schema_version": 1,
+                    "kind": github_actions.MONITOR_KIND,
+                    "monitor_id": "gha-owner",
+                    "status": "running",
+                    "hostname": "github.com",
+                    "repository": "Example/Project",
+                    "run_id": 123,
+                },
+            )
+            directory = github_actions.monitor_dir_for(root, "gha-discovery-owner")
+            directory.mkdir(parents=True)
+            descriptor = {
+                "schema_version": 1,
+                "kind": github_actions.MONITOR_KIND,
+                "monitor_id": "gha-discovery-owner",
+                "source_kind": github_actions.SOURCE_KIND,
+                "status": "starting",
+                "hostname": "github.com",
+                "repository": "Example/Project",
+                "run_id": None,
+                "requested_run_id": None,
+                "attempt": None,
+                "workflow_name": "CI",
+                "expected_head_sha": sha,
+                "gh_command": "gh",
+                "wake_policy": "always",
+                "timeout_seconds": 30.0,
+                "monitor_dir": str(directory),
+                "supervisor_log": str(directory / "supervisor.log"),
+                "created_at": core.utc_now(),
+            }
+            core.atomic_json(directory / "monitor.json", descriptor)
+            view_runner = mock.Mock()
+            final = github_actions.supervise_monitor(
+                root,
+                monitor_id="gha-discovery-owner",
+                list_runner=mock.Mock(
+                    return_value=completed_list(
+                        [gh_list_item(run_id=123, head_sha=sha)]
+                    )
+                ),
+                view_runner=view_runner,
+            )
+            evidence = core.load_object(Path(final["evidence_path"]))
+
+        self.assertEqual(final["status"], "ambiguous")
+        self.assertEqual(final["failure_kind"], "run_already_monitored")
+        self.assertIsNone(final["run_id"])
+        self.assertEqual(evidence["discovery"]["active_monitor_id"], "gha-owner")
+        view_runner.assert_not_called()
+
     def test_watch_fails_before_artifacts_when_detached_lifecycle_unsupported(
         self,
     ) -> None:
@@ -702,6 +1100,33 @@ class GitHubActionsTests(unittest.TestCase):
 
         self.assertEqual(report["status_counts"], {"crashed": 1})
         self.assertEqual(report["monitors"][0]["failure_kind"], "supervisor_not_alive")
+
+    def test_status_exposes_run_discovery_phase(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            directory = github_actions.monitor_dir_for(root, "gha-discovering")
+            directory.mkdir(parents=True)
+            core.atomic_json(
+                directory / "monitor.json",
+                {
+                    "schema_version": 1,
+                    "kind": github_actions.MONITOR_KIND,
+                    "monitor_id": "gha-discovering",
+                    "status": "starting",
+                    "hostname": "github.com",
+                    "repository": "Example/Project",
+                    "run_id": None,
+                    "requested_run_id": None,
+                    "expected_head_sha": "a" * 40,
+                    "workflow_name": "CI",
+                    "created_at": core.utc_now(),
+                },
+            )
+            report = github_actions.monitor_status(root)
+
+        self.assertEqual(report["monitors"][0]["phase"], "discovering")
+        self.assertIsNone(report["monitors"][0]["run_id"])
+        self.assertEqual(report["monitors"][0]["workflow_name"], "CI")
 
     def test_status_contains_unreadable_descriptor_without_failing_all(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

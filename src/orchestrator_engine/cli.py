@@ -694,13 +694,17 @@ def build_parser() -> argparse.ArgumentParser:
     ci_subparsers = ci.add_subparsers(dest="ci_command", required=True)
     ci_watch = ci_subparsers.add_parser(
         "watch",
-        help="Start a detached exact-run GitHub Actions monitor.",
+        help="Start an exact-run or full-SHA GitHub Actions monitor.",
     )
     ci_watch.add_argument("--repo", required=True)
-    ci_watch.add_argument("--run-id", required=True)
+    ci_watch.add_argument("--run-id")
     ci_watch.add_argument("--hostname", default="github.com")
     ci_watch.add_argument("--attempt")
     ci_watch.add_argument("--expected-head-sha")
+    ci_watch.add_argument(
+        "--workflow-name",
+        help="Exact workflow name used to disambiguate full-SHA discovery.",
+    )
     ci_watch.add_argument("--gh-command")
     ci_watch.add_argument("--timeout-seconds", type=float)
     ci_watch.add_argument(
@@ -1248,6 +1252,7 @@ def run_ci_command(args: argparse.Namespace, root: Path) -> object:
             hostname=args.hostname,
             attempt=args.attempt,
             expected_head_sha=args.expected_head_sha,
+            workflow_name=args.workflow_name,
             gh_command=args.gh_command,
             timeout_seconds=args.timeout_seconds,
             wake_policy=args.wake_policy,

@@ -21,6 +21,31 @@ from orchestrator_engine import (
 
 
 class CliTests(unittest.TestCase):
+    @patch("orchestrator_engine.cli.github_actions.start_monitor")
+    def test_ci_watch_accepts_full_sha_discovery(self, start_monitor: object) -> None:
+        start_monitor.return_value = {"status": "starting"}
+        sha = "a" * 40
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = cli.main(
+                [
+                    "ci",
+                    "watch",
+                    "--repo",
+                    "Example/Project",
+                    "--expected-head-sha",
+                    sha,
+                    "--workflow-name",
+                    "CI",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output.getvalue())["status"], "starting")
+        self.assertIsNone(start_monitor.call_args.kwargs["run_id"])
+        self.assertEqual(start_monitor.call_args.kwargs["expected_head_sha"], sha)
+        self.assertEqual(start_monitor.call_args.kwargs["workflow_name"], "CI")
+
     def test_conformance_cli_emits_report_and_exit_code(self) -> None:
         output = io.StringIO()
         with contextlib.redirect_stdout(output):

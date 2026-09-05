@@ -522,14 +522,21 @@ allowed_repositories = ["EXAMPLE/PROJECT"]
 ```
 
 Confirm `gh auth status` yourself; OrchestratorEngine never requests or stores
-the token. After pushing a commit and obtaining its exact run ID, dispatch the
-monitor from the chat that should continue the work:
+the token. Once the commit has a full SHA, dispatch the monitor from the chat
+that should continue the work. It may start immediately before or after push;
+the detached process discovers the matching run when GitHub registers it:
 
 ```bash
 orchestrator-engine --project-root /path/to/project ci watch \
-  --repo EXAMPLE/PROJECT --run-id 123456 \
-  --expected-head-sha abcdef123456 --wake-policy always
+  --repo EXAMPLE/PROJECT \
+  --expected-head-sha 0123456789abcdef0123456789abcdef01234567 \
+  --workflow-name CI --wake-policy always
 ```
+
+If the exact GitHub run database ID is already known, pass `--run-id 123456`
+instead; abbreviated SHA values are accepted only with that explicit run ID.
+Use `--workflow-name` in discovery mode when the commit starts more than one
+workflow.
 
 End the host turn after the descriptor is returned. Local `gh` polling uses no
 model tokens. The monitor snapshots the current binding, writes bounded

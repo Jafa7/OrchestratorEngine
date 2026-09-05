@@ -253,6 +253,65 @@ class SchemaContractTests(unittest.TestCase):
         self.assertEqual(list(validator.iter_errors(passed)), [])
         self.assertEqual(list(validator.iter_errors(failed)), [])
 
+    def test_github_actions_schemas_accept_pre_run_discovery(self) -> None:
+        valid = Path(__file__).parent / "fixtures" / "schemas" / "valid"
+        monitor = json.loads(
+            (valid / "github-actions-monitor.json").read_text(encoding="utf-8")
+        )
+        monitor.update(
+            {
+                "run_id": None,
+                "requested_run_id": None,
+                "attempt": None,
+                "expected_head_sha": "a" * 40,
+                "workflow_name": "CI",
+            }
+        )
+        evidence = json.loads(
+            (valid / "github-actions-evidence.json").read_text(encoding="utf-8")
+        )
+        evidence.update(
+            {
+                "run_id": None,
+                "monitor_status": "timed_out",
+                "ci_conclusion": None,
+                "failure_kind": "run_discovery_timeout",
+                "discovery": {
+                    "status": "timed_out",
+                    "query_count": 3,
+                    "duration_seconds": 15.0,
+                },
+            }
+        )
+
+        self.assertEqual(
+            list(self.validators["github-actions-monitor"].iter_errors(monitor)),
+            [],
+        )
+        self.assertEqual(
+            list(self.validators["github-actions-evidence"].iter_errors(evidence)),
+            [],
+        )
+
+        short_sha_monitor = dict(monitor)
+        short_sha_monitor["expected_head_sha"] = "a" * 12
+        missing_discovery_evidence = dict(evidence)
+        missing_discovery_evidence.pop("discovery")
+        self.assertTrue(
+            list(
+                self.validators["github-actions-monitor"].iter_errors(
+                    short_sha_monitor
+                )
+            )
+        )
+        self.assertTrue(
+            list(
+                self.validators["github-actions-evidence"].iter_errors(
+                    missing_discovery_evidence
+                )
+            )
+        )
+
     def test_cli_lists_and_prints_schema(self) -> None:
         command = [sys.executable, "-m", "orchestrator_engine.cli", "schemas"]
         listed = json.loads(subprocess.check_output(command, text=True))

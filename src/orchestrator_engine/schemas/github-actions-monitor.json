@@ -14,9 +14,37 @@
     "status": {"enum": ["starting", "running", "completed", "failed", "cancelled", "timed_out", "unavailable", "ambiguous"]},
     "hostname": {"type": "string", "minLength": 1},
     "repository": {"type": "string", "pattern": "^[^/]+/[^/]+$"},
-    "run_id": {"type": "integer", "minimum": 1},
+    "run_id": {"type": ["integer", "null"], "minimum": 1},
+    "requested_run_id": {"type": ["integer", "null"], "minimum": 1},
     "attempt": {"type": ["integer", "null"], "minimum": 1},
     "expected_head_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{7,64}$"},
+    "workflow_name": {"type": ["string", "null"], "minLength": 1, "maxLength": 256},
+    "discovery": {
+      "type": "object",
+      "required": ["status", "query_count", "duration_seconds"],
+      "properties": {
+        "status": {"enum": ["resolved", "cancelled", "timed_out", "unavailable", "ambiguous"]},
+        "run_id": {"type": "integer", "minimum": 1},
+        "workflow_name": {"type": ["string", "null"], "minLength": 1, "maxLength": 256},
+        "query_count": {"type": "integer", "minimum": 0},
+        "candidate_count": {"type": "integer", "minimum": 0},
+        "duration_seconds": {"type": "number", "minimum": 0},
+        "failure_kind": {"type": "string", "minLength": 1},
+        "active_monitor_id": {"type": "string", "minLength": 1},
+        "last_query": {"type": ["object", "null"]}
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["status"],
+            "properties": {"status": {"const": "resolved"}}
+          },
+          "then": {"required": ["run_id", "candidate_count"]}
+        }
+      ],
+      "additionalProperties": true
+    },
+    "discovery_query_count": {"type": "integer", "minimum": 0},
     "wake_policy": {"enum": ["always", "on-failure", "action-required"]},
     "timeout_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0},
     "gh_command": {"type": "string", "minLength": 1, "maxLength": 4096},
@@ -43,5 +71,31 @@
     "signal_emitted": {"type": "boolean"},
     "wake_target": {"$ref": "orchestrator-engine://schemas/wake-target"}
   },
+  "allOf": [
+    {
+      "if": {
+        "required": ["run_id"],
+        "properties": {"run_id": {"type": "null"}}
+      },
+      "then": {
+        "required": ["requested_run_id", "expected_head_sha", "timeout_seconds"],
+        "properties": {
+          "requested_run_id": {"type": "null"},
+          "attempt": {"type": "null"},
+          "expected_head_sha": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+          "timeout_seconds": {"type": "number", "exclusiveMinimum": 0}
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["run_id"],
+        "properties": {"run_id": {"type": "integer"}}
+      },
+      "then": {
+        "properties": {"workflow_name": {"type": "null"}}
+      }
+    }
+  ],
   "additionalProperties": true
 }

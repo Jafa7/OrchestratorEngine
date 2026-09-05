@@ -957,7 +957,9 @@ as an unknown `--check-id` filter.
 `ci watch` starts a local detached monitor and returns immediately. It is an
 explicit GitHub adapter, not provider-specific policy in the orchestration
 core. The adapter invokes the adopter-installed and already authenticated
-`gh` executable with argv and never reads or stores a GitHub token.
+`gh` executable with argv and never reads or stores a GitHub token. A monitor
+can discover one exact run from a full commit SHA or start from an already
+known run database ID.
 
 Configuration is local adopter state:
 
@@ -977,7 +979,32 @@ Windows executable may be configured with a WSL path such as
 `/mnt/c/Program Files/GitHub CLI/gh.exe`; it remains local state and should not
 be committed as a portable project default.
 
-Start one exact monitor:
+The recommended post-push path does not require the run ID to be visible yet:
+
+```bash
+orchestrator-engine --project-root /path/to/project ci watch \
+  --repo EXAMPLE/PROJECT \
+  --expected-head-sha 0123456789abcdef0123456789abcdef01234567 \
+  --workflow-name CI --wake-policy always
+```
+
+Without `--run-id`, `--expected-head-sha` must be a full 40- or 64-character
+hexadecimal commit ID. The detached monitor queries bounded run metadata,
+filters candidates locally by exact SHA and repository identity, and optionally
+by the exact `--workflow-name`. It intentionally does not trust `gh` commit
+filtering as the identity boundary. Zero matches remain in deterministic local
+discovery; one match is persisted as the exact run ID and enters the normal
+monitor; multiple matches fail closed as `ambiguous`. Specify the workflow name
+when one commit can start multiple workflows.
+
+Discovery waits up to 900 seconds by default. An explicit `--timeout-seconds`
+covers discovery and the subsequent exact-run observation together.
+`--attempt` is not accepted until an explicit `--run-id` is supplied. The
+successful run-list payload is never copied into evidence: only bounded command
+metadata, hashes, sizes, query count and the selected identity are retained.
+Failures may retain a bounded redacted diagnostic tail.
+
+When the run ID is already known, start the exact monitor directly:
 
 ```bash
 orchestrator-engine --project-root /path/to/project ci watch \
@@ -991,24 +1018,27 @@ rerun attempt. `--expected-head-sha` is strongly recommended because it makes
 a stale or incorrect run fail closed as `ambiguous`. A monitor with the same
 derived ID is idempotent. After reviewing an unavailable or ambiguous monitor,
 use `ci retry --monitor-id ID --reason TEXT`; the retry inherits the exact
-run identity and policy, refreshes the configured local `gh` executable, and
-records durable lineage under a new operation ID.
+run identity or the original SHA-discovery request and policy, refreshes the
+configured local `gh` executable, and records durable lineage under a new
+operation ID.
 
-`--timeout-seconds` is optional. With no timeout, the detached local process
-may wait for a legitimately long CI run. `ci cancel --monitor-id ID --reason
-TEXT` stops only the local monitor process group; it never cancels or reruns
-the GitHub workflow. `ci status [--monitor-id ID]` reads compact local state.
+For an explicit run ID, `--timeout-seconds` is optional. With no timeout, the
+detached local process may wait for a legitimately long CI run. `ci cancel
+--monitor-id ID --reason TEXT` stops only the local monitor process group; it
+never cancels or reruns the GitHub workflow. `ci status [--monitor-id ID]`
+reads compact local state, including whether an active monitor is discovering
+or watching its resolved run.
 If status reports `crashed`, run `ci reap`: it finalizes only monitors whose
 recorded supervisor identity is proven gone, stops a recorded orphaned watch
 process identity-safely, and emits normal terminal evidence. Inspect that
 evidence before using `ci retry`. A stale monitor with no provable process
 identity is reported as `stalled` and is not signalled or reaped speculatively.
 
-The monitor performs a bounded `gh run view --json ...` first. An already
-terminal run completes immediately. Otherwise it executes `gh run watch`
-locally and always performs a final bounded `run view`; final terminal GitHub
-state is authoritative even when the watch command exits non-zero. Two result
-axes remain separate:
+After discovery, or immediately for an explicit run ID, the monitor performs a
+bounded `gh run view --json ...` first. An already terminal run completes
+immediately. Otherwise it executes `gh run watch` locally and always performs a
+final bounded `run view`; final terminal GitHub state is authoritative even
+when the watch command exits non-zero. Two result axes remain separate:
 
 - `monitor_status` describes observation: `completed`, `failed`, `cancelled`,
   `timed_out`, `unavailable` or `ambiguous`;
