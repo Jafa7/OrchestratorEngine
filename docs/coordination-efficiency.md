@@ -36,6 +36,21 @@ context reduction = 1 - context share
 Actual token counts vary by model, tokenizer, tool protocol and host. UTF-8
 bytes are a stable proxy for context volume, not a token-count promise.
 
+## Evaluating total efficiency without weakening quality
+
+Do not infer total token savings or better model selection from this byte
+benchmark. A profile comparison is meaningful only when both runs use the same
+task fixture, model/effort, permissions, task intent and acceptance criteria.
+Record complete provider-format telemetry for the host and every worker, then
+compare requirements satisfied, independently found defects, verification
+evidence, rework needed and total tokens. Treat partial, unavailable or
+unverified usage as missing data rather than zero. A cheaper run that misses a
+requirement or needs more corrective work is not an efficiency win.
+
+Keep evaluation outside dispatch policy until repeated matched tasks establish
+a useful signal. OrchestratorEngine does not automatically downgrade a model,
+reduce verification or select a profile from sparse historical telemetry.
+
 ## Baseline
 
 Each scenario has four checkpoints at 25%, 50%, 75% and 100% of its final log

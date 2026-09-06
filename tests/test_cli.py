@@ -108,6 +108,14 @@ class CliTests(unittest.TestCase):
             "kind": "ORCHESTRATOR_CODEX_HOST_DIAGNOSTIC",
             "status": "available",
             "doctor_status": "ok",
+            "check_count": 0,
+            "check_status_counts": {
+                "ok": 0,
+                "warning": 0,
+                "fail": 0,
+                "skipped": 0,
+                "unknown": 0,
+            },
         }
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
@@ -139,6 +147,14 @@ class CliTests(unittest.TestCase):
             "kind": "ORCHESTRATOR_CODEX_HOST_DIAGNOSTIC",
             "status": "available",
             "doctor_status": "ok",
+            "check_count": 0,
+            "check_status_counts": {
+                "ok": 0,
+                "warning": 0,
+                "fail": 0,
+                "skipped": 0,
+                "unknown": 0,
+            },
         }
         resolve.return_value = "/current/codex.exe"
         with tempfile.TemporaryDirectory() as temporary:

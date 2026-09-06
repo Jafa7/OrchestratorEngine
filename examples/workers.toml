@@ -39,14 +39,15 @@ role = "review"
 # intent_enforcement = "strict"           # requires profile admission metadata
 # In strict mode, every enabled AI profile should declare supported
 # admission.verification levels, and every AI dispatch should carry an intent
-# file. That value is the authoritative verification breadth for the task.
+# file. That value is the required baseline; a concrete discovered risk may
+# raise it when the broader verification is safe and authorized.
 # Per-profile controls are also optional:
 # max_concurrent = 1
 # max_no_progress_seconds = 900   # warning only; never kills by default
 # soft_duration_seconds = 3600    # informational budget
 # soft_output_bytes = 1048576     # informational budget
 # soft_token_budget = 100000      # needs an explicit usage_adapter
-# usage_adapter = "json-lines-usage"
+# usage_adapter = "PROVIDER-FORMAT-ADAPTER"
 
 # --- Claude profiles ---------------------------------------------------
 # Keep disabled until the Claude CLI and chosen permission mode are verified.
@@ -209,7 +210,7 @@ command = ["codex", "exec", "--ephemeral", "--json", "-m", "gpt-5.6-luna",
            "-c", "sandbox_mode=\"workspace-write\""]
 prompt_via = "arg"
 policy = "quality-efficient"
-usage_adapter = "json-lines-usage"
+usage_adapter = "codex-jsonl-usage"
 soft_token_budget = 100000
 expect_long_running = true
 capability = "code-edit"
@@ -231,7 +232,7 @@ command = ["codex", "exec", "--ephemeral", "--json", "-m", "gpt-5.6-terra",
            "-c", "sandbox_mode=\"danger-full-access\""]
 prompt_via = "arg"
 policy = "quality-efficient"
-usage_adapter = "json-lines-usage"
+usage_adapter = "codex-jsonl-usage"
 soft_token_budget = 250000
 expect_long_running = true
 capability = "code-edit"
@@ -253,7 +254,7 @@ command = ["codex", "exec", "--ephemeral", "--json", "-m", "gpt-5.6-sol",
            "-c", "sandbox_mode=\"danger-full-access\""]
 prompt_via = "arg"
 policy = "quality-efficient"
-usage_adapter = "json-lines-usage"
+usage_adapter = "codex-jsonl-usage"
 soft_token_budget = 500000
 expect_long_running = true
 capability = "code-edit"
@@ -275,7 +276,7 @@ command = ["codex", "exec", "--ephemeral", "--json", "-m", "gpt-5.6-terra",
            "-c", "sandbox_mode=\"read-only\""]
 prompt_via = "arg"
 policy = "review-efficient"
-usage_adapter = "json-lines-usage"
+usage_adapter = "codex-jsonl-usage"
 soft_token_budget = 250000
 expect_long_running = true
 capability = "review"

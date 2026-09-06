@@ -58,7 +58,7 @@ For a reproducible adopter install, use an immutable release tag:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.3.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.4.0"
 ```
 
 GitHub Release archives and wheel/sdist assets are published with the tag;
@@ -640,7 +640,10 @@ orchestrator-engine --project-root /path/to/project \
 It uses the current project's Codex binding by default, invokes
 `codex doctor --json`, and emits only status, exit classification, bounded
 check counts and problem check IDs; command output and paths are not returned.
-Pass `--codex-command` only to override the bound launcher explicitly.
+Malformed or internally inconsistent reports fail closed. A timeout terminates
+the diagnostic process tree before returning; `timeout_cleanup_failed` means
+the operator must inspect the host for a process that could not be confirmed
+stopped. Pass `--codex-command` only to override the bound launcher explicitly.
 
 The help must include `--thread` and `--message`. In WSL, `bind --host codex`
 normally records the Windows `codex.exe` that owns the Desktop task. The
@@ -807,8 +810,11 @@ To delegate a task to a CLI worker:
    hard bugs. The user can override your choice in chat.
 3. Classify verification as `structural`, `focused` or `full`, then write a
    bounded `WORKER_TASK_INTENT` JSON file. Its `verification` value is the
-   authoritative breadth; generic or copied task text cannot broaden it. A
-   current explicit user conflict requires corrected intent before dispatch.
+   required baseline; generic or copied task text cannot broaden it. A concrete
+   risk discovered during work may raise the level when the broader check is
+   safe and authorized. Otherwise the worker must request escalation and must
+   not claim acceptance. A current explicit user conflict requires corrected
+   intent before dispatch.
 4. Write the full task prompt to a file (e.g. `.orchestrator/prompts/<task-id>.md`).
 5. Dispatch: `orchestrator-engine --project-root <root> worker run \
    --worker <profile> --task-id <TASK-ID> --prompt-file <file> \

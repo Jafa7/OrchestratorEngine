@@ -25,6 +25,149 @@ def alive_only(*alive_pids: int):
 
 
 class TaskDiagnosticTests(unittest.TestCase):
+    def test_running_task_does_not_report_terminal_usage_measurement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_task(
+                root,
+                "T-RUNNING-USAGE",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-RUNNING-USAGE",
+                    "worker": "synthetic",
+                    "status": "running",
+                    "runtime_policy": {"soft_token_budget": 100},
+                },
+            )
+
+            report = task_diagnostics.diagnose_tasks(
+                root, process_checker=alive_only()
+            )
+
+        self.assertNotIn(
+            "task_usage_measurement_incomplete",
+            {
+                item["code"]
+                for item in report["tasks"]["T-RUNNING-USAGE"]["diagnostics"]
+            },
+        )
+
+    def test_completed_process_without_required_verification_is_not_accepted(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            task_dir = write_task(
+                root,
+                "T-NO-ACCEPTANCE",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-NO-ACCEPTANCE",
+                    "worker": "synthetic",
+                    "status": "completed",
+                    "task_intent": {"verification": "full"},
+                },
+            )
+            core.atomic_json(task_dir / "result.json", {"terminal_status": "completed"})
+            core.atomic_json(task_dir / "evidence.json", {"task_id": "T-NO-ACCEPTANCE"})
+
+            report = task_diagnostics.diagnose_tasks(root)
+
+        task = report["tasks"]["T-NO-ACCEPTANCE"]
+        self.assertEqual(task["status"], "completed")
+        self.assertEqual(task["acceptance"]["status"], "evidence_missing")
+        self.assertIn(
+            "task_acceptance_evidence_missing",
+            {item["code"] for item in task["diagnostics"]},
+        )
+
+    def test_completed_process_reports_verification_below_intent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            task_dir = write_task(
+                root,
+                "T-LOW-ACCEPTANCE",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-LOW-ACCEPTANCE",
+                    "worker": "synthetic",
+                    "status": "completed",
+                    "task_intent": {"verification": "full"},
+                },
+            )
+            core.atomic_json(task_dir / "result.json", {"terminal_status": "completed"})
+            core.atomic_json(
+                task_dir / "evidence.json", {"task_id": "T-LOW-ACCEPTANCE"}
+            )
+            core.atomic_json(
+                task_dir / "worker-handoff.json",
+                {
+                    "schema_version": 1,
+                    "kind": "WORKER_HANDOFF",
+                    "summary": "Focused checks passed.",
+                    "verification": {
+                        "level": "focused",
+                        "status": "passed",
+                        "checks": [{"name": "owning tests", "status": "passed"}],
+                    },
+                },
+            )
+
+            report = task_diagnostics.diagnose_tasks(root)
+
+        task = report["tasks"]["T-LOW-ACCEPTANCE"]
+        self.assertEqual(task["acceptance"]["status"], "below_required_level")
+        self.assertIn(
+            "task_acceptance_verification_below_intent",
+            {item["code"] for item in task["diagnostics"]},
+        )
+
+    def test_completed_process_keeps_separate_evidenced_acceptance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            task_dir = write_task(
+                root,
+                "T-ACCEPTED",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-ACCEPTED",
+                    "worker": "synthetic",
+                    "status": "completed",
+                    "task_intent": {"verification": "focused"},
+                },
+            )
+            core.atomic_json(task_dir / "result.json", {"terminal_status": "completed"})
+            core.atomic_json(task_dir / "evidence.json", {"task_id": "T-ACCEPTED"})
+            core.atomic_json(
+                task_dir / "worker-handoff.json",
+                {
+                    "schema_version": 1,
+                    "kind": "WORKER_HANDOFF",
+                    "summary": "Full verification passed.",
+                    "verification": {
+                        "level": "full",
+                        "status": "passed",
+                        "checks": [
+                            {"name": "release candidate", "status": "passed"}
+                        ],
+                    },
+                },
+            )
+
+            report = task_diagnostics.diagnose_tasks(root)
+
+        task = report["tasks"]["T-ACCEPTED"]
+        self.assertEqual(task["status"], "completed")
+        self.assertEqual(task["acceptance"]["status"], "evidenced")
+        self.assertNotIn(
+            "task_acceptance_evidence_missing",
+            {item["code"] for item in task["diagnostics"]},
+        )
+
     def test_completed_task_preserves_profile_artifact_warning(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

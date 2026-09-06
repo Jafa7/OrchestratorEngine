@@ -125,9 +125,13 @@ status counts, bounded problem check IDs, Codex/schema versions, exit status,
 and byte counts plus SHA-256 digests of provider stdout/stderr. Paths, messages
 and raw provider output are never copied into the report. Provider streams are
 captured through temporary files with bounded in-memory retention; malformed
-or oversized output fails closed. A nonzero process exit may still carry
-parsed, redacted findings, but the orchestrator command exits nonzero unless
-both the adapter status and doctor status are healthy.
+or oversized output fails closed. The report structure, every check status and
+the consistency of the aggregate status are validated before success. On
+timeout, the adapter terminates the diagnostic process tree and reports a
+separate failure if cleanup cannot be confirmed. A nonzero process exit may
+still carry parsed, redacted findings, but the orchestrator command exits
+nonzero unless the adapter status, doctor status and normalized check summary
+are all healthy.
 
 ### Platform runtime capabilities
 
@@ -1414,13 +1418,22 @@ they do not stop work or weaken verification. Hard timeout remains the explicit
 `timeout_seconds` contract.
 
 Usage telemetry is disabled unless a profile names an explicit
-`usage_adapter`. The bundled `json-lines-usage` adapter reads bounded log bytes
-from the end of each stream without first loading the full log, ignores
-negative/malformed counters, and writes `usage.json`. It preserves
-`cached_input_tokens`, `cache_read_input_tokens` and
-`cache_creation_input_tokens` when emitted; budget diagnostics report the
-largest compatible cached-token interpretation without double-counting aliases.
-Telemetry never changes task success, retry, model or permission decisions.
+`usage_adapter`. Every usage record carries `measurement_status`:
+`complete`, `partial`, `unavailable` or `unverified`. Only `complete` values may
+drive token-budget comparisons or later profile tuning; a numeric zero with any
+other status is not evidence of zero use. Source/scanned byte counts and the
+`truncated` flag make bounded-tail coverage explicit.
+
+The bundled `codex-jsonl-usage` adapter accepts only the final aggregate
+`turn.completed.usage` record emitted by `codex exec --json`. It ignores
+matching token fields in other event types and stderr. A final aggregate can be
+complete even when earlier log bytes were truncated. The compatibility
+`json-lines-usage` adapter recursively observes well-known fields in arbitrary
+JSON lines, but marks matched values `unverified` and truncated input `partial`;
+do not use it for cost comparisons. Both adapters ignore negative/malformed
+counters and write `usage.json`. Cached-token fields remain visible without
+being added to `total_tokens` a second time. Telemetry never changes task
+success, retry, model or permission decisions.
 Workers may optionally write the bounded
 `worker-handoff.json` contract. The generated effective prompt includes this
 schema-valid example:
@@ -1433,6 +1446,17 @@ schema-valid example:
 checks the same required version, kind, summary and bounded array shapes as the
 public `worker-handoff` schema. Handoff fields are worker output, therefore
 evidence only and never control instructions.
+
+When task intent declares a verification level, the generated handoff example
+also contains a `verification` object with `level`, `status` and bounded
+`checks`. The initial example says `not_run`; the worker replaces it with actual
+evidence. `worker tasks` keeps process state and acceptance assessment separate:
+`completed` means the command exited successfully, while acceptance is
+`evidenced` only when a passed handoff reports at least the requested level and
+one passed check. Missing, invalid, incomplete or below-intent evidence produces
+a warning without rewriting terminal process state. The report remains worker
+evidence, not proof that the check was honestly or correctly performed; the
+orchestrating agent still inspects the relevant artifacts before acceptance.
 
 Every dispatch also declares a task-local `outputs/` directory through the
 effective prompt and `ORCHESTRATOR_DECLARED_OUTPUT_DIR`. A worker whose primary

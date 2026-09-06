@@ -103,7 +103,7 @@ class WorkerPolicyTests(unittest.TestCase):
                 policy_hash,
             )
 
-    def test_snapshot_marks_intent_verification_as_authoritative(self) -> None:
+    def test_snapshot_sets_baseline_and_permits_risk_escalation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             project = Path(temporary).resolve()
             prompt = project / "task.md"
@@ -123,10 +123,12 @@ class WorkerPolicyTests(unittest.TestCase):
             )
 
         self.assertIn(
-            "Verification level from this intent is authoritative: structural",
+            "Verification baseline required by this intent: structural",
             content,
         )
         self.assertIn("must not broaden it", content)
+        self.assertIn("concrete newly discovered risk may raise", content)
+        self.assertIn("do not claim acceptance", content)
         self.assertIn("Run the full pytest suite", content)
 
     def test_export_bundled_policy_requires_explicit_replace(self) -> None:
@@ -156,7 +158,7 @@ class WorkerPolicyTests(unittest.TestCase):
             review_content = review_output.read_text(encoding="utf-8")
 
         self.assertEqual(first["kind"], worker_policy.POLICY_EXPORT_KIND)
-        self.assertEqual(first["revision"], 2)
+        self.assertEqual(first["revision"], 3)
         self.assertEqual(first["sha256"], replaced["sha256"])
         self.assertEqual(exported_content, worker_policy.QUALITY_EFFICIENT_POLICY)
         self.assertEqual(review["revision"], 1)

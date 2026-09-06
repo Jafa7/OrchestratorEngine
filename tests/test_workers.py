@@ -359,7 +359,7 @@ prompt_via = "stdin"
 
         bundled = report["policies"]["quality-efficient"]
         self.assertEqual(bundled["status"], "different")
-        self.assertEqual(bundled["revision"], 2)
+        self.assertEqual(bundled["revision"], 3)
         self.assertEqual(len(bundled["bundled_sha256"]), 64)
         self.assertEqual(len(bundled["local_sha256"]), 64)
         self.assertEqual(

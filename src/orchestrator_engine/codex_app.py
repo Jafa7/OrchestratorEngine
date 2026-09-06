@@ -8,6 +8,7 @@ import json
 import os
 import queue
 import re
+import signal
 import subprocess
 import tempfile
 import threading
@@ -40,6 +41,19 @@ CODEX_DIAGNOSTIC_DEFAULT_TIMEOUT_SECONDS = 10.0
 CODEX_DIAGNOSTIC_MAX_TIMEOUT_SECONDS = 60.0
 CODEX_DIAGNOSTIC_OUTPUT_LIMIT_BYTES = 1024 * 1024
 CODEX_DIAGNOSTIC_PROBLEM_LIMIT = 32
+CODEX_DIAGNOSTIC_TERMINATION_GRACE_SECONDS = 0.25
+CODEX_DIAGNOSTIC_TERMINATION_TIMEOUT_SECONDS = 1.0
+CODEX_DIAGNOSTIC_STATUS_ALIASES = {
+    "ok": "ok",
+    "warn": "warning",
+    "warning": "warning",
+    "note": "warning",
+    "fail": "fail",
+    "error": "fail",
+    "idle": "skipped",
+    "skip": "skipped",
+    "skipped": "skipped",
+}
 QUEUE_ACK_PATTERN = re.compile(
     r"Queued message (?P<message_id>[0-9A-Za-z-]+) "
     r"for thread (?P<thread_id>[^.\s]+)\."
@@ -161,6 +175,103 @@ def _read_diagnostic_capture(
     }
 
 
+def _diagnostic_process_group_alive(process_group: int) -> bool:
+    try:
+        os.killpg(process_group, 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OSError):
+        return True
+    return True
+
+
+def _terminate_diagnostic_process_tree(
+    process: subprocess.Popen[Any],
+) -> dict[str, Any]:
+    """Stop a timed-out diagnostic and fail closed if cleanup is uncertain."""
+
+    if os.name == "nt":
+        taskkill_succeeded = False
+        try:
+            taskkill = subprocess.run(
+                ["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=CODEX_DIAGNOSTIC_TERMINATION_TIMEOUT_SECONDS,
+            )
+            taskkill_succeeded = taskkill.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            with contextlib.suppress(OSError):
+                process.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=CODEX_DIAGNOSTIC_TERMINATION_TIMEOUT_SECONDS)
+        direct_process_gone = not platform_runtime.process_alive(process.pid)
+        return {
+            "scope": "process_tree",
+            "termination": "confirmed"
+            if taskkill_succeeded and direct_process_gone
+            else "unconfirmed",
+        }
+
+    process_group = process.pid
+    signals_sent: list[str] = []
+    try:
+        os.killpg(process_group, signal.SIGTERM)
+        signals_sent.append(signal.SIGTERM.name)
+    except ProcessLookupError:
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=CODEX_DIAGNOSTIC_TERMINATION_TIMEOUT_SECONDS)
+        return {
+            "scope": "process_group",
+            "termination": "confirmed",
+            "signals": signals_sent,
+        }
+    except OSError:
+        return {
+            "scope": "process_group",
+            "termination": "unconfirmed",
+            "signals": signals_sent,
+        }
+
+    deadline = time.monotonic() + CODEX_DIAGNOSTIC_TERMINATION_GRACE_SECONDS
+    while (
+        _diagnostic_process_group_alive(process_group)
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.02)
+    if _diagnostic_process_group_alive(process_group):
+        try:
+            os.killpg(process_group, signal.SIGKILL)
+            signals_sent.append(signal.SIGKILL.name)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            return {
+                "scope": "process_group",
+                "termination": "unconfirmed",
+                "signals": signals_sent,
+            }
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=CODEX_DIAGNOSTIC_TERMINATION_TIMEOUT_SECONDS)
+    deadline = time.monotonic() + CODEX_DIAGNOSTIC_TERMINATION_TIMEOUT_SECONDS
+    while (
+        _diagnostic_process_group_alive(process_group)
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.02)
+    return {
+        "scope": "process_group",
+        "termination": (
+            "unconfirmed"
+            if _diagnostic_process_group_alive(process_group)
+            else "confirmed"
+        ),
+        "signals": signals_sent,
+    }
+
+
 def _safe_diagnostic_identifier(value: Any, *, fallback: str) -> str:
     if isinstance(value, str) and re.fullmatch(
         r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value
@@ -179,18 +290,7 @@ def _redacted_doctor_summary(report: dict[str, Any]) -> dict[str, Any]:
     """Keep only bounded, non-path fields from `codex doctor --json`."""
 
     raw_status = report.get("overallStatus", report.get("status"))
-    status_aliases = {
-        "ok": "ok",
-        "warn": "warning",
-        "warning": "warning",
-        "note": "warning",
-        "fail": "fail",
-        "error": "fail",
-        "idle": "skipped",
-        "skip": "skipped",
-        "skipped": "skipped",
-    }
-    status = status_aliases.get(
+    status = CODEX_DIAGNOSTIC_STATUS_ALIASES.get(
         raw_status if isinstance(raw_status, str) else None,
         "unknown",
     )
@@ -216,7 +316,7 @@ def _redacted_doctor_summary(report: dict[str, Any]) -> dict[str, Any]:
             counts["unknown"] += 1
             continue
         raw_item_status = item.get("status")
-        item_status = status_aliases.get(
+        item_status = CODEX_DIAGNOSTIC_STATUS_ALIASES.get(
             raw_item_status if isinstance(raw_item_status, str) else None,
             "unknown",
         )
@@ -255,6 +355,49 @@ def _redacted_doctor_summary(report: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
+def _doctor_report_validation_reason(
+    report: dict[str, Any], summary: dict[str, Any]
+) -> str | None:
+    raw_status = report.get("overallStatus", report.get("status"))
+    if (
+        not isinstance(raw_status, str)
+        or raw_status not in CODEX_DIAGNOSTIC_STATUS_ALIASES
+    ):
+        return "invalid_overall_status"
+    checks = report.get("checks")
+    if isinstance(checks, dict):
+        items = list(checks.values())
+    elif isinstance(checks, list):
+        items = checks
+    else:
+        return "invalid_checks_shape"
+    for item in items:
+        if not isinstance(item, dict):
+            return "invalid_check_shape"
+        item_status = item.get("status")
+        if (
+            not isinstance(item_status, str)
+            or item_status not in CODEX_DIAGNOSTIC_STATUS_ALIASES
+        ):
+            return "invalid_check_status"
+
+    doctor_status = summary["doctor_status"]
+    counts = summary["check_status_counts"]
+    if doctor_status == "ok" and any(
+        counts[key] for key in ("warning", "fail", "unknown")
+    ):
+        return "inconsistent_overall_status"
+    if doctor_status == "warning" and any(
+        counts[key] for key in ("fail", "unknown")
+    ):
+        return "inconsistent_overall_status"
+    if doctor_status == "skipped" and any(
+        counts[key] for key in ("ok", "warning", "fail", "unknown")
+    ):
+        return "inconsistent_overall_status"
+    return None
+
+
 def diagnose_codex_host(
     codex: str = "codex",
     *,
@@ -280,15 +423,24 @@ def diagnose_codex_host(
                 tempfile.TemporaryFile() as stderr_file,
             ):
                 try:
-                    completed = subprocess.run(
+                    process = subprocess.Popen(
                         [codex, "doctor", "--json"],
-                        check=False,
-                        timeout=timeout_seconds,
                         stdin=subprocess.DEVNULL,
                         stdout=stdout_file,
                         stderr=stderr_file,
+                        start_new_session=os.name != "nt",
+                        creationflags=(
+                            subprocess.CREATE_NEW_PROCESS_GROUP
+                            if os.name == "nt"
+                            else 0
+                        ),
+                    )
+                    returncode = process.wait(timeout=timeout_seconds)
+                    completed = subprocess.CompletedProcess(
+                        [codex, "doctor", "--json"], returncode
                     )
                 except subprocess.TimeoutExpired:
+                    cleanup = _terminate_diagnostic_process_tree(process)
                     _, output_metadata = _read_diagnostic_capture(
                         stdout_file,
                         prefix="output",
@@ -299,8 +451,13 @@ def diagnose_codex_host(
                     )
                     return {
                         **base,
-                        "status": "timeout",
+                        "status": (
+                            "timeout"
+                            if cleanup["termination"] == "confirmed"
+                            else "timeout_cleanup_failed"
+                        ),
                         "timeout_seconds": timeout_seconds,
+                        "cleanup": cleanup,
                         **output_metadata,
                         **stderr_metadata,
                     }
@@ -379,22 +536,47 @@ def diagnose_codex_host(
             "reason": "expected_object",
             **capture_metadata,
         }
+    summary = _redacted_doctor_summary(report)
+    invalid_reason = _doctor_report_validation_reason(report, summary)
+    if invalid_reason is not None:
+        return {
+            **base,
+            "status": "invalid_report",
+            "reason": invalid_reason,
+            "exit_code": completed.returncode,
+            **capture_metadata,
+            **summary,
+        }
     return {
         **base,
         "status": "available" if completed.returncode == 0 else "nonzero_exit",
         "exit_code": completed.returncode,
         **capture_metadata,
-        **_redacted_doctor_summary(report),
+        **summary,
     }
 
 
 def codex_diagnostic_exit_code(result: dict[str, Any]) -> int:
-    return (
-        0
-        if result.get("status") == "available"
-        and result.get("doctor_status") == "ok"
-        else 1
-    )
+    if result.get("status") != "available" or result.get("doctor_status") != "ok":
+        return 1
+    counts = result.get("check_status_counts")
+    expected_keys = {"ok", "warning", "fail", "skipped", "unknown"}
+    if not isinstance(counts, dict) or set(counts) != expected_keys:
+        return 1
+    if any(
+        not isinstance(value, int) or isinstance(value, bool) or value < 0
+        for value in counts.values()
+    ):
+        return 1
+    check_count = result.get("check_count")
+    if (
+        not isinstance(check_count, int)
+        or isinstance(check_count, bool)
+        or check_count < 0
+        or check_count != sum(counts.values())
+    ):
+        return 1
+    return 0 if not any(counts[key] for key in ("warning", "fail", "unknown")) else 1
 
 
 def activate_queued_thread_window(thread_id: str) -> dict[str, Any]:

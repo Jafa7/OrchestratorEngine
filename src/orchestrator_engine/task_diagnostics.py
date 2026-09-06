@@ -23,10 +23,123 @@ DEFAULT_STALE_AFTER_SECONDS = workers.TASK_HEARTBEAT_INTERVAL_SECONDS * 3
 DEFAULT_LARGE_LOG_BYTES = 1024 * 1024
 TASK_STATUSES = RUNNING_STATUSES | QUEUED_STATUSES | core.TERMINAL_STATUSES
 ProcessChecker = Callable[[int], bool]
+VERIFICATION_LEVEL_RANK = {"structural": 0, "focused": 1, "full": 2}
 
 
 class TaskDiagnosticError(RuntimeError):
     """A deterministic worker task diagnostic failure."""
+
+
+def verification_acceptance(
+    *,
+    task_id: str,
+    status: str,
+    task_dir: Path,
+    descriptor: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    intent = descriptor.get("task_intent")
+    requested = intent.get("verification") if isinstance(intent, dict) else None
+    if requested not in VERIFICATION_LEVEL_RANK:
+        return {"status": "not_declared", "requested_verification": None}, []
+    base = {"requested_verification": requested}
+    if status != "completed":
+        return {**base, "status": "not_applicable"}, []
+
+    handoff_path = task_dir / "worker-handoff.json"
+    if not handoff_path.is_file():
+        return {**base, "status": "evidence_missing"}, [
+            diagnostic(
+                code="task_acceptance_evidence_missing",
+                severity="warning",
+                message=(
+                    f"task {task_id} completed without verification handoff "
+                    f"evidence for the requested {requested} level"
+                ),
+                suggested_action=(
+                    "Inspect the worker result and checks before accepting the "
+                    "task; process completion alone is not quality evidence."
+                ),
+            )
+        ]
+    try:
+        handoff = core.load_object(handoff_path)
+        workers.validate_worker_handoff(handoff)
+    except (OSError, core.OrchestratorError, workers.WorkerError) as error:
+        return {**base, "status": "evidence_invalid"}, [
+            diagnostic(
+                code="task_acceptance_evidence_invalid",
+                severity="warning",
+                message=f"task {task_id} verification handoff is invalid: {error}",
+                suggested_action=(
+                    "Inspect the worker result and obtain valid bounded "
+                    "verification evidence before acceptance."
+                ),
+            )
+        ]
+
+    verification = handoff.get("verification")
+    if not isinstance(verification, dict):
+        return {**base, "status": "evidence_missing"}, [
+            diagnostic(
+                code="task_acceptance_evidence_missing",
+                severity="warning",
+                message=(
+                    f"task {task_id} handoff does not declare verification "
+                    f"evidence for the requested {requested} level"
+                ),
+                suggested_action=(
+                    "Inspect the actual checks before accepting the task or "
+                    "record an operator resolution with the evidence reviewed."
+                ),
+            )
+        ]
+
+    reported = str(verification["level"])
+    verification_status = str(verification["status"])
+    checks = verification["checks"]
+    assessment = {
+        **base,
+        "reported_verification": reported,
+        "verification_status": verification_status,
+        "check_count": len(checks),
+    }
+    if VERIFICATION_LEVEL_RANK[reported] < VERIFICATION_LEVEL_RANK[requested]:
+        return {**assessment, "status": "below_required_level"}, [
+            diagnostic(
+                code="task_acceptance_verification_below_intent",
+                severity="warning",
+                message=(
+                    f"task {task_id} reports {reported} verification below "
+                    f"the requested {requested} level"
+                ),
+                suggested_action=(
+                    "Run or request the missing verification before accepting "
+                    "the worker result."
+                ),
+            )
+        ]
+    passed_checks = sum(check.get("status") == "passed" for check in checks)
+    if (
+        verification_status != "passed"
+        or not checks
+        or passed_checks == 0
+        or any(check.get("status") == "failed" for check in checks)
+    ):
+        return {**assessment, "status": "evidence_incomplete"}, [
+            diagnostic(
+                code="task_acceptance_evidence_incomplete",
+                severity="warning",
+                message=(
+                    f"task {task_id} process completed but its verification "
+                    "handoff does not establish acceptance"
+                ),
+                suggested_action=(
+                    "Inspect failed, skipped or missing checks and complete the "
+                    "required verification before acceptance."
+                ),
+            )
+        ]
+    return {**assessment, "status": "evidenced"}, []
 
 
 def process_alive(pid: int) -> bool:
@@ -309,6 +422,13 @@ def summarize_task(
             now=now,
         )
     )
+    acceptance, acceptance_diagnostics = verification_acceptance(
+        task_id=task_id,
+        status=status,
+        task_dir=task_dir,
+        descriptor=descriptor,
+    )
+    diagnostics.extend(acceptance_diagnostics)
     diagnostics = apply_diagnostic_resolutions(diagnostics, resolution)
 
     summary = base_summary(
@@ -337,6 +457,7 @@ def summarize_task(
             "progress": descriptor.get("progress"),
             "usage": descriptor.get("usage"),
             "runtime_policy": descriptor.get("runtime_policy", {}),
+            "acceptance": acceptance,
         }
     )
     return summary
@@ -443,8 +564,31 @@ def runtime_policy_diagnostics(
     token_limit = policy.get("soft_token_budget")
     usage = descriptor.get("usage")
     total_tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
+    measurement_status = (
+        usage.get("measurement_status") if isinstance(usage, dict) else None
+    )
     if (
-        isinstance(token_limit, (int, float))
+        status in core.TERMINAL_STATUSES
+        and isinstance(token_limit, (int, float))
+        and measurement_status != "complete"
+    ):
+        diagnostics.append(
+            diagnostic(
+                code="task_usage_measurement_incomplete",
+                severity="info",
+                message=(
+                    f"task {task_id} usage measurement is "
+                    f"{measurement_status or 'unavailable'}"
+                ),
+                suggested_action=(
+                    "Do not compare this task's token total or tune profiles "
+                    "from it; configure a provider-format usage adapter."
+                ),
+            )
+        )
+    elif (
+        status in core.TERMINAL_STATUSES
+        and isinstance(token_limit, (int, float))
         and isinstance(total_tokens, int)
         and total_tokens > token_limit
     ):

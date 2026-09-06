@@ -109,11 +109,13 @@ orchestrator-engine worker policy export --name review-efficient \
   --output .orchestrator/policies/review-efficient.md
 ```
 
-Assign the composed policy only to review-specific profiles. Pair JSON-lines
-workers with `usage_adapter = "json-lines-usage"` and a measured
-`soft_token_budget`; the budget produces post-run diagnostics but never kills a
-worker or permits incomplete evidence. Cached-input counts remain visible so an
-operator can distinguish context size from uncached work.
+Assign the composed policy only to review-specific profiles. Pair Codex JSONL
+workers with `usage_adapter = "codex-jsonl-usage"` and a measured
+`soft_token_budget`; the budget produces post-run diagnostics but never kills
+a worker or permits incomplete evidence. Use the generic `json-lines-usage`
+adapter only for observation: its counters are `unverified` because arbitrary
+JSON cannot establish provider provenance. Cached-input counts remain visible
+so an operator can distinguish context size from uncached work.
 
 Do not copy private roadmaps, document bodies, credentials or large project
 manuals into a policy. Project-specific instructions remain in the adopting

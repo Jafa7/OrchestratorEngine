@@ -12,7 +12,29 @@
     "summary": {"type": "string", "maxLength": 4096},
     "evidence": {"type": "array", "maxItems": 64},
     "risks": {"type": "array", "maxItems": 32},
-    "next_actions": {"type": "array", "maxItems": 32}
+    "next_actions": {"type": "array", "maxItems": 32},
+    "verification": {
+      "type": "object",
+      "required": ["level", "status", "checks"],
+      "properties": {
+        "level": {"enum": ["structural", "focused", "full"]},
+        "status": {"enum": ["passed", "failed", "blocked", "not_run"]},
+        "checks": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "required": ["name", "status"],
+            "properties": {
+              "name": {"type": "string", "minLength": 1, "maxLength": 256},
+              "status": {"enum": ["passed", "failed", "skipped"]}
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    }
   },
   "additionalProperties": true
 }

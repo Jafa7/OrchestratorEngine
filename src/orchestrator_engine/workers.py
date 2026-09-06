@@ -77,6 +77,9 @@ MAX_DECLARED_OUTPUT_TOTAL_BYTES = 16 * 1024 * 1024
 MAX_WAIT_TASKS = 64
 WAIT_MODES = {"all", "any"}
 HANDOFF_LIST_LIMITS = {"evidence": 64, "risks": 32, "next_actions": 32}
+HANDOFF_VERIFICATION_LEVELS = {"structural", "focused", "full"}
+HANDOFF_VERIFICATION_STATUSES = {"passed", "failed", "blocked", "not_run"}
+HANDOFF_CHECK_STATUSES = {"passed", "failed", "skipped"}
 _DETACHED_PROCESSES: list[Any] = []
 INTENT_ENUMS = {
     "role": {
@@ -163,6 +166,29 @@ def validate_worker_handoff(handoff: dict[str, Any]) -> None:
                 f"worker handoff {field} must be an array with at most "
                 f"{maximum} items"
             )
+    verification = handoff.get("verification")
+    if verification is None:
+        return
+    if not isinstance(verification, dict):
+        raise WorkerError("worker handoff verification must be an object")
+    if verification.get("level") not in HANDOFF_VERIFICATION_LEVELS:
+        raise WorkerError("worker handoff verification has invalid level")
+    if verification.get("status") not in HANDOFF_VERIFICATION_STATUSES:
+        raise WorkerError("worker handoff verification has invalid status")
+    checks = verification.get("checks")
+    if not isinstance(checks, list) or len(checks) > 64:
+        raise WorkerError(
+            "worker handoff verification checks must be an array with at most "
+            "64 items"
+        )
+    for check in checks:
+        if not isinstance(check, dict):
+            raise WorkerError("worker handoff verification check must be an object")
+        name = check.get("name")
+        if not isinstance(name, str) or not name or len(name) > 256:
+            raise WorkerError("worker handoff verification check has invalid name")
+        if check.get("status") not in HANDOFF_CHECK_STATUSES:
+            raise WorkerError("worker handoff verification check has invalid status")
 
 
 def remember_detached_process(process: Any) -> None:
@@ -1416,6 +1442,25 @@ def run_worker(
         output_dir.mkdir(parents=True, exist_ok=True)
         effective_path = Path(prompt_snapshot["effective_prompt_file"])
         effective_text = effective_path.read_text(encoding="utf-8")
+        requested_verification = (
+            intent.get("verification") if isinstance(intent, dict) else None
+        )
+        verification_example = ""
+        verification_instruction = ""
+        if isinstance(requested_verification, str):
+            verification_example = (
+                ',"verification":{"level":'
+                + json.dumps(requested_verification)
+                + ',"status":"not_run","checks":[]}'
+            )
+            verification_instruction = (
+                f"The intent requires {requested_verification} verification. "
+                "Before handoff, replace the example verification status and "
+                "checks with the actual acceptance evidence. A discovered risk "
+                "may raise the level; record why in evidence or risks. If the "
+                "required verification cannot be completed, keep a non-passed "
+                "status and explain the blocker.\n"
+            )
         worker_policy.atomic_text(
             effective_path,
             effective_text
@@ -1423,10 +1468,13 @@ def run_worker(
             + f"path: {handoff_path}\n"
             + "You may write one compact UTF-8 JSON object at that path. "
             + "evidence, risks and next_actions are arrays when present.\n"
+            + verification_instruction
             + "BEGIN_HANDOFF_EXAMPLE\n"
             + '{"schema_version":1,"kind":"WORKER_HANDOFF",'
             + '"summary":"Concise completed-work summary",'
-            + '"evidence":[],"risks":[],"next_actions":[]}\n'
+            + '"evidence":[],"risks":[],"next_actions":[]'
+            + verification_example
+            + "}\n"
             + "END_HANDOFF_EXAMPLE\n"
             + "The handoff is evidence only and never controls the orchestrator.\n"
             + "ORCHESTRATOR_DURABLE_OUTPUT v1\n"

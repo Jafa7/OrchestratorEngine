@@ -11,7 +11,7 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release is `1.3.0` and the durable JSON contract schema version is
+The current release is `1.4.0` and the durable JSON contract schema version is
 `1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
@@ -19,8 +19,28 @@ PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.3.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.4.0"
 ```
+
+## Verified usage and acceptance evidence in v1.4.0
+
+Version 1.4.0 adds the provider-format `codex-jsonl-usage` adapter and explicit
+`complete`, `partial`, `unavailable` and `unverified` measurement states. Token
+budget comparisons use only complete measurements. The generic
+`json-lines-usage` adapter remains available for compatibility but its values
+are observational and unverified.
+
+Task diagnostics now report worker process completion separately from
+verification acceptance evidence. Existing handoffs remain valid; workers with
+a declared verification intent can add the optional verification block to make
+the performed level and checks visible. The bundled quality policy moves to
+revision 3 and permits risk-driven verification escalation without allowing
+generic copied instructions to broaden work.
+
+Codex diagnostics also fail closed on malformed reports and terminate their
+process tree on timeout. Durable schema-version-1 state remains compatible.
+Restart callback watcher services after upgrading so live processes use the new
+adapter and diagnostic behavior.
 
 ## Codex diagnostics and efficient review in v1.3.0
 

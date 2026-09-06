@@ -59,6 +59,7 @@ class WorkerTelemetryTests(unittest.TestCase):
         self.assertEqual(usage["token_counts"]["cached_input_tokens"], 6)
         self.assertNotIn("cache_creation_input_tokens", usage["token_counts"])
         self.assertEqual(usage["parsed_records"], 1)
+        self.assertEqual(usage["measurement_status"], "unverified")
 
     def test_json_lines_usage_reads_only_a_bounded_log_tail(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -85,6 +86,8 @@ class WorkerTelemetryTests(unittest.TestCase):
 
         self.assertEqual(usage["total_tokens"], 3)
         self.assertEqual(usage["parsed_records"], 1)
+        self.assertEqual(usage["measurement_status"], "partial")
+        self.assertTrue(usage["truncated"])
 
     def test_json_lines_usage_ignores_parser_limits(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -108,6 +111,150 @@ class WorkerTelemetryTests(unittest.TestCase):
         self.assertEqual(usage["total_tokens"], 5)
         self.assertEqual(usage["parsed_records"], 1)
 
+    def test_codex_usage_requires_final_provider_event(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            stdout = root / "stdout.log"
+            stderr = root / "stderr.log"
+            stdout.write_text(
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "usage": {"input_tokens": 999, "output_tokens": 1},
+                    }
+                )
+                + "\n"
+                + json.dumps(
+                    {
+                        "type": "turn.completed",
+                        "usage": {
+                            "input_tokens": 10,
+                            "cached_input_tokens": 6,
+                            "output_tokens": 4,
+                            "reasoning_output_tokens": 2,
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            stderr.write_text(
+                json.dumps(
+                    {
+                        "type": "turn.completed",
+                        "usage": {"input_tokens": 777, "output_tokens": 1},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            usage = telemetry_adapters.collect(
+                "codex-jsonl-usage", stdout, stderr
+            )
+
+        self.assertEqual(usage["measurement_status"], "complete")
+        self.assertEqual(usage["total_tokens"], 14)
+        self.assertEqual(usage["token_counts"]["cached_input_tokens"], 6)
+        self.assertEqual(usage["usage_records"], 1)
+
+    def test_codex_usage_distinguishes_missing_data_from_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            stdout = root / "stdout.log"
+            stderr = root / "stderr.log"
+            stdout.write_text(
+                json.dumps({"type": "turn.completed", "result": "done"}),
+                encoding="utf-8",
+            )
+            stderr.write_text("", encoding="utf-8")
+
+            usage = telemetry_adapters.collect(
+                "codex-jsonl-usage", stdout, stderr
+            )
+
+        self.assertEqual(usage["measurement_status"], "partial")
+        self.assertEqual(usage["total_tokens"], 0)
+        self.assertEqual(usage["usage_records"], 1)
+        self.assertEqual(usage["invalid_usage_records"], 1)
+
+    def test_codex_usage_uses_the_last_aggregate_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            stdout = root / "stdout.log"
+            stderr = root / "stderr.log"
+            stdout.write_text(
+                json.dumps(
+                    {
+                        "type": "turn.completed",
+                        "usage": {"input_tokens": 10, "output_tokens": 2},
+                    }
+                )
+                + "\n"
+                + json.dumps(
+                    {"type": "turn.completed", "usage": {"input_tokens": 11}}
+                ),
+                encoding="utf-8",
+            )
+            stderr.write_text("", encoding="utf-8")
+
+            usage = telemetry_adapters.collect(
+                "codex-jsonl-usage", stdout, stderr
+            )
+
+        self.assertEqual(usage["measurement_status"], "partial")
+        self.assertEqual(usage["total_tokens"], 0)
+
+    def test_codex_final_usage_survives_a_truncated_log_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            stdout = root / "stdout.log"
+            stderr = root / "stderr.log"
+            stdout.write_bytes(
+                b"x" * (telemetry_adapters.MAX_SCAN_BYTES + 64)
+                + b"\n"
+                + json.dumps(
+                    {
+                        "type": "turn.completed",
+                        "usage": {"input_tokens": 310000, "output_tokens": 7},
+                    }
+                ).encode("utf-8")
+                + b"\n"
+            )
+            stderr.write_text("", encoding="utf-8")
+
+            usage = telemetry_adapters.collect(
+                "codex-jsonl-usage", stdout, stderr
+            )
+
+        self.assertTrue(usage["truncated"])
+        self.assertEqual(usage["measurement_status"], "complete")
+        self.assertEqual(usage["total_tokens"], 310007)
+
+    def test_codex_usage_evicted_from_tail_is_explicitly_partial(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            stdout = root / "stdout.log"
+            stderr = root / "stderr.log"
+            stdout.write_bytes(
+                json.dumps(
+                    {
+                        "type": "turn.completed",
+                        "usage": {"input_tokens": 310000, "output_tokens": 7},
+                    }
+                ).encode("utf-8")
+                + b"\n"
+                + b"x" * (telemetry_adapters.MAX_SCAN_BYTES + 64)
+            )
+            stderr.write_text("", encoding="utf-8")
+
+            usage = telemetry_adapters.collect(
+                "codex-jsonl-usage", stdout, stderr
+            )
+
+        self.assertTrue(usage["truncated"])
+        self.assertEqual(usage["measurement_status"], "partial")
+        self.assertEqual(usage["total_tokens"], 0)
+
     def test_supervisor_records_optional_handoff_and_usage(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -125,7 +272,7 @@ pathlib.Path(match.group(1)).write_text(json.dumps({
 }))
 output = pathlib.Path(os.environ["ORCHESTRATOR_DECLARED_OUTPUT_DIR"])
 (output / "full-plan.md").write_text("complete durable plan")
-print(json.dumps({"usage": {
+print(json.dumps({"type": "turn.completed", "usage": {
     "input_tokens": 8, "cache_read_input_tokens": 6, "output_tokens": 3
 }}))
 """,
@@ -138,7 +285,7 @@ print(json.dumps({"usage": {
 [workers.capture]
 command = ["{sys.executable}", "{script}"]
 prompt_via = "stdin"
-usage_adapter = "json-lines-usage"
+usage_adapter = "codex-jsonl-usage"
 soft_token_budget = 5
 """,
                 encoding="utf-8",
@@ -241,6 +388,28 @@ print("done")
         }
 
         with self.assertRaisesRegex(workers.WorkerError, "evidence must be an array"):
+            workers.validate_worker_handoff(handoff)
+
+    def test_runtime_validates_verification_handoff(self) -> None:
+        handoff = {
+            "schema_version": 1,
+            "kind": "WORKER_HANDOFF",
+            "summary": "done",
+            "verification": {
+                "level": "full",
+                "status": "passed",
+                "checks": [{"name": "release candidate", "status": "passed"}],
+            },
+        }
+
+        workers.validate_worker_handoff(handoff)
+        validator = Draft202012Validator(schemas.load("worker-handoff"))
+        self.assertEqual(list(validator.iter_errors(handoff)), [])
+
+        handoff["verification"]["checks"] = [
+            {"name": "release candidate", "status": "invented"}
+        ]
+        with self.assertRaisesRegex(workers.WorkerError, "invalid status"):
             workers.validate_worker_handoff(handoff)
 
 

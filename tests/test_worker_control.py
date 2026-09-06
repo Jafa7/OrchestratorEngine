@@ -229,6 +229,11 @@ class WorkerQueueTests(unittest.TestCase):
         self.assertEqual(dispatched["task_intent"]["role"], "review")
         self.assertIn("ORCHESTRATOR_TASK_INTENT v1", effective)
         self.assertIn('"permissions": "readonly"', effective)
+        self.assertIn("Verification baseline required by this intent: full", effective)
+        self.assertIn(
+            '"verification":{"level":"full","status":"not_run","checks":[]}',
+            effective,
+        )
 
     def test_opt_in_intent_gate_rejects_excess_permissions(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

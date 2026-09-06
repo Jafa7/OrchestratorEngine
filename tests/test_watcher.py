@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1948,9 +1949,61 @@ class CodexDiagnosticTests(unittest.TestCase):
             )
         )
 
+        self.assertEqual(result["status"], "invalid_report")
+        self.assertEqual(result["reason"], "invalid_overall_status")
         self.assertEqual(result["doctor_status"], "unknown")
         self.assertEqual(result["check_status_counts"]["unknown"], 2)
         self.assertEqual(result["check_count"], 2)
+        self.assertEqual(codex_app.codex_diagnostic_exit_code(result), 1)
+
+    def test_doctor_json_rejects_invalid_or_inconsistent_reports(self) -> None:
+        cases = [
+            (
+                {"overallStatus": "ok", "checks": "invalid-shape"},
+                "invalid_checks_shape",
+            ),
+            (
+                {
+                    "overallStatus": "ok",
+                    "checks": [{"id": "future", "status": "future-status"}],
+                },
+                "invalid_check_status",
+            ),
+            (
+                {
+                    "overallStatus": "ok",
+                    "checks": [{"id": "failed", "status": "fail"}],
+                },
+                "inconsistent_overall_status",
+            ),
+        ]
+        for report, reason in cases:
+            with self.subTest(reason=reason):
+                result = codex_app.diagnose_codex_host(
+                    runner=lambda *_args, report=report, **_kwargs: FakeCompleted(
+                        stdout=json.dumps(report)
+                    )
+                )
+
+                self.assertEqual(result["status"], "invalid_report")
+                self.assertEqual(result["reason"], reason)
+                self.assertEqual(codex_app.codex_diagnostic_exit_code(result), 1)
+
+    def test_diagnostic_exit_code_rechecks_summary_consistency(self) -> None:
+        result = {
+            "status": "available",
+            "doctor_status": "ok",
+            "check_count": 1,
+            "check_status_counts": {
+                "ok": 0,
+                "warning": 0,
+                "fail": 1,
+                "skipped": 0,
+                "unknown": 0,
+            },
+        }
+
+        self.assertEqual(codex_app.codex_diagnostic_exit_code(result), 1)
 
     def test_doctor_json_redacts_provider_controlled_identifiers(self) -> None:
         result = codex_app.diagnose_codex_host(
@@ -1985,9 +2038,9 @@ class CodexDiagnosticTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "invalid_json")
 
-    @mock.patch("orchestrator_engine.codex_app.subprocess.run")
+    @mock.patch("orchestrator_engine.codex_app.subprocess.Popen")
     def test_default_doctor_capture_uses_files_not_memory_pipes(
-        self, run: object
+        self, popen: object
     ) -> None:
         def invoke(_command, **kwargs):
             self.assertNotIn("capture_output", kwargs)
@@ -1998,14 +2051,67 @@ class CodexDiagnosticTests(unittest.TestCase):
                 ).encode("utf-8")
             )
             kwargs["stderr"].write(b"bounded warning")
-            return FakeCompleted()
+            process = mock.Mock(pid=12345)
+            process.wait.return_value = 0
+            return process
 
-        run.side_effect = invoke
+        popen.side_effect = invoke
         result = codex_app.diagnose_codex_host()
 
         self.assertEqual(result["status"], "available")
         self.assertEqual(result["doctor_status"], "ok")
         self.assertEqual(result["stderr_bytes"], len(b"bounded warning"))
+
+    @unittest.skipUnless(
+        os.name != "nt" and hasattr(os, "killpg"),
+        "POSIX process-group regression",
+    )
+    def test_default_doctor_timeout_stops_descendant_processes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            marker = root / "descendant-finished"
+            launcher = root / "codex-launcher"
+            child = (
+                "import pathlib,time; "
+                "time.sleep(0.8); "
+                f"pathlib.Path({str(marker)!r}).write_text('orphaned')"
+            )
+            launcher.write_text(
+                "#!/usr/bin/env python3\n"
+                "import subprocess, sys, time\n"
+                f"subprocess.Popen([sys.executable, '-c', {child!r}])\n"
+                "time.sleep(30)\n",
+                encoding="utf-8",
+            )
+            launcher.chmod(0o755)
+
+            result = codex_app.diagnose_codex_host(
+                str(launcher), timeout_seconds=0.1
+            )
+            time.sleep(1.0)
+
+            self.assertEqual(result["status"], "timeout")
+            self.assertEqual(result["cleanup"]["termination"], "confirmed")
+            self.assertIn("SIGTERM", result["cleanup"]["signals"])
+            self.assertFalse(marker.exists())
+
+    @mock.patch(
+        "orchestrator_engine.codex_app._terminate_diagnostic_process_tree",
+        return_value={"scope": "process_group", "termination": "unconfirmed"},
+    )
+    @mock.patch("orchestrator_engine.codex_app.subprocess.Popen")
+    def test_default_doctor_timeout_fails_closed_when_cleanup_is_uncertain(
+        self, popen: object, _terminate: object
+    ) -> None:
+        process = mock.Mock(pid=12345)
+        process.wait.side_effect = subprocess.TimeoutExpired(["codex"], 0.1)
+        popen.return_value = process
+
+        result = codex_app.diagnose_codex_host(timeout_seconds=0.1)
+
+        self.assertEqual(result["status"], "timeout_cleanup_failed")
+        self.assertEqual(result["cleanup"]["termination"], "unconfirmed")
+        self.assertEqual(codex_app.codex_diagnostic_exit_code(result), 1)
 
     def test_doctor_json_rejects_oversized_output_before_parsing(self) -> None:
         output = "{" + (" " * codex_app.CODEX_DIAGNOSTIC_OUTPUT_LIMIT_BYTES) + "}"

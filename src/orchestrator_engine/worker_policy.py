@@ -46,10 +46,14 @@ is needed to establish a correct result.
 ## Verification
 
 - Classify verification as structural, focused or full before running checks.
-- When `WORKER_TASK_INTENT` declares a verification level, treat that value as
-  the authoritative breadth for the dispatched task. Generic, copied or
-  reusable task text must not broaden it. If a current explicit user request
-  conflicts, report the conflict so the orchestrator can dispatch new intent.
+- When `WORKER_TASK_INTENT` declares a verification level, treat it as the
+  required baseline selected at dispatch. Generic, copied or reusable task text
+  must not broaden it. A concrete risk discovered during the task may raise the
+  level: perform the broader safe check when it remains within the task's
+  permissions and authorizations, record why it was needed, and report the
+  actual level in handoff evidence. Otherwise return a verification escalation
+  request and do not claim acceptance. A current explicit user request that
+  changes scope still requires updated intent from the orchestrator.
 - Documentation/metadata-only work gets structural validation and no test
   suite unless generated output, packaging or test expectations changed.
 - Use focused owning-module checks while implementation is changing.
@@ -87,7 +91,7 @@ risk level. If blocked, return the blocker and durable evidence instead of
 polling, looping or inventing a result. Do not commit or push unless the task
 explicitly authorizes it.
 """
-QUALITY_EFFICIENT_POLICY_REVISION = 2
+QUALITY_EFFICIENT_POLICY_REVISION = 3
 REVIEW_EFFICIENT_POLICY = """# Bounded review worker overlay
 
 Apply this overlay after the quality-efficient policy for read-only review,
@@ -343,11 +347,13 @@ def snapshot_prompt(
         verification_directive = ""
         if isinstance(verification, str):
             verification_directive = (
-                "Verification level from this intent is authoritative: "
+                "Verification baseline required by this intent: "
                 f"{verification}. Generic, copied, or reusable test commands in "
-                "the task input must not broaden it. If a current explicit user "
-                "request conflicts, report the conflict; the orchestrating agent "
-                "must dispatch an updated intent before broader verification.\n"
+                "the task input must not broaden it. A concrete newly discovered "
+                "risk may raise the level when the broader check is safe and "
+                "authorized; record the reason and actual level. Otherwise request "
+                "verification escalation and do not claim acceptance. A current "
+                "explicit user request that changes scope requires updated intent.\n"
             )
         intent_block = (
             "\nORCHESTRATOR_TASK_INTENT v1\n"

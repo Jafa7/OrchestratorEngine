@@ -4,6 +4,30 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-09-06
+
+### Added
+
+- Added complete, partial, unavailable and unverified usage measurement states;
+  the Codex-specific adapter accepts only final `turn.completed.usage` records
+  instead of unrelated JSON token fields.
+- Added verification handoff evidence and task acceptance diagnostics separate
+  from successful worker process completion.
+
+### Changed
+
+- Verification intent is now an escalation-safe baseline: concrete discovered
+  risk may raise the level when the broader check is safe and authorized.
+- Documented a matched-task evaluation method for measuring total token use,
+  missed defects and rework instead of treating context bytes as quality proof.
+
+### Fixed
+
+- Codex host diagnostics now terminate and verify the launcher process tree on
+  timeout instead of leaving inherited child processes running.
+- Malformed or internally inconsistent `codex doctor --json` reports now fail
+  closed and cannot produce a successful CLI exit code.
+
 ## [1.3.0] - 2026-09-06
 
 ### Added
