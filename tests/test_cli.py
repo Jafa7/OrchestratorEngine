@@ -99,6 +99,69 @@ class CliTests(unittest.TestCase):
         self.assertEqual(report["schema_version"], core.SCHEMA_VERSION)
         self.assertEqual(report["kind"], platform_runtime.PLATFORM_CAPABILITIES_KIND)
 
+    @patch("orchestrator_engine.cli.codex_app.diagnose_codex_host")
+    def test_codex_diagnose_is_explicit_and_returns_adapter_status(
+        self, diagnose: object
+    ) -> None:
+        diagnose.return_value = {
+            "schema_version": 1,
+            "kind": "ORCHESTRATOR_CODEX_HOST_DIAGNOSTIC",
+            "status": "available",
+            "doctor_status": "ok",
+        }
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = cli.main(
+                [
+                    "codex",
+                    "diagnose",
+                    "--codex-command",
+                    "codex-test",
+                    "--timeout-seconds",
+                    "3",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        report = json.loads(output.getvalue())
+        self.assertEqual(report["status"], "available")
+        self.assertEqual(report["launcher_source"], "explicit")
+        self.assertEqual(diagnose.call_args.args, ("codex-test",))
+        self.assertEqual(diagnose.call_args.kwargs["timeout_seconds"], 3)
+
+    @patch("orchestrator_engine.cli.codex_app.diagnose_codex_host")
+    @patch("orchestrator_engine.cli.codex_app.resolve_codex_launcher")
+    def test_codex_diagnose_uses_project_binding_by_default(
+        self, resolve: object, diagnose: object
+    ) -> None:
+        diagnose.return_value = {
+            "schema_version": 1,
+            "kind": "ORCHESTRATOR_CODEX_HOST_DIAGNOSTIC",
+            "status": "available",
+            "doctor_status": "ok",
+        }
+        resolve.return_value = "/current/codex.exe"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            binding.write_binding(
+                root,
+                host="codex",
+                target_thread_id="thread-1",
+                codex_command="/stale/codex.exe",
+            )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = cli.main(
+                    ["--project-root", str(root), "codex", "diagnose"]
+                )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            json.loads(output.getvalue())["launcher_source"], "binding"
+        )
+        resolve.assert_called_once_with("/stale/codex.exe", "codex")
+        self.assertEqual(diagnose.call_args.args, ("/current/codex.exe",))
+
     def test_workstream_cli_requires_ready_for_continue(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -297,6 +360,7 @@ class CliTests(unittest.TestCase):
         result = json.loads(output.getvalue())
         self.assertEqual(result["target_thread_id"], "thread-auto")
         self.assertEqual(result["thread_id_source"], detected["source"])
+        self.assertEqual(result["thread_id_evidence"], "legacy_rollout_heuristic")
         self.assertEqual(result["codex_command"], "/mnt/c/apps/codex.exe")
 
     def test_worker_list_reports_empty_registry(self) -> None:

@@ -448,12 +448,39 @@ def runtime_policy_diagnostics(
         and isinstance(total_tokens, int)
         and total_tokens > token_limit
     ):
+        token_counts = usage.get("token_counts")
+        cached_tokens = None
+        if isinstance(token_counts, dict):
+            direct_cached = token_counts.get("cached_input_tokens")
+            split_cached = sum(
+                value
+                for key in (
+                    "cache_read_input_tokens",
+                    "cache_creation_input_tokens",
+                )
+                if isinstance(value := token_counts.get(key), int)
+                and not isinstance(value, bool)
+                and value >= 0
+            )
+            candidates = [split_cached]
+            if (
+                isinstance(direct_cached, int)
+                and not isinstance(direct_cached, bool)
+                and direct_cached >= 0
+            ):
+                candidates.append(direct_cached)
+            cached_tokens = max(candidates)
+        cached_detail = (
+            f", including {cached_tokens} cached input tokens"
+            if isinstance(cached_tokens, int) and cached_tokens > 0
+            else ""
+        )
         diagnostics.append(
             diagnostic(
                 code="task_soft_token_budget_exceeded",
                 severity="info",
                 message=(
-                    f"task {task_id} used {total_tokens} tokens "
+                    f"task {task_id} used {total_tokens} tokens{cached_detail} "
                     f"(soft budget {token_limit:g})"
                 ),
                 suggested_action=(

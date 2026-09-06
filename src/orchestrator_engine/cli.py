@@ -82,6 +82,31 @@ def build_parser() -> argparse.ArgumentParser:
         "runtime-capabilities",
         help="Print portable-core and detached-runtime platform support.",
     )
+    codex_parser = subparsers.add_parser(
+        "codex",
+        help="Run explicit diagnostics at the Codex adapter boundary.",
+    )
+    codex_subparsers = codex_parser.add_subparsers(
+        dest="codex_command_name", required=True
+    )
+    codex_diagnose = codex_subparsers.add_parser(
+        "diagnose",
+        help="Run bounded `codex doctor --json` and return a redacted summary.",
+    )
+    codex_diagnose.add_argument(
+        "--codex-command",
+        default=None,
+        help=(
+            "Override the Codex launcher. By default use the current project's "
+            "Codex binding, then PATH."
+        ),
+    )
+    codex_diagnose.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=codex_app.CODEX_DIAGNOSTIC_DEFAULT_TIMEOUT_SECONDS,
+        help="Bounded diagnostic timeout, at most 60 seconds (default: 10).",
+    )
     conformance_parser = subparsers.add_parser(
         "conformance",
         help="Run provider-free clean-fixture conformance checks.",
@@ -1023,6 +1048,30 @@ def main(argv: list[str] | None = None) -> int:
             print_json(host_capabilities.all_hosts())
         elif args.command == "runtime-capabilities":
             print_json(platform_runtime.capabilities())
+        elif args.command == "codex":
+            if len(roots) != 1:
+                raise core.OrchestratorError(
+                    "codex diagnose requires exactly one project root"
+                )
+            codex_command = args.codex_command
+            launcher_source = "explicit" if codex_command else "path"
+            if codex_command is None:
+                bound = binding.load_binding(roots[0], state_dir=args.state_dir)
+                if bound is not None and bound.get("host") == "codex":
+                    configured = bound.get("codex_command")
+                    if isinstance(configured, str):
+                        codex_command = codex_app.resolve_codex_launcher(
+                            configured, "codex"
+                        )
+                        launcher_source = "binding"
+            codex_command = codex_command or "codex"
+            output = codex_app.diagnose_codex_host(
+                codex_command,
+                timeout_seconds=args.timeout_seconds,
+            )
+            output["launcher_source"] = launcher_source
+            print_json(output)
+            return codex_app.codex_diagnostic_exit_code(output)
         elif args.command == "conformance":
             output = conformance.run_conformance(
                 mode=args.mode,
@@ -1236,9 +1285,11 @@ def run_bind_command(args: argparse.Namespace, root: Path) -> object:
             detected = codex_app.detect_thread_id(root)
             if detected is None:
                 raise binding.BindingError(
-                    "could not auto-detect the codex thread id; run this "
-                    "from inside the codex chat being bound, or pass "
-                    "--thread-id"
+                    "could not auto-detect the codex thread id: Codex has no "
+                    "stable thread-list interface and no matching legacy "
+                    "rollout was found; the rollout may be absent or migrated. "
+                    "Run this from inside the Codex chat being bound, or pass "
+                    "--thread-id explicitly"
                 )
             thread_id = detected["thread_id"]
             detection_source = detected["source"]
@@ -1265,6 +1316,13 @@ def run_bind_command(args: argparse.Namespace, root: Path) -> object:
     )
     if detection_source:
         result["thread_id_source"] = detection_source
+        result["thread_id_evidence"] = (
+            "explicit"
+            if detection_source == "explicit"
+            else "environment"
+            if detection_source == "env"
+            else "legacy_rollout_heuristic"
+        )
     return result
 
 

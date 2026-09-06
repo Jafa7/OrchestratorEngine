@@ -6,6 +6,8 @@ host-scoped watcher:
 
 ```bash
 codex queue --help
+orchestrator-engine --project-root /path/to/project \
+  codex diagnose --timeout-seconds 10
 orchestrator-engine --project-root /path/to/project bind --host codex
 orchestrator-engine --project-root /path/to/project watcher \
   --host codex --action callback service start --interval-seconds 5
@@ -42,3 +44,15 @@ Check watcher health:
 orchestrator-engine --project-root /path/to/project watcher \
   --host codex service status
 ```
+
+WSL and OS restarts stop the CLI-managed detached watcher process; the engine
+does not install or recreate an OS-level daemon. After a restart, run the
+health command above. If it reports `not_started`, start the service again:
+
+```bash
+orchestrator-engine --project-root /path/to/project watcher \
+  --host codex --action callback service start --interval-seconds 5
+```
+
+If it reports `crashed` or `stopped`, use `service restart` with the same host
+scope. Do not run `codex migrate-rollouts --apply` as watcher recovery.

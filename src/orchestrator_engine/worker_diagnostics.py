@@ -199,6 +199,23 @@ def provider_diagnostics(
             )
         )
     if executable in {"codex", "codex.exe"} and "exec" in flags:
+        if "--ephemeral" not in flags:
+            diagnostics.append(
+                diagnostic(
+                    code="codex_exec_missing_ephemeral",
+                    severity="info",
+                    message=(
+                        f"worker {name} runs codex exec detached without "
+                        "--ephemeral; provider session state may outlive "
+                        "the durable task evidence"
+                    ),
+                    suggested_action=(
+                        "Add `--ephemeral` when OrchestratorEngine should own "
+                        "durable task evidence; omit it only intentionally "
+                        "when provider session persistence is required."
+                    ),
+                )
+            )
         bypasses_approvals_and_sandbox = (
             "--dangerously-bypass-approvals-and-sandbox" in flags
         )

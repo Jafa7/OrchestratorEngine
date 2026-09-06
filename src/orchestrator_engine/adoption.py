@@ -28,6 +28,7 @@ command = ["python", "-c", "import sys; sys.stdin.read(); print('ok')"]
 prompt_via = "stdin"
 timeout_seconds = 300
 policy = "quality-efficient"
+
 """
 
 
@@ -146,6 +147,9 @@ def next_steps(project: Path, *, host: str | None) -> list[str]:
             "--host vscode --action callback service start"
         )
     elif host == "codex":
+        steps.append(
+            f"orchestrator-engine --project-root {root} codex diagnose"
+        )
         steps.append(
             f"orchestrator-engine --project-root {root} watcher "
             "--host codex --action callback service start"

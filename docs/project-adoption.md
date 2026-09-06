@@ -55,9 +55,12 @@ orchestrator-engine --project-root /path/to/project bind \
   --host codex
 ```
 
-Run this from the Codex chat that owns future dispatches and verify the detected
-target. Use `--thread-id THREAD_ID` only as a fallback when auto-detection is
-unavailable or when binding a different chat explicitly.
+Run this from the Codex chat that owns future dispatches and verify
+`thread_id_evidence` plus the detected target. Outside `CODEX_THREAD_ID`,
+detection is only a newest-matching legacy-rollout heuristic and may be
+unavailable after rollout migration. Use `--thread-id THREAD_ID` when the
+heuristic is unavailable, ambiguous or stale, or when binding a different chat
+explicitly.
 
 For Codex, confirm `codex queue --help` and start the host-scoped callback
 service. The watcher then queues the bounded follow-up to the snapshotted live

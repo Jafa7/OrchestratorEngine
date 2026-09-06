@@ -107,7 +107,7 @@ prompt_via = "arg"
 
 [workers.codex-safe]
 enabled = true
-command = ["codex", "exec", "--json",
+command = ["codex", "exec", "--ephemeral", "--json",
            "-c", "approval_policy=\\"never\\"",
            "-c", "sandbox_mode=\\"danger-full-access\\""]
 prompt_via = "arg"
@@ -260,7 +260,10 @@ class WorkerRegistryTests(unittest.TestCase):
         safe = listing["workers"]["codex-safe"]
         self.assertEqual(
             [warning["code"] for warning in risky["warnings"]],
-            ["codex_may_request_approval", "codex_missing_sandbox_strategy"],
+            [
+                "codex_may_request_approval",
+                "codex_missing_sandbox_strategy",
+            ],
         )
         self.assertEqual(safe["warnings"], [])
 

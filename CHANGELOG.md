@@ -4,6 +4,24 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-06
+
+### Added
+
+- Added an explicit `codex diagnose` adapter command that runs bounded
+  `codex doctor --json`, prefers the project binding launcher, and returns only
+  a privacy-safe machine-readable summary.
+- Published Codex worker examples use `codex exec --ephemeral`, and worker
+  diagnostics identify profiles that would otherwise retain provider sessions.
+- Added an opt-in `review-efficient` worker-policy overlay with changed-surface
+  discovery, findings-first handoff, and example Codex usage telemetry budgets.
+
+### Changed
+
+- Codex binding guidance now treats legacy rollout discovery as a best-effort
+  compatibility heuristic and documents explicit recovery for migrated
+  Desktop threads and watcher restart after host reboot.
+
 ## [1.2.0] - 2026-09-06
 
 ### Added

@@ -7,6 +7,7 @@ import time
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 from jsonschema import Draft202012Validator
 
@@ -38,7 +39,16 @@ class WorkerTelemetryTests(unittest.TestCase):
             stdout = root / "stdout.log"
             stderr = root / "stderr.log"
             stdout.write_text(
-                json.dumps({"usage": {"input_tokens": 10, "output_tokens": 4}})
+                json.dumps(
+                    {
+                        "usage": {
+                            "input_tokens": 10,
+                            "cached_input_tokens": 6,
+                            "cache_creation_input_tokens": -1,
+                            "output_tokens": 4,
+                        }
+                    }
+                )
                 + "\nnot json\n",
                 encoding="utf-8",
             )
@@ -46,6 +56,56 @@ class WorkerTelemetryTests(unittest.TestCase):
             usage = telemetry_adapters.collect("json-lines-usage", stdout, stderr)
 
         self.assertEqual(usage["total_tokens"], 14)
+        self.assertEqual(usage["token_counts"]["cached_input_tokens"], 6)
+        self.assertNotIn("cache_creation_input_tokens", usage["token_counts"])
+        self.assertEqual(usage["parsed_records"], 1)
+
+    def test_json_lines_usage_reads_only_a_bounded_log_tail(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            stdout = root / "stdout.log"
+            stderr = root / "stderr.log"
+            stdout.write_bytes(
+                b"x" * (telemetry_adapters.MAX_SCAN_BYTES + 64)
+                + b"\n"
+                + json.dumps(
+                    {"usage": {"input_tokens": 2, "output_tokens": 1}}
+                ).encode("utf-8")
+                + b"\n"
+            )
+            stderr.write_text("", encoding="utf-8")
+            with mock.patch.object(
+                Path,
+                "read_bytes",
+                side_effect=AssertionError("full log read is not bounded"),
+            ):
+                usage = telemetry_adapters.collect(
+                    "json-lines-usage", stdout, stderr
+                )
+
+        self.assertEqual(usage["total_tokens"], 3)
+        self.assertEqual(usage["parsed_records"], 1)
+
+    def test_json_lines_usage_ignores_parser_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            stdout = root / "stdout.log"
+            stderr = root / "stderr.log"
+            stdout.write_text(
+                '{"value": ' + ("9" * 5000) + "}\n"
+                + json.dumps(
+                    {"usage": {"input_tokens": 3, "output_tokens": 2}}
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            stderr.write_text("", encoding="utf-8")
+
+            usage = telemetry_adapters.collect(
+                "json-lines-usage", stdout, stderr
+            )
+
+        self.assertEqual(usage["total_tokens"], 5)
         self.assertEqual(usage["parsed_records"], 1)
 
     def test_supervisor_records_optional_handoff_and_usage(self) -> None:
@@ -65,7 +125,9 @@ pathlib.Path(match.group(1)).write_text(json.dumps({
 }))
 output = pathlib.Path(os.environ["ORCHESTRATOR_DECLARED_OUTPUT_DIR"])
 (output / "full-plan.md").write_text("complete durable plan")
-print(json.dumps({"usage": {"input_tokens": 8, "output_tokens": 3}}))
+print(json.dumps({"usage": {
+    "input_tokens": 8, "cache_read_input_tokens": 6, "output_tokens": 3
+}}))
 """,
                 encoding="utf-8",
             )
@@ -113,6 +175,12 @@ soft_token_budget = 5
         self.assertEqual(output_manifest["files"][0]["path"], "outputs/full-plan.md")
         codes = {item["code"] for item in report["tasks"]["T-USAGE"]["diagnostics"]}
         self.assertIn("task_soft_token_budget_exceeded", codes)
+        budget_diagnostic = next(
+            item
+            for item in report["tasks"]["T-USAGE"]["diagnostics"]
+            if item["code"] == "task_soft_token_budget_exceeded"
+        )
+        self.assertIn("including 6 cached input tokens", budget_diagnostic["message"])
 
     def test_worker_can_copy_generated_handoff_example_verbatim(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

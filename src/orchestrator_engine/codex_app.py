@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import queue
 import re
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -34,6 +36,10 @@ QUEUE_PROBE_TIMEOUT_SECONDS = 15
 QUEUE_DELIVERY_TIMEOUT_SECONDS = 30
 QUEUE_OUTPUT_LIMIT_BYTES = 4096
 QUEUE_MESSAGE_LIMIT_BYTES = 16 * 1024
+CODEX_DIAGNOSTIC_DEFAULT_TIMEOUT_SECONDS = 10.0
+CODEX_DIAGNOSTIC_MAX_TIMEOUT_SECONDS = 60.0
+CODEX_DIAGNOSTIC_OUTPUT_LIMIT_BYTES = 1024 * 1024
+CODEX_DIAGNOSTIC_PROBLEM_LIMIT = 32
 QUEUE_ACK_PATTERN = re.compile(
     r"Queued message (?P<message_id>[0-9A-Za-z-]+) "
     r"for thread (?P<thread_id>[^.\s]+)\."
@@ -119,6 +125,276 @@ def probe_session_queue(
         "available": available,
         "reason": None if available else "codex queue is unavailable",
     }
+
+
+def _diagnostic_output_metadata(
+    value: bytes | str | None,
+    *,
+    prefix: str = "output",
+) -> dict[str, Any]:
+    raw = value if isinstance(value, bytes) else (value or "").encode("utf-8")
+    return {
+        f"{prefix}_bytes": len(raw),
+        f"{prefix}_sha256": hashlib.sha256(raw).hexdigest(),
+    }
+
+
+def _read_diagnostic_capture(
+    stream: Any,
+    *,
+    prefix: str,
+) -> tuple[str, dict[str, Any]]:
+    stream.flush()
+    stream.seek(0)
+    digest = hashlib.sha256()
+    retained = bytearray()
+    total = 0
+    while chunk := stream.read(64 * 1024):
+        total += len(chunk)
+        digest.update(chunk)
+        remaining = CODEX_DIAGNOSTIC_OUTPUT_LIMIT_BYTES - len(retained)
+        if remaining > 0:
+            retained.extend(chunk[:remaining])
+    return retained.decode("utf-8", errors="replace"), {
+        f"{prefix}_bytes": total,
+        f"{prefix}_sha256": digest.hexdigest(),
+    }
+
+
+def _safe_diagnostic_identifier(value: Any, *, fallback: str) -> str:
+    if isinstance(value, str) and re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value
+    ):
+        return value
+    try:
+        encoded = json.dumps(value, sort_keys=True, ensure_ascii=True).encode(
+            "utf-8"
+        )
+    except (TypeError, ValueError, RecursionError):
+        encoded = type(value).__name__.encode("ascii", errors="replace")
+    return f"{fallback}-{hashlib.sha256(encoded).hexdigest()[:16]}"
+
+
+def _redacted_doctor_summary(report: dict[str, Any]) -> dict[str, Any]:
+    """Keep only bounded, non-path fields from `codex doctor --json`."""
+
+    raw_status = report.get("overallStatus", report.get("status"))
+    status_aliases = {
+        "ok": "ok",
+        "warn": "warning",
+        "warning": "warning",
+        "note": "warning",
+        "fail": "fail",
+        "error": "fail",
+        "idle": "skipped",
+        "skip": "skipped",
+        "skipped": "skipped",
+    }
+    status = status_aliases.get(
+        raw_status if isinstance(raw_status, str) else None,
+        "unknown",
+    )
+    checks = report.get("checks")
+    counts = {"ok": 0, "warning": 0, "fail": 0, "skipped": 0, "unknown": 0}
+    if isinstance(checks, dict):
+        items = list(checks.items())
+    elif isinstance(checks, list):
+        items = [
+            (
+                item.get("id", f"check-{index}")
+                if isinstance(item, dict)
+                else f"check-{index}",
+                item,
+            )
+            for index, item in enumerate(checks)
+        ]
+    else:
+        items = []
+    problems: list[dict[str, str]] = []
+    for item_id, item in items:
+        if not isinstance(item, dict):
+            counts["unknown"] += 1
+            continue
+        raw_item_status = item.get("status")
+        item_status = status_aliases.get(
+            raw_item_status if isinstance(raw_item_status, str) else None,
+            "unknown",
+        )
+        counts[item_status] += 1
+        if item_status in {"warning", "fail", "unknown"} and len(
+            problems
+        ) < CODEX_DIAGNOSTIC_PROBLEM_LIMIT:
+            problems.append(
+                {
+                    "id": _safe_diagnostic_identifier(
+                        item_id,
+                        fallback="invalid-check",
+                    ),
+                    "status": item_status,
+                }
+            )
+    summary: dict[str, Any] = {
+        "doctor_status": status,
+        "check_count": sum(counts.values()),
+        "check_status_counts": counts,
+        "problem_checks": problems,
+        "problem_checks_truncated": max(
+            sum(counts[key] for key in ("warning", "fail", "unknown"))
+            - len(problems),
+            0,
+        ),
+    }
+    report_schema = report.get("schemaVersion")
+    if isinstance(report_schema, int):
+        summary["doctor_schema_version"] = report_schema
+    codex_version = report.get("codexVersion")
+    if isinstance(codex_version, str) and re.fullmatch(
+        r"[0-9A-Za-z][0-9A-Za-z.+_-]{0,127}", codex_version
+    ):
+        summary["codex_version"] = codex_version
+    return summary
+
+
+def diagnose_codex_host(
+    codex: str = "codex",
+    *,
+    timeout_seconds: float = CODEX_DIAGNOSTIC_DEFAULT_TIMEOUT_SECONDS,
+    runner=None,
+) -> dict[str, Any]:
+    """Run an explicit, bounded and redacted Codex host diagnostic."""
+
+    if not 0 < timeout_seconds <= CODEX_DIAGNOSTIC_MAX_TIMEOUT_SECONDS:
+        raise CodexAppError(
+            "Codex diagnostic timeout must be greater than 0 and at most "
+            f"{CODEX_DIAGNOSTIC_MAX_TIMEOUT_SECONDS:g} seconds"
+        )
+    base = {
+        "schema_version": core.SCHEMA_VERSION,
+        "kind": "ORCHESTRATOR_CODEX_HOST_DIAGNOSTIC",
+        "operation": "codex doctor --json",
+    }
+    try:
+        if runner is None:
+            with (
+                tempfile.TemporaryFile() as stdout_file,
+                tempfile.TemporaryFile() as stderr_file,
+            ):
+                try:
+                    completed = subprocess.run(
+                        [codex, "doctor", "--json"],
+                        check=False,
+                        timeout=timeout_seconds,
+                        stdin=subprocess.DEVNULL,
+                        stdout=stdout_file,
+                        stderr=stderr_file,
+                    )
+                except subprocess.TimeoutExpired:
+                    _, output_metadata = _read_diagnostic_capture(
+                        stdout_file,
+                        prefix="output",
+                    )
+                    _, stderr_metadata = _read_diagnostic_capture(
+                        stderr_file,
+                        prefix="stderr",
+                    )
+                    return {
+                        **base,
+                        "status": "timeout",
+                        "timeout_seconds": timeout_seconds,
+                        **output_metadata,
+                        **stderr_metadata,
+                    }
+                stdout, output_metadata = _read_diagnostic_capture(
+                    stdout_file,
+                    prefix="output",
+                )
+                stderr, stderr_metadata = _read_diagnostic_capture(
+                    stderr_file,
+                    prefix="stderr",
+                )
+        else:
+            completed = runner(
+                [codex, "doctor", "--json"],
+                capture_output=True,
+                check=False,
+                timeout=timeout_seconds,
+                stdin=subprocess.DEVNULL,
+                text=True,
+            )
+            stdout = completed.stdout or ""
+            stderr = completed.stderr or ""
+            output_metadata = _diagnostic_output_metadata(stdout)
+            stderr_metadata = _diagnostic_output_metadata(
+                stderr,
+                prefix="stderr",
+            )
+    except FileNotFoundError:
+        return {**base, "status": "unavailable_command", "error": "not_found"}
+    except subprocess.TimeoutExpired as error:
+        return {
+            **base,
+            "status": "timeout",
+            "timeout_seconds": timeout_seconds,
+            **_diagnostic_output_metadata(error.stdout),
+            **_diagnostic_output_metadata(error.stderr, prefix="stderr"),
+        }
+    except OSError as error:
+        return {
+            **base,
+            "status": "unavailable_command",
+            "error": type(error).__name__,
+        }
+    capture_metadata = {**output_metadata, **stderr_metadata}
+    if (
+        output_metadata["output_bytes"] > CODEX_DIAGNOSTIC_OUTPUT_LIMIT_BYTES
+        or stderr_metadata["stderr_bytes"]
+        > CODEX_DIAGNOSTIC_OUTPUT_LIMIT_BYTES
+    ):
+        return {
+            **base,
+            "status": "output_too_large",
+            "exit_code": completed.returncode,
+            **capture_metadata,
+            "output_limit_bytes": CODEX_DIAGNOSTIC_OUTPUT_LIMIT_BYTES,
+        }
+    try:
+        report = json.loads(stdout)
+    except (TypeError, ValueError, RecursionError):
+        if completed.returncode != 0:
+            return {
+                **base,
+                "status": "nonzero_exit",
+                "exit_code": completed.returncode,
+                **capture_metadata,
+            }
+        return {
+            **base,
+            "status": "invalid_json",
+            **capture_metadata,
+        }
+    if not isinstance(report, dict):
+        return {
+            **base,
+            "status": "invalid_json",
+            "reason": "expected_object",
+            **capture_metadata,
+        }
+    return {
+        **base,
+        "status": "available" if completed.returncode == 0 else "nonzero_exit",
+        "exit_code": completed.returncode,
+        **capture_metadata,
+        **_redacted_doctor_summary(report),
+    }
+
+
+def codex_diagnostic_exit_code(result: dict[str, Any]) -> int:
+    return (
+        0
+        if result.get("status") == "available"
+        and result.get("doctor_status") == "ok"
+        else 1
+    )
 
 
 def activate_queued_thread_window(thread_id: str) -> dict[str, Any]:
@@ -474,10 +750,11 @@ def detect_thread_id(
     """Best-effort detection of the calling Codex chat's thread id.
 
     Meant to run from inside the chat being bound: the CODEX_THREAD_ID env
-    var wins when set; otherwise the most recently modified session rollout
-    whose recorded cwd matches the project is the calling chat with very
-    high probability (its rollout is being appended to during this turn).
-    Headless `codex exec` sessions are skipped.
+    var wins when set; otherwise the most recently modified legacy session
+    rollout whose recorded cwd matches the project is used as a best-effort
+    compatibility heuristic. Headless `codex exec` sessions are skipped. A
+    missing rollout is not evidence that a current thread does not exist:
+    migrated or absent rollouts require an explicit thread id.
     """
     env = os.environ if environ is None else environ
     env_value = env.get("CODEX_THREAD_ID")
@@ -612,8 +889,10 @@ def thread_recent_activity(
     """Return recent rollout activity details when a thread looks live.
 
     This is a conservative guard for Codex Desktop/App Server races: if a
-    target thread's rollout file was just modified, defer headless submission even
-    when `thread/read` currently reports `idle`.
+    target thread's legacy rollout file was just modified, defer headless
+    submission even when `thread/read` currently reports `idle`. A missing
+    rollout is inconclusive; callers must establish the target with the
+    supported App Server `thread/read` response before using this guard.
     """
     rollout = rollout_locator(thread_id)
     if rollout is None:

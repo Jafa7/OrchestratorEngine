@@ -58,7 +58,7 @@ For a reproducible adopter install, use an immutable release tag:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.2.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.3.0"
 ```
 
 GitHub Release archives and wheel/sdist assets are published with the tag;
@@ -156,22 +156,38 @@ anywhere, against the target project root.
 
 Run this **from inside the codex chat being bound** — the thread id is
 auto-detected (from `CODEX_THREAD_ID` if set, otherwise from the most
-recently modified session rollout whose recorded cwd matches the project,
-which is the calling chat's own session):
+recently modified legacy session rollout whose recorded cwd matches the
+project, which is a best-effort compatibility heuristic):
 
 ```bash
 orchestrator-engine --project-root /path/to/project bind --host codex
 ```
 
-The output includes `thread_id_source` so you can confirm what was detected.
-If detection fails (or you are binding a *different* chat), pass the id
-explicitly — session filenames embed it
-(`rollout-<timestamp>-<THREAD_ID>.jsonl`, first line records the cwd):
+The output includes `thread_id_source` and `thread_id_evidence`; a
+`legacy_rollout_heuristic` value is not proof that the chat is current.
+Rollout scanning is not a stable Codex thread-list API. If the rollout is
+absent or has been migrated to paginated history, autodetection deliberately
+fails closed; pass the id explicitly (or use `CODEX_THREAD_ID`) rather than
+guessing. Session filenames may embed the id
+(`rollout-<timestamp>-<THREAD_ID>.jsonl`), but their internal contents are not
+a durable OrchestratorEngine contract:
 
 ```bash
 orchestrator-engine --project-root /path/to/project bind \
-  --host codex --thread-id THREAD_ID
+  --host codex --thread-id THREAD_ID --codex-command CODEX_LAUNCHER
 ```
+
+`CODEX_LAUNCHER` is the CLI that owns the target session. For a Windows
+Desktop task reached from WSL, use the current Windows `codex.exe`; for a WSL
+TUI task, use the WSL `codex`. Omitting the launcher is safe only when the
+target session store can still be inferred from a matching rollout.
+
+The watcher’s recent-activity guard treats a recently modified legacy rollout
+as a reason to defer a headless fallback. A missing rollout is inconclusive,
+not proof of inactivity; the supported App Server `thread/read` status remains
+the authoritative current-thread check. OrchestratorEngine never invokes
+`codex migrate-rollouts --apply`; if migration has removed the legacy rollout,
+use the explicit `--thread-id` recovery path above.
 
 ### Host: vscode
 
@@ -249,7 +265,7 @@ cost = "high"
 
 [workers.codex]
 enabled = true
-command = ["codex", "exec", "--json", "-m", "gpt-5.6-terra",
+command = ["codex", "exec", "--ephemeral", "--json", "-m", "gpt-5.6-terra",
            "-c", "model_reasoning_effort=\"high\"",
            "-c", "approval_policy=\"never\"",
            "-c", "sandbox_mode=\"danger-full-access\""]
@@ -306,6 +322,10 @@ Notes:
   Use an explicit non-interactive policy such as
   `-c approval_policy="never"` and an intentional `sandbox_mode` in the
   worker command or in the Codex config selected by that profile.
+- Detached profiles should include `--ephemeral`: OrchestratorEngine owns the
+  durable task evidence, while Codex session state is otherwise provider-owned.
+  An adopter may intentionally omit it when provider session persistence is
+  required; `worker diagnose` reports that choice as informational advice.
 - Detached `claude -p` workers should declare an explicit `--permission-mode`
   that matches the project's automation policy. `dontAsk` avoids interactive
   prompts but may deny restricted tools. `--dangerously-skip-permissions`
@@ -609,6 +629,19 @@ queue command:
 codex queue --help
 ```
 
+For an opt-in bounded host diagnostic that does not run during ordinary status
+or dispatch, use:
+
+```bash
+orchestrator-engine --project-root /path/to/project \
+  codex diagnose --timeout-seconds 10
+```
+
+It uses the current project's Codex binding by default, invokes
+`codex doctor --json`, and emits only status, exit classification, bounded
+check counts and problem check IDs; command output and paths are not returned.
+Pass `--codex-command` only to override the bound launcher explicitly.
+
 The help must include `--thread` and `--message`. In WSL, `bind --host codex`
 normally records the Windows `codex.exe` that owns the Desktop task. The
 watcher automatically resolves the current managed executable after Desktop
@@ -762,8 +795,10 @@ Add this to the adopted project's agent instructions file (`AGENTS.md`,
 To delegate a task to a CLI worker:
 
 0. Make sure the binding targets THIS chat (`bind --status`); if you are a
-   new chat, rebind yourself first (`bind --host codex` auto-detects your
-   thread; claude/vscode need no id). The binding is snapshotted into each
+   new Codex chat, rebind yourself first and verify `thread_id_evidence` plus
+   `target_thread_id`. `bind --host codex` uses `CODEX_THREAD_ID` when present,
+   otherwise only a best-effort legacy-rollout heuristic; pass an explicit id
+   when it is unavailable or uncertain. Claude/VS Code need no id. The binding is snapshotted into each
    task at dispatch time, so multiple chats may safely share one project as
    long as each chat binds itself before dispatching work.
 1. Check available worker profiles: `orchestrator-engine --project-root <root> worker list`.

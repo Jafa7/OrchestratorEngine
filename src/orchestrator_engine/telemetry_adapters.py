@@ -32,6 +32,7 @@ def nested_token_counts(value: object, counts: dict[str, int]) -> None:
                 key in TOKEN_KEYS
                 and isinstance(item, int)
                 and not isinstance(item, bool)
+                and item >= 0
             ):
                 counts[key] = counts.get(key, 0) + item
             else:
@@ -41,18 +42,26 @@ def nested_token_counts(value: object, counts: dict[str, int]) -> None:
             nested_token_counts(item, counts)
 
 
+def bounded_tail(path: Path) -> bytes:
+    with path.open("rb") as stream:
+        stream.seek(0, 2)
+        size = stream.tell()
+        stream.seek(max(size - MAX_SCAN_BYTES, 0))
+        return stream.read(MAX_SCAN_BYTES)
+
+
 def json_lines_usage(stdout_path: Path, stderr_path: Path) -> dict[str, Any]:
     counts: dict[str, int] = {}
     parsed_records = 0
     for path in (stdout_path, stderr_path):
         try:
-            raw = path.read_bytes()[-MAX_SCAN_BYTES:]
+            raw = bounded_tail(path)
         except OSError:
             continue
         for line in raw.decode("utf-8", errors="replace").splitlines():
             try:
                 value = json.loads(line)
-            except json.JSONDecodeError:
+            except (ValueError, RecursionError):
                 continue
             parsed_records += 1
             nested_token_counts(value, counts)

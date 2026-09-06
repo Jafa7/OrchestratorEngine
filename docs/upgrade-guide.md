@@ -11,7 +11,7 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release is `1.2.0` and the durable JSON contract schema version is
+The current release is `1.3.0` and the durable JSON contract schema version is
 `1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
@@ -19,8 +19,20 @@ PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.2.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.3.0"
 ```
+
+## Codex diagnostics and efficient review in v1.3.0
+
+Version 1.3.0 adds the bounded `codex diagnose` adapter command, recommends
+ephemeral Codex worker sessions, and publishes an opt-in `review-efficient`
+policy overlay with JSON-lines usage telemetry examples. The soft token budget
+is diagnostic only: it never terminates a worker or permits incomplete review.
+
+Existing profiles and durable schema-version-1 state remain compatible. After
+upgrading, restart callback watcher services so they use the new adapter code.
+Projects may keep their current worker policies or explicitly export and
+compose the review overlay for dedicated read-only review profiles.
 
 ## Completion routing in v1.2.0
 

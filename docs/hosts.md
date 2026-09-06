@@ -59,15 +59,17 @@ path no longer exists, the adapter resolves the newest installed launcher at
 delivery time without rewriting the task's audit snapshot.
 
 1. Run the bind command from the Codex chat that will dispatch work. The engine
-   auto-detects that chat's thread id:
+   first uses `CODEX_THREAD_ID`; otherwise it may select the newest matching
+   legacy rollout as a best-effort compatibility heuristic:
 
 ```bash
 orchestrator-engine --project-root /path/to/project bind --host codex
 ```
 
-Confirm `thread_id_source` and `target_thread_id` in the output. Use explicit
-`--thread-id THREAD_ID` only when auto-detection fails or an operator is binding
-a different chat.
+Always confirm `thread_id_evidence` and `target_thread_id` in the output. A
+migrated or absent rollout cannot identify the current chat; use explicit
+`--thread-id THREAD_ID` when the heuristic is unavailable, ambiguous, stale or
+when an operator is binding a different chat.
 
 2. Start the host-scoped callback service:
 

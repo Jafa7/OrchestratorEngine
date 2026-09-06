@@ -117,6 +117,18 @@ VS Code CLI, not a claim that host security is bypassed. The legacy `woken`
 status means completed headless history delivery when the Codex receipt has
 `delivery_mode: "headless_app_server_turn"`.
 
+`orchestrator-engine --project-root PROJECT codex diagnose` is an explicit,
+read-only Codex adapter diagnostic. It runs `codex doctor --json` with a bounded
+timeout, preferring the project's Codex binding launcher and then `PATH`. The
+result kind is `ORCHESTRATOR_CODEX_HOST_DIAGNOSTIC`; it retains only normalized
+status counts, bounded problem check IDs, Codex/schema versions, exit status,
+and byte counts plus SHA-256 digests of provider stdout/stderr. Paths, messages
+and raw provider output are never copied into the report. Provider streams are
+captured through temporary files with bounded in-memory retention; malformed
+or oversized output fails closed. A nonzero process exit may still carry
+parsed, redacted findings, but the orchestrator command exits nonzero unless
+both the adapter status and doctor status are healthy.
+
 ### Platform runtime capabilities
 
 `runtime-capabilities` emits a bounded `ORCHESTRATOR_PLATFORM_CAPABILITIES`
@@ -668,7 +680,7 @@ expect_long_running = true
 
 [workers.codex-deep]
 enabled = true
-command = ["codex", "exec", "--json", "-m", "gpt-5.6-sol",
+command = ["codex", "exec", "--ephemeral", "--json", "-m", "gpt-5.6-sol",
            "-c", "model_reasoning_effort=\"xhigh\"",
            "-c", "approval_policy=\"never\"",
            "-c", "sandbox_mode=\"danger-full-access\""]
@@ -706,6 +718,10 @@ the engine reports `copilot_may_request_approval`. Known advisory codes:
   dispatch while already-snapshotted tasks remain runnable.
 - `copilot_may_request_approval` — Copilot profile lacks
   `--allow-all --no-ask-user`.
+- `codex_exec_missing_ephemeral` — detached `codex exec` profile omits
+  `--ephemeral`; this is informational because an adopter may intentionally
+  retain provider session persistence instead of letting OrchestratorEngine
+  own that state.
 - `codex_may_request_approval` — `codex exec` profile lacks an explicit
   `approval_policy="never"` override or the official full-bypass flag.
 - `codex_missing_sandbox_strategy` — `codex exec` profile lacks an explicit
@@ -1224,8 +1240,14 @@ context_strategy = "progressive"
 verification_strategy = "risk-based-final-gate"
 output_strategy = "compact-evidence"
 
+[policies.review-efficient]
+files = ["policies/quality-efficient.md", "policies/review-efficient.md"]
+context_strategy = "changed-surface-first"
+output_strategy = "findings-first"
+role = "review"
+
 [workers.codex]
-command = ["codex", "exec", "--json"]
+command = ["codex", "exec", "--ephemeral", "--json"]
 prompt_via = "arg"
 policy = "quality-efficient"
 ```
@@ -1265,9 +1287,9 @@ Profiles without `policy` remain backward compatible; `worker diagnose`
 reports `worker_policy_not_configured` at `info` severity so users can migrate
 intentionally without breaking existing dispatch.
 
-For the bundled `quality-efficient` policy, `worker list` and
-`worker diagnose` expose the bundled revision/SHA-256 and the selected local
-file SHA-256. An exact copy reports `current`; a different local file reports
+For the bundled `quality-efficient` and `review-efficient` policies, `worker
+list` and `worker diagnose` expose the bundled revision/SHA-256 and the
+selected local file SHA-256. An exact copy reports `current`; a different local file reports
 `different` plus one informational `policy_update_available` diagnostic per
 policy, regardless of how many profiles select it. Difference is not treated
 as an error because it may be an intentional project customization. The engine
@@ -1285,6 +1307,10 @@ full gate on a finished high-risk candidate, bounded output and compact
 handoffs. It explicitly requires escalation for security, durable data, shared
 contracts, migrations, concurrency, packaging and ambiguous failures; it does
 not impose a task token cap or permit skipping necessary evidence.
+The optional review-efficient overlay narrows discovery to changed surfaces and
+justified dependency edges, requires findings-first output, and avoids
+duplicating the final full gate. Its soft token budget remains telemetry, not a
+hard stop or an admission decision.
 
 `effective-prompt.md` is a durable audit artifact and contains the complete
 task text plus selected policy contents. It may therefore be private even when
@@ -1389,8 +1415,13 @@ they do not stop work or weaken verification. Hard timeout remains the explicit
 
 Usage telemetry is disabled unless a profile names an explicit
 `usage_adapter`. The bundled `json-lines-usage` adapter reads bounded log bytes
-and writes `usage.json`; telemetry never changes task success, retry, model or
-permission decisions. Workers may optionally write the bounded
+from the end of each stream without first loading the full log, ignores
+negative/malformed counters, and writes `usage.json`. It preserves
+`cached_input_tokens`, `cache_read_input_tokens` and
+`cache_creation_input_tokens` when emitted; budget diagnostics report the
+largest compatible cached-token interpretation without double-counting aliases.
+Telemetry never changes task success, retry, model or permission decisions.
+Workers may optionally write the bounded
 `worker-handoff.json` contract. The generated effective prompt includes this
 schema-valid example:
 

@@ -65,6 +65,21 @@ the package was already upgraded, verify and terminate that process explicitly,
 then start a new watcher service. The current CLI intentionally refuses to
 signal an identity-less live PID.
 
+Callback watchers are CLI-managed detached processes, not installed OS-level
+daemons. WSL or OS restart therefore requires an operator health check and
+restart:
+
+```bash
+orchestrator-engine --project-root /path/to/project watcher \
+  --host codex service status
+orchestrator-engine --project-root /path/to/project watcher \
+  --host codex --action callback service start --interval-seconds 5
+```
+
+Use `service restart` when the status is `crashed` or `stopped`; the status
+report is the authoritative check for the stored process identity and
+heartbeat.
+
 See the [Upgrade Guide](upgrade-guide.md) and
 [Adopter Upgrade Checklist](adopter-upgrade-checklist.md) for the complete
 bounded workflow.

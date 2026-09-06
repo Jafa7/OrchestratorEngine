@@ -80,7 +80,7 @@ output_strategy = "compact-evidence"
 role = "implementation"
 
 [workers.codex-implementation]
-command = ["codex", "exec", "--json"]
+command = ["codex", "exec", "--ephemeral", "--json"]
 prompt_via = "arg"
 policy = "implementation"
 ```
@@ -98,6 +98,22 @@ Recommended overlays are narrow:
 - review: findings-first, read-only behavior and no duplicate full gate;
 - verification: requested suite only and compact artifacts;
 - reporting: privacy-safe evidence and no product changes.
+
+The bundled `review-efficient` overlay composes after `quality-efficient`. It
+starts from changed-file metadata and file-scoped hunks, permits expansion only
+across a named dependency/contract/security edge, discourages repeated reads,
+and leaves the final full gate to the orchestrating agent. Export it explicitly:
+
+```bash
+orchestrator-engine worker policy export --name review-efficient \
+  --output .orchestrator/policies/review-efficient.md
+```
+
+Assign the composed policy only to review-specific profiles. Pair JSON-lines
+workers with `usage_adapter = "json-lines-usage"` and a measured
+`soft_token_budget`; the budget produces post-run diagnostics but never kills a
+worker or permits incomplete evidence. Cached-input counts remain visible so an
+operator can distinguish context size from uncached work.
 
 Do not copy private roadmaps, document bodies, credentials or large project
 manuals into a policy. Project-specific instructions remain in the adopting

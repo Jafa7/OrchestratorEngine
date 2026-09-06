@@ -97,6 +97,14 @@ class InstallSmokeTests(unittest.TestCase):
                 timeout=30,
                 env=env,
             ).stdout.strip()
+            codex_diagnose_help = subprocess.run(
+                [str(cli), "codex", "diagnose", "--help"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+            ).stdout
             host_capabilities = self.run_cli(cli, project, "host-capabilities")
             runtime_capabilities = self.run_cli(
                 cli, project, "runtime-capabilities"
@@ -779,6 +787,7 @@ class InstallSmokeTests(unittest.TestCase):
             "ORCHESTRATOR_OPERATION_WAIT_STATUS",
         )
         self.assertEqual(operation_status["successful_count"], 2)
+        self.assertIn("--codex-command", codex_diagnose_help)
         self.assertEqual(
             smoke_evidence["worker_policy"]["name"],
             "quality-efficient",

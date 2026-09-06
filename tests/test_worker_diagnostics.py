@@ -40,8 +40,13 @@ class WorkerDiagnosticTests(unittest.TestCase):
         )
         self.assertEqual(
             [item["code"] for item in diagnostics],
-            ["codex_may_request_approval", "codex_missing_sandbox_strategy"],
+            [
+                "codex_exec_missing_ephemeral",
+                "codex_may_request_approval",
+                "codex_missing_sandbox_strategy",
+            ],
         )
+        self.assertEqual(diagnostics[0]["severity"], "info")
 
     def test_windows_executable_paths_are_detected(self) -> None:
         diagnostics = worker_diagnostics.evaluate_profile(
@@ -53,7 +58,11 @@ class WorkerDiagnosticTests(unittest.TestCase):
         )
         self.assertEqual(
             [item["code"] for item in diagnostics],
-            ["codex_may_request_approval", "codex_missing_sandbox_strategy"],
+            [
+                "codex_exec_missing_ephemeral",
+                "codex_may_request_approval",
+                "codex_missing_sandbox_strategy",
+            ],
         )
 
     def test_claude_prompt_mode_requires_permission_mode(self) -> None:
@@ -75,6 +84,7 @@ class WorkerDiagnosticTests(unittest.TestCase):
             command=[
                 "codex",
                 "exec",
+                "--ephemeral",
                 "--dangerously-bypass-approvals-and-sandbox",
             ],
             prompt_via="arg",
@@ -97,6 +107,7 @@ class WorkerDiagnosticTests(unittest.TestCase):
             command=[
                 "codex",
                 "exec",
+                "--ephemeral",
                 "-c",
                 'approval_policy="never"',
                 "--sandbox",
@@ -107,6 +118,19 @@ class WorkerDiagnosticTests(unittest.TestCase):
             expect_long_running=True,
         )
         self.assertEqual(diagnostics, [])
+
+    def test_codex_ephemeral_suppresses_session_persistence_warning(self) -> None:
+        diagnostics = worker_diagnostics.evaluate_profile(
+            name="codex-ephemeral",
+            command=["codex", "exec", "--json", "--ephemeral"],
+            prompt_via="arg",
+            timeout_seconds=60,
+            expect_long_running=True,
+        )
+        self.assertEqual(
+            [item["code"] for item in diagnostics],
+            ["codex_may_request_approval", "codex_missing_sandbox_strategy"],
+        )
 
     def test_missing_timeout_is_info_unless_long_running(self) -> None:
         quick = worker_diagnostics.evaluate_profile(

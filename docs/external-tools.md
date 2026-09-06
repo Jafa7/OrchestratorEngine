@@ -15,7 +15,7 @@ macOS. See the [platform support matrix](platform-support.md).
 | --- | --- | --- | --- |
 | Core files, schemas and status | none | always available | `orchestrator-engine --version` |
 | Local check runtime | adopter-declared commands | only for each configured suite | Run each command's native `--version` or equivalent |
-| Codex worker or live host queue | Codex CLI | only for Codex profiles/host | `codex --version`; `codex queue --help` for live delivery |
+| Codex worker, diagnostics or live host queue | Codex CLI | only for Codex profiles/host | `codex --version`; `codex exec --help` for `--ephemeral`; `codex doctor --help` for `--json`; `codex queue --help` for live delivery |
 | Claude worker | Claude Code CLI | only for Claude profiles | `claude --version` |
 | Copilot worker | GitHub Copilot CLI | only for Copilot profiles | `copilot --version` |
 | VS Code host callback | Visual Studio Code CLI | only for the VS Code host | `code --version` |

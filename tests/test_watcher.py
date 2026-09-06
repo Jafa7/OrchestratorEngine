@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -1859,6 +1860,200 @@ class FakeCompleted:
         self.returncode = returncode
         self.stderr = stderr
         self.stdout = stdout
+
+
+class CodexDiagnosticTests(unittest.TestCase):
+    def test_doctor_json_returns_redacted_summary(self) -> None:
+        commands: list[list[str]] = []
+        provider_output = json.dumps(
+            {
+                "schemaVersion": 1,
+                "codexVersion": "0.153.4",
+                "overallStatus": "warning",
+                "project_root": "/private/project",
+                "checks": {
+                    "runtime.ok": {"status": "ok", "detail": "/secret"},
+                    "state.problem": {"status": "warning"},
+                },
+            }
+        )
+
+        def runner(command, **kwargs):
+            commands.append(command)
+            self.assertEqual(kwargs["timeout"], 4)
+            return FakeCompleted(stdout=provider_output)
+
+        result = codex_app.diagnose_codex_host(
+            "/private/bin/codex", timeout_seconds=4, runner=runner
+        )
+
+        self.assertEqual(result["status"], "available")
+        self.assertEqual(result["doctor_status"], "warning")
+        self.assertEqual(result["check_status_counts"]["ok"], 1)
+        self.assertEqual(
+            result["problem_checks"],
+            [{"id": "state.problem", "status": "warning"}],
+        )
+        self.assertEqual(result["codex_version"], "0.153.4")
+        provider_bytes = provider_output.encode("utf-8")
+        self.assertEqual(result["output_bytes"], len(provider_bytes))
+        self.assertEqual(
+            result["output_sha256"], hashlib.sha256(provider_bytes).hexdigest()
+        )
+        self.assertNotIn("project_root", result)
+        self.assertNotIn("private", json.dumps(result))
+        self.assertEqual(commands, [["/private/bin/codex", "doctor", "--json"]])
+
+    def test_nonzero_doctor_json_preserves_redacted_findings(self) -> None:
+        result = codex_app.diagnose_codex_host(
+            runner=lambda *_args, **_kwargs: FakeCompleted(
+                returncode=1,
+                stdout=json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "overallStatus": "fail",
+                        "checks": {
+                            "state.rollout_db_parity": {
+                                "status": "fail",
+                                "details": "/private/session/path",
+                            }
+                        },
+                    }
+                ),
+            )
+        )
+
+        self.assertEqual(result["status"], "nonzero_exit")
+        self.assertEqual(result["exit_code"], 1)
+        self.assertEqual(result["doctor_status"], "fail")
+        self.assertEqual(
+            result["problem_checks"],
+            [{"id": "state.rollout_db_parity", "status": "fail"}],
+        )
+        self.assertNotIn("private", json.dumps(result))
+        self.assertEqual(codex_app.codex_diagnostic_exit_code(result), 1)
+
+    def test_doctor_json_counts_malformed_external_values_as_unknown(self) -> None:
+        result = codex_app.diagnose_codex_host(
+            runner=lambda *_args, **_kwargs: FakeCompleted(
+                stdout=json.dumps(
+                    {
+                        "overallStatus": {"unexpected": True},
+                        "checks": [
+                            "malformed",
+                            {"id": "odd-status", "status": ["warning"]},
+                        ],
+                    }
+                )
+            )
+        )
+
+        self.assertEqual(result["doctor_status"], "unknown")
+        self.assertEqual(result["check_status_counts"]["unknown"], 2)
+        self.assertEqual(result["check_count"], 2)
+
+    def test_doctor_json_redacts_provider_controlled_identifiers(self) -> None:
+        result = codex_app.diagnose_codex_host(
+            runner=lambda *_args, **_kwargs: FakeCompleted(
+                stdout=json.dumps(
+                    {
+                        "codexVersion": "/private/version/path",
+                        "overallStatus": "warning",
+                        "checks": {
+                            "/private/check/path": {"status": "warning"}
+                        },
+                    }
+                )
+            )
+        )
+
+        serialized = json.dumps(result)
+        self.assertNotIn("private", serialized)
+        self.assertNotIn("codex_version", result)
+        self.assertRegex(
+            result["problem_checks"][0]["id"],
+            r"^invalid-check-[0-9a-f]{16}$",
+        )
+
+    def test_doctor_json_classifies_parser_value_errors(self) -> None:
+        oversized_integer = "9" * 5000
+        result = codex_app.diagnose_codex_host(
+            runner=lambda *_args, **_kwargs: FakeCompleted(
+                stdout=f'{{"value": {oversized_integer}}}'
+            )
+        )
+
+        self.assertEqual(result["status"], "invalid_json")
+
+    @mock.patch("orchestrator_engine.codex_app.subprocess.run")
+    def test_default_doctor_capture_uses_files_not_memory_pipes(
+        self, run: object
+    ) -> None:
+        def invoke(_command, **kwargs):
+            self.assertNotIn("capture_output", kwargs)
+            self.assertNotIn("text", kwargs)
+            kwargs["stdout"].write(
+                json.dumps(
+                    {"overallStatus": "ok", "checks": {}}
+                ).encode("utf-8")
+            )
+            kwargs["stderr"].write(b"bounded warning")
+            return FakeCompleted()
+
+        run.side_effect = invoke
+        result = codex_app.diagnose_codex_host()
+
+        self.assertEqual(result["status"], "available")
+        self.assertEqual(result["doctor_status"], "ok")
+        self.assertEqual(result["stderr_bytes"], len(b"bounded warning"))
+
+    def test_doctor_json_rejects_oversized_output_before_parsing(self) -> None:
+        output = "{" + (" " * codex_app.CODEX_DIAGNOSTIC_OUTPUT_LIMIT_BYTES) + "}"
+        result = codex_app.diagnose_codex_host(
+            runner=lambda *_args, **_kwargs: FakeCompleted(stdout=output)
+        )
+
+        self.assertEqual(result["status"], "output_too_large")
+        self.assertEqual(result["output_bytes"], len(output.encode("utf-8")))
+        self.assertNotIn("doctor_status", result)
+
+        stderr = "x" * (codex_app.CODEX_DIAGNOSTIC_OUTPUT_LIMIT_BYTES + 1)
+        result = codex_app.diagnose_codex_host(
+            runner=lambda *_args, **_kwargs: FakeCompleted(
+                stdout='{"overallStatus": "ok", "checks": {}}',
+                stderr=stderr,
+            )
+        )
+        self.assertEqual(result["status"], "output_too_large")
+        self.assertEqual(result["stderr_bytes"], len(stderr))
+
+    def test_doctor_json_classifies_failure_modes(self) -> None:
+        cases = [
+            ("unavailable_command", FileNotFoundError()),
+            ("timeout", subprocess.TimeoutExpired(["codex"], 1)),
+        ]
+        for expected, failure in cases:
+            with self.subTest(status=expected):
+                def runner(*_args, failure=failure, **_kwargs):
+                    raise failure
+
+                result = codex_app.diagnose_codex_host(
+                    runner=runner
+                )
+                self.assertEqual(result["status"], expected)
+
+        result = codex_app.diagnose_codex_host(
+            runner=lambda *_args, **_kwargs: FakeCompleted(
+                returncode=2, stderr="invalid or sensitive output"
+            )
+        )
+        self.assertEqual(result["status"], "nonzero_exit")
+        self.assertNotIn("sensitive", json.dumps(result))
+
+        result = codex_app.diagnose_codex_host(
+            runner=lambda *_args, **_kwargs: FakeCompleted(stdout="not json")
+        )
+        self.assertEqual(result["status"], "invalid_json")
 
 
 class VscodeChatTests(unittest.TestCase):

@@ -132,6 +132,7 @@ class WorkerPolicyTests(unittest.TestCase):
     def test_export_bundled_policy_requires_explicit_replace(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "policy.md"
+            review_output = Path(temporary) / "review-policy.md"
             first = worker_policy.export_bundled_policy(
                 "quality-efficient",
                 output=output,
@@ -148,11 +149,50 @@ class WorkerPolicyTests(unittest.TestCase):
                 replace=True,
             )
             exported_content = output.read_text(encoding="utf-8")
+            review = worker_policy.export_bundled_policy(
+                "review-efficient",
+                output=review_output,
+            )
+            review_content = review_output.read_text(encoding="utf-8")
 
         self.assertEqual(first["kind"], worker_policy.POLICY_EXPORT_KIND)
         self.assertEqual(first["revision"], 2)
         self.assertEqual(first["sha256"], replaced["sha256"])
         self.assertEqual(exported_content, worker_policy.QUALITY_EFFICIENT_POLICY)
+        self.assertEqual(review["revision"], 1)
+        self.assertEqual(
+            review_content,
+            worker_policy.REVIEW_EFFICIENT_POLICY,
+        )
+
+    def test_repository_review_overlay_matches_bundled_reference(self) -> None:
+        repository_copy = (
+            Path(__file__).resolve().parents[1]
+            / "examples"
+            / "policies"
+            / "review-efficient.md"
+        )
+
+        self.assertEqual(
+            repository_copy.read_text(encoding="utf-8"),
+            worker_policy.REVIEW_EFFICIENT_POLICY,
+        )
+        status = worker_policy.bundled_policy_status(
+            "review-efficient",
+            [
+                {
+                    "path": ".orchestrator/policies/quality-efficient.md",
+                    "sha256": "0" * 64,
+                    "bytes": 1,
+                },
+                {
+                    "path": ".orchestrator/policies/review-efficient.md",
+                    "sha256": core.sha256_file(repository_copy),
+                    "bytes": repository_copy.stat().st_size,
+                },
+            ],
+        )
+        self.assertEqual(status["status"], "current")
 
     def test_snapshot_rejects_accidentally_large_policy(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
