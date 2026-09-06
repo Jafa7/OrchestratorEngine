@@ -1934,6 +1934,146 @@ class CodexDiagnosticTests(unittest.TestCase):
         self.assertNotIn("private", json.dumps(result))
         self.assertEqual(codex_app.codex_diagnostic_exit_code(result), 1)
 
+    def test_noninteractive_terminal_check_is_context_limited(self) -> None:
+        result = codex_app.diagnose_codex_host(
+            runner=lambda *_args, **_kwargs: FakeCompleted(
+                returncode=1,
+                stdout=json.dumps(
+                    {
+                        "overallStatus": "fail",
+                        "checks": {
+                            "runtime.ok": {"status": "ok"},
+                            "terminal.env": {
+                                "status": "fail",
+                                "summary": "sensitive terminal details",
+                            },
+                        },
+                    }
+                ),
+            )
+        )
+
+        self.assertEqual(result["status"], "available")
+        self.assertEqual(result["exit_code"], 1)
+        self.assertEqual(result["exit_code_classification"], "context_limited")
+        self.assertEqual(result["provider_doctor_status"], "fail")
+        self.assertEqual(result["doctor_status"], "ok")
+        self.assertEqual(result["provider_check_status_counts"]["fail"], 1)
+        self.assertEqual(result["check_status_counts"]["fail"], 0)
+        self.assertEqual(result["check_status_counts"]["skipped"], 1)
+        self.assertEqual(
+            result["context_limited_checks"],
+            [
+                {
+                    "id": "terminal.env",
+                    "provider_status": "fail",
+                    "classification": "noninteractive_probe",
+                }
+            ],
+        )
+        self.assertEqual(result["problem_checks"], [])
+        self.assertEqual(result["context_limited_checks_truncated"], 0)
+        self.assertEqual(
+            result["context_limited_check_status_counts"]["fail"], 1
+        )
+        self.assertNotIn("sensitive", json.dumps(result))
+        self.assertEqual(codex_app.codex_diagnostic_exit_code(result), 0)
+
+    def test_context_limited_terminal_check_keeps_other_findings(self) -> None:
+        result = codex_app.diagnose_codex_host(
+            runner=lambda *_args, **_kwargs: FakeCompleted(
+                returncode=1,
+                stdout=json.dumps(
+                    {
+                        "overallStatus": "fail",
+                        "checks": {
+                            "git.worktree.dev_drive": {"status": "warning"},
+                            "terminal.env": {"status": "fail"},
+                        },
+                    }
+                ),
+            )
+        )
+
+        self.assertEqual(result["status"], "available")
+        self.assertEqual(result["doctor_status"], "warning")
+        self.assertEqual(
+            result["problem_checks"],
+            [{"id": "git.worktree.dev_drive", "status": "warning"}],
+        )
+        self.assertEqual(codex_app.codex_diagnostic_exit_code(result), 1)
+
+    def test_context_limited_check_does_not_hide_unexpected_exit_code(
+        self,
+    ) -> None:
+        result = codex_app.diagnose_codex_host(
+            runner=lambda *_args, **_kwargs: FakeCompleted(
+                returncode=2,
+                stdout=json.dumps(
+                    {
+                        "overallStatus": "fail",
+                        "checks": {"terminal.env": {"status": "fail"}},
+                    }
+                ),
+            )
+        )
+
+        self.assertEqual(result["status"], "nonzero_exit")
+        self.assertNotIn("exit_code_classification", result)
+        self.assertEqual(codex_app.codex_diagnostic_exit_code(result), 1)
+
+    def test_context_limited_findings_are_bounded(self) -> None:
+        checks = [
+            {"id": "terminal.env", "status": "fail"}
+            for _ in range(codex_app.CODEX_DIAGNOSTIC_PROBLEM_LIMIT + 1)
+        ]
+        result = codex_app.diagnose_codex_host(
+            runner=lambda *_args, **_kwargs: FakeCompleted(
+                returncode=1,
+                stdout=json.dumps(
+                    {"overallStatus": "fail", "checks": checks}
+                ),
+            )
+        )
+
+        self.assertEqual(
+            len(result["context_limited_checks"]),
+            codex_app.CODEX_DIAGNOSTIC_PROBLEM_LIMIT,
+        )
+        self.assertEqual(result["context_limited_checks_truncated"], 1)
+        self.assertEqual(
+            result["context_limited_check_status_counts"]["fail"],
+            len(checks),
+        )
+        self.assertEqual(result["check_status_counts"]["skipped"], len(checks))
+        self.assertEqual(codex_app.codex_diagnostic_exit_code(result), 0)
+
+    def test_context_limited_terminal_check_does_not_hide_other_failure(
+        self,
+    ) -> None:
+        result = codex_app.diagnose_codex_host(
+            runner=lambda *_args, **_kwargs: FakeCompleted(
+                returncode=1,
+                stdout=json.dumps(
+                    {
+                        "overallStatus": "fail",
+                        "checks": {
+                            "runtime.failure": {"status": "fail"},
+                            "terminal.env": {"status": "fail"},
+                        },
+                    }
+                ),
+            )
+        )
+
+        self.assertEqual(result["status"], "nonzero_exit")
+        self.assertEqual(result["doctor_status"], "fail")
+        self.assertEqual(
+            result["problem_checks"],
+            [{"id": "runtime.failure", "status": "fail"}],
+        )
+        self.assertEqual(codex_app.codex_diagnostic_exit_code(result), 1)
+
     def test_doctor_json_counts_malformed_external_values_as_unknown(self) -> None:
         result = codex_app.diagnose_codex_host(
             runner=lambda *_args, **_kwargs: FakeCompleted(

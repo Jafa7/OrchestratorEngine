@@ -11,7 +11,7 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release is `1.4.0` and the durable JSON contract schema version is
+The current release is `1.4.1` and the durable JSON contract schema version is
 `1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
@@ -19,7 +19,7 @@ PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.4.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.4.1"
 ```
 
 ## Verified usage and acceptance evidence in v1.4.0

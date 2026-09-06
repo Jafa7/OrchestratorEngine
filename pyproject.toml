@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "orchestrator-engine"
-version = "1.4.0"
+version = "1.4.1"
 description = "Local event-driven coordination for AI chats, CLI workers, checks and CI."
 readme = "README.md"
 requires-python = ">=3.11"

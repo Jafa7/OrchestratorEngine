@@ -4,6 +4,14 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-09-06
+
+### Fixed
+
+- Classified Codex Doctor's exact `terminal.env` finding as a bounded
+  noninteractive-probe limitation while preserving the provider status and
+  keeping every other warning or failure actionable.
+
 ## [1.4.0] - 2026-09-06
 
 ### Added

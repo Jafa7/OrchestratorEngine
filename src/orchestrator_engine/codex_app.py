@@ -54,6 +54,9 @@ CODEX_DIAGNOSTIC_STATUS_ALIASES = {
     "skip": "skipped",
     "skipped": "skipped",
 }
+CODEX_DIAGNOSTIC_CONTEXT_LIMITED_CHECKS = {
+    "terminal.env": "noninteractive_probe",
+}
 QUEUE_ACK_PATTERN = re.compile(
     r"Queued message (?P<message_id>[0-9A-Za-z-]+) "
     r"for thread (?P<thread_id>[^.\s]+)\."
@@ -286,6 +289,16 @@ def _safe_diagnostic_identifier(value: Any, *, fallback: str) -> str:
     return f"{fallback}-{hashlib.sha256(encoded).hexdigest()[:16]}"
 
 
+def _effective_doctor_status(counts: dict[str, int]) -> str:
+    if counts["fail"]:
+        return "fail"
+    if counts["unknown"]:
+        return "unknown"
+    if counts["warning"]:
+        return "warning"
+    return "ok"
+
+
 def _redacted_doctor_summary(report: dict[str, Any]) -> dict[str, Any]:
     """Keep only bounded, non-path fields from `codex doctor --json`."""
 
@@ -295,7 +308,13 @@ def _redacted_doctor_summary(report: dict[str, Any]) -> dict[str, Any]:
         "unknown",
     )
     checks = report.get("checks")
-    counts = {"ok": 0, "warning": 0, "fail": 0, "skipped": 0, "unknown": 0}
+    provider_counts = {
+        "ok": 0,
+        "warning": 0,
+        "fail": 0,
+        "skipped": 0,
+        "unknown": 0,
+    }
     if isinstance(checks, dict):
         items = list(checks.items())
     elif isinstance(checks, list):
@@ -311,38 +330,74 @@ def _redacted_doctor_summary(report: dict[str, Any]) -> dict[str, Any]:
     else:
         items = []
     problems: list[dict[str, str]] = []
+    context_limited: list[dict[str, str]] = []
+    context_limited_counts = {
+        "ok": 0,
+        "warning": 0,
+        "fail": 0,
+        "skipped": 0,
+        "unknown": 0,
+    }
     for item_id, item in items:
         if not isinstance(item, dict):
-            counts["unknown"] += 1
+            provider_counts["unknown"] += 1
             continue
         raw_item_status = item.get("status")
         item_status = CODEX_DIAGNOSTIC_STATUS_ALIASES.get(
             raw_item_status if isinstance(raw_item_status, str) else None,
             "unknown",
         )
-        counts[item_status] += 1
+        provider_counts[item_status] += 1
+        safe_item_id = _safe_diagnostic_identifier(
+            item_id,
+            fallback="invalid-check",
+        )
+        context = CODEX_DIAGNOSTIC_CONTEXT_LIMITED_CHECKS.get(safe_item_id)
+        if context is not None and item_status in {"warning", "fail"}:
+            context_limited_counts[item_status] += 1
+            if len(context_limited) < CODEX_DIAGNOSTIC_PROBLEM_LIMIT:
+                context_limited.append(
+                    {
+                        "id": safe_item_id,
+                        "provider_status": item_status,
+                        "classification": context,
+                    }
+                )
+            continue
         if item_status in {"warning", "fail", "unknown"} and len(
             problems
         ) < CODEX_DIAGNOSTIC_PROBLEM_LIMIT:
             problems.append(
                 {
-                    "id": _safe_diagnostic_identifier(
-                        item_id,
-                        fallback="invalid-check",
-                    ),
+                    "id": safe_item_id,
                     "status": item_status,
                 }
             )
+    counts = dict(provider_counts)
+    for item_status in ("warning", "fail"):
+        counts[item_status] -= context_limited_counts[item_status]
+        counts["skipped"] += context_limited_counts[item_status]
+    effective_status = (
+        _effective_doctor_status(counts) if context_limited else status
+    )
     summary: dict[str, Any] = {
-        "doctor_status": status,
+        "doctor_status": effective_status,
+        "provider_doctor_status": status,
         "check_count": sum(counts.values()),
         "check_status_counts": counts,
+        "provider_check_status_counts": provider_counts,
         "problem_checks": problems,
         "problem_checks_truncated": max(
             sum(counts[key] for key in ("warning", "fail", "unknown"))
             - len(problems),
             0,
         ),
+        "context_limited_checks": context_limited,
+        "context_limited_checks_truncated": max(
+            sum(context_limited_counts.values()) - len(context_limited),
+            0,
+        ),
+        "context_limited_check_status_counts": context_limited_counts,
     }
     report_schema = report.get("schemaVersion")
     if isinstance(report_schema, int):
@@ -381,8 +436,8 @@ def _doctor_report_validation_reason(
         ):
             return "invalid_check_status"
 
-    doctor_status = summary["doctor_status"]
-    counts = summary["check_status_counts"]
+    doctor_status = summary["provider_doctor_status"]
+    counts = summary["provider_check_status_counts"]
     if doctor_status == "ok" and any(
         counts[key] for key in ("warning", "fail", "unknown")
     ):
@@ -396,6 +451,21 @@ def _doctor_report_validation_reason(
     ):
         return "inconsistent_overall_status"
     return None
+
+
+def _nonzero_exit_is_context_limited(summary: dict[str, Any]) -> bool:
+    context_limited = summary["context_limited_checks"]
+    if not context_limited or summary["provider_doctor_status"] != "fail":
+        return False
+    provider_counts = summary["provider_check_status_counts"]
+    context_failures = summary["context_limited_check_status_counts"]["fail"]
+    return (
+        context_failures > 0
+        and provider_counts["fail"] == context_failures
+        and provider_counts["unknown"] == 0
+        and summary["check_status_counts"]["fail"] == 0
+        and summary["check_status_counts"]["unknown"] == 0
+    )
 
 
 def diagnose_codex_host(
@@ -547,13 +617,24 @@ def diagnose_codex_host(
             **capture_metadata,
             **summary,
         }
-    return {
+    context_limited_exit = (
+        completed.returncode == 1
+        and _nonzero_exit_is_context_limited(summary)
+    )
+    result = {
         **base,
-        "status": "available" if completed.returncode == 0 else "nonzero_exit",
+        "status": (
+            "available"
+            if completed.returncode == 0 or context_limited_exit
+            else "nonzero_exit"
+        ),
         "exit_code": completed.returncode,
         **capture_metadata,
         **summary,
     }
+    if context_limited_exit:
+        result["exit_code_classification"] = "context_limited"
+    return result
 
 
 def codex_diagnostic_exit_code(result: dict[str, Any]) -> int:

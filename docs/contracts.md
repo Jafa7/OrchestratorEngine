@@ -133,6 +133,18 @@ still carry parsed, redacted findings, but the orchestrator command exits
 nonzero unless the adapter status, doctor status and normalized check summary
 are all healthy.
 
+The adapter deliberately runs without an interactive terminal. A provider
+finding whose exact check ID is `terminal.env` therefore cannot assess the
+user's live terminal and is reported in `context_limited_checks` with
+`classification: "noninteractive_probe"`. The original aggregate status and
+counts remain available as `provider_doctor_status` and
+`provider_check_status_counts`; the effective `doctor_status`, counts and
+`problem_checks` exclude only that known headless-only finding. When it fully
+explains the provider's diagnostic exit code `1`, `status` is `available` and
+`exit_code_classification` is `context_limited`, while the original
+`exit_code` is retained. Any other warning, failure or unknown check remains
+actionable and keeps the CLI exit nonzero.
+
 ### Platform runtime capabilities
 
 `runtime-capabilities` emits a bounded `ORCHESTRATOR_PLATFORM_CAPABILITIES`

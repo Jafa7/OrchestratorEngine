@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from orchestrator_engine import core, worker_diagnostics, workers
+from orchestrator_engine import core, worker_diagnostics, worker_lease, workers
 
 
 class WorkerAvailabilityTests(unittest.TestCase):
@@ -213,6 +213,18 @@ class WorkerAvailabilityTests(unittest.TestCase):
                     break
                 time.sleep(0.05)
             self.assertIn(descriptor["status"], core.TERMINAL_STATUSES)
+            lease = worker_lease.load_lease(
+                worker_lease.lease_path(Path(dispatched["task_dir"]))
+            )
+            self.assertIsNotNone(lease)
+            for _ in range(100):
+                supervisor = worker_lease.identity_state(
+                    lease.get("supervisor_identity")
+                )
+                if supervisor["state"] == "gone":
+                    break
+                time.sleep(0.05)
+            self.assertEqual(supervisor["state"], "gone")
 
 
 if __name__ == "__main__":
