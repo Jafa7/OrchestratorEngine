@@ -12,6 +12,11 @@ from jsonschema import Draft202012Validator, FormatChecker
 from referencing import Registry, Resource
 
 from orchestrator_engine import conformance, schemas
+from orchestrator_engine.metrics import contracts
+from orchestrator_engine.metrics.advisor import advise
+from orchestrator_engine.metrics.progress import build_progress_report
+from orchestrator_engine.metrics.reporting import build_report
+from orchestrator_engine.metrics.store import MetricsStore
 
 
 class SchemaContractTests(unittest.TestCase):
@@ -54,6 +59,79 @@ class SchemaContractTests(unittest.TestCase):
                     (root / f"{name}.json").read_text(encoding="utf-8")
                 )
                 self.assertEqual(list(self.validators[name].iter_errors(fixture)), [])
+
+    def test_guidance_fixture_matches_operation_only_semantics(self) -> None:
+        path = (
+            Path(__file__).parent
+            / "fixtures"
+            / "schemas"
+            / "valid"
+            / "metrics-guidance.json"
+        )
+        fixture = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(fixture["scope"], "operation_only")
+        self.assertEqual(fixture["next_action"], "handoff_operation_result")
+        self.assertEqual(fixture["reason"], "operation_evidence_complete")
+
+    def test_generated_metrics_report_and_guidance_match_public_schemas(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = MetricsStore(Path(temporary))
+            store.initialize()
+            source = store.register_source(
+                name="synthetic", source_type="fixture", capabilities=["execution"]
+            )["source"]
+            project_source = store.register_source(
+                name="project-plan",
+                source_type="project_scope",
+                authority="project_owner",
+                capabilities=["scope"],
+            )["source"]
+            store.ingest(
+                [
+                    contracts.make_observation(
+                        source_id=project_source["source_id"],
+                        record_type="scope_revision",
+                        data={
+                            "scope_revision_id": "scope-1",
+                            "revision_index": 1,
+                            "current": True,
+                        },
+                        observation_id="scope-revision",
+                        observed_at="2026-09-08T09:00:00Z",
+                    ),
+                    contracts.make_observation(
+                        source_id=project_source["source_id"],
+                        record_type="scope_item",
+                        data={
+                            "scope_revision_id": "scope-1",
+                            "work_item_id": "item-1",
+                            "criteria_revision": "criteria-1",
+                            "status": "planned",
+                        },
+                        observation_id="scope-item",
+                        observed_at="2026-09-08T09:00:00Z",
+                    ),
+                ]
+            )
+            report = build_report(store, evaluation_time="2026-09-08T10:00:00Z")
+            progress = build_progress_report(
+                store, evaluation_time="2026-09-08T10:00:00Z"
+            )
+            guidance = advise([], scope="operation_only")
+
+        self.assertEqual(
+            list(self.validators["metrics-source"].iter_errors(source)), []
+        )
+        self.assertEqual(
+            list(self.validators["metrics-report"].iter_errors(report)), []
+        )
+        self.assertEqual(
+            list(self.validators["metrics-guidance"].iter_errors(guidance)), []
+        )
+        self.assertEqual(
+            list(self.validators["metrics-progress"].iter_errors(progress)), []
+        )
 
     def test_invalid_fixtures_and_required_mutations_are_rejected(self) -> None:
         root = Path(__file__).parent / "fixtures" / "schemas"

@@ -26,6 +26,12 @@ relevant edits because they are quick and local. A required full gate is a
 final-candidate check: run it after implementation, documentation and focused
 regressions are complete, immediately before handoff, commit or release.
 
+An integration package contains all dependent slices for one finished user
+outcome or contract. Review its combined diff and complete all dependent work
+before the full gate; an individual worker slice is not package readiness.
+There is no slice-count or daily quota. Early focused verification of a
+completed critical foundation remains appropriate.
+
 Do not run the complete suite repeatedly between intermediate edits. If the
 final gate fails, inspect only the failing evidence, fix through focused
 checks, and run the complete gate again when the updated work is once more a
@@ -113,6 +119,19 @@ fails and the bounded evidence is not self-explanatory, a low-cost analysis
 worker may inspect only the failed-command logs and return a short triage
 handoff. The host agent remains responsible for validating that diagnosis and
 deciding the fix; worker output is evidence, not authority.
+
+The same rule applies inside a native subagent. Use `check plan` and
+`runtime-capabilities` to select a supported execution mode. If the
+implementation owner needs the result to continue debugging, disable wake
+delivery and use one bounded `operation wait` for that decision phase; the same
+owner processes the result. A subagent ends only at an explicit handoff where
+the parent accepts responsibility and terminal wake delivery is enabled. After
+the child returns, the parent records any `waiting_external` state and ends its
+own active turn before watcher delivery can resume it. Do not emulate waiting
+with repeated `status`, sleep or log-reading tool calls. A relay is allowed only
+as an explicit host fallback when neither direct parent waiting nor detached
+wake delivery supplies the required bounded bridge. See the
+[subagent execution policy](subagent-execution.md).
 
 For a GitHub Actions gate, use `ci watch` with the full expected commit SHA, or
 with an exact run ID when it is already known, instead of asking an agent to

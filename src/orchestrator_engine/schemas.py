@@ -50,6 +50,12 @@ SCHEMA_NAMES = (
     "task-resolution",
     "artifact-resolution",
     "conformance-report",
+    "metrics-source",
+    "metrics-observation",
+    "metrics-generation",
+    "metrics-report",
+    "metrics-guidance",
+    "metrics-progress",
 )
 KIND = "ORCHESTRATOR_SCHEMA_CATALOG"
 

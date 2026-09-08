@@ -28,6 +28,15 @@ It does not choose product requirements, replace the host agent, manage
 provider credentials or treat worker output as instructions. The core is a
 local, provider-neutral coordination and audit layer.
 
+An optional metrics layer can turn durable execution evidence into
+generation-pinned productivity reports and one advisory next action. It keeps
+unknown usage, partial coverage and real zero values distinct, never converts
+bytes to tokens, and does not change runtime policy. Project-owned scope
+revisions can also produce evidence-backed completion percentages, module
+breakdowns and deterministic P50/P80 effort ranges without inventing a
+calendar deadline. See
+[productivity metrics and process advisor](docs/metrics.md).
+
 The core loop is small: snapshot the dispatching chat, start a detached
 operation, write a terminal event on completion, and let a host adapter deliver
 a bounded pointer to the durable artifacts. Any supported host can coordinate
@@ -108,7 +117,7 @@ Install an immutable release, scaffold the project and bind the host chat:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.4.1"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.5.0"
 orchestrator-engine runtime-capabilities
 orchestrator-engine --project-root /path/to/project adopt --host HOST
 orchestrator-engine --project-root /path/to/project bind --host HOST
@@ -287,6 +296,13 @@ target project:
       full.log
       <command-label>.log
   check-history.json
+  metrics/                    # only after explicit `metrics init`
+    registry.json
+    current.json
+    objects/<prefix>/<sha256>.json
+    segments/<sha256>.json
+    generations/<sha256>.json
+    collectors/<source-id>.json
   monitors/
     github-actions/
       <monitor_id>/
@@ -525,6 +541,9 @@ Additional documentation:
 - [Host setup](docs/hosts.md)
 - [Codex in-turn continuation](docs/codex-in-turn-continuation.md)
 - [Worker behavior policies](docs/worker-policies.md)
+- [Accepted-plan execution and migration](docs/accepted-plan-execution.md)
+- [Productivity metrics and process advisor](docs/metrics.md)
+- [Subagent execution policy](docs/subagent-execution.md)
 - [Adopter upgrade checklist](docs/adopter-upgrade-checklist.md)
 - [Reliability and upgrade validation](docs/reliability-validation.md)
 - [Version 1 readiness](docs/v1-readiness.md)

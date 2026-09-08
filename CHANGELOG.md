@@ -4,6 +4,84 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-08
+
+### Accepted-plan execution
+
+- New workstreams default to unlimited continuations and total wall time.
+  Explicit positive limits remain supported without the former fixed ceilings;
+  existing numeric descriptors retain their semantics.
+- Added atomic, revision-checked `workstream set-policy` updates with audit
+  history, preserving identity and pending state without new wakeups or resume.
+- Removed preset soft token budgets from example AI profiles while retaining
+  optional diagnostics and actual usage telemetry.
+- Clarified integration-package full-gate readiness and resource-specific
+  concurrency; added a non-AI availability-wait example using existing worker
+  supervision, cancellation and terminal delivery.
+
+### Added
+
+- Added a provider-neutral subagent execution policy covering implementation,
+  review, diagnosis and relay ownership, deterministic test waiting, explicit
+  parent handoff and timeout recovery.
+- Added an opt-in, standard-library metrics subsystem with explicit source
+  registration, immutable content-addressed generations, bounded import,
+  generation-pinned JSON/Markdown reports, eleven versioned metric definitions
+  and deterministic advisory-only process guidance.
+- Added read-only adapters for worker, local-check, workstream, terminal-event,
+  delivery, acknowledgement and provider-aware usage evidence plus an explicit
+  synthetic scale benchmark.
+- Added project-owned scope revision and scope item observations plus a
+  generation-pinned `metrics progress` report. It separates baseline and
+  current completion, scope growth, module status and deterministic P50/P80
+  equivalent-effort forecasts from calendar promises.
+
+### Changed
+
+- Updated the bundled `quality-efficient` policy to revision 4. Check planning
+  and runtime capability select execution mechanics independently from
+  ownership; long checks use one bounded wait per decision phase or one
+  explicit parent wakeup instead of model polling.
+- Bound metrics sources to explicit adapter, authority, identity, observation
+  and capability semantics; guidance now carries a content-bound snapshot ID,
+  and every metric family distinguishes calculated, evidence-view and external
+  integration fields.
+- Scoped native metric identities to their registered source while permitting
+  explicitly namespaced canonical identities for intentional cross-source
+  mirrors. Operation-only guidance no longer invents package final gates, and
+  resolved or superseded historical failures no longer contradict current
+  readiness.
+- Made adapter collection resumable across bounded pages and represented
+  mutable runtime artifacts as immutable snapshots with stable logical IDs.
+- Bound package readiness, final-gate acceptance and failure dispositions to
+  registered project-owner sources, required complete obligation manifests,
+  and kept incomplete operation outcomes from being handed off as complete.
+- Bound scope acceptance to exact scope and criteria revisions, kept carryover
+  explicit, and based effort scenarios on paired total-cycle samples.
+- Distinguished full metric snapshots from explicit complements, pinned
+  advisor decisions to knowledge/effective-time cutoffs, and based current
+  operation state on the latest applicable attempt.
+
+### Fixed
+
+- Rejected conflicting duplicate observation IDs within one import batch.
+- Ordered metrics state by absolute timestamps and namespaced usage, shared
+  cost and parent-execution identities by source.
+- Evaluated open-work age at the report's pinned evaluation time and corrected
+  the scale benchmark's logical-attempt cardinality.
+- Prevented revoked acceptance evidence, old-candidate obligations, ambiguous
+  owner bindings and reused completion cycles from proving current readiness or
+  inflating forecast history.
+- Prevented newer incomplete package bindings from falling back to stale ready
+  bindings, and ordered retries by explicit sequence or attempt applicability
+  rather than delayed knowledge time.
+- Kept native operation IDs scoped by source and runtime kind, preventing
+  unrelated workers and checks from merging when their text IDs match.
+- Preserved terminal-event operation linkage through delivery receipts and
+  acknowledgements, including bounded adapter cursor pages.
+- Prevented canonical metric complements from transferring project-owner
+  authority to acceptance or final-gate fields asserted by another source.
+
 ## [1.4.1] - 2026-09-06
 
 ### Fixed

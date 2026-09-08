@@ -50,14 +50,19 @@ and artifact paths, never command output or log tails. Interactive wait output
 uses one compact colored line and an optional terminal bell, matching `worker
 wait` behavior.
 
-This command is complementary to watcher delivery. For short waits inside an
-active turn, one blocking wait avoids model polling and preserves the current
-agent context. Dispatch those operations with `--wake-policy never`. For long
-work, enable `always`, `on-failure` or the operation's equivalent policy, end
-the turn, and let the host-specific watcher wake the dispatching chat after
-terminal evidence is written. Do not use both routes for the same operation:
-the watcher may queue its message while the blocking wait is already handling
-the result.
+This command is complementary to watcher delivery. Duration alone does not
+choose the completion route. When the same implementation owner needs the
+result to continue debugging and the host supports a suitable bounded wait,
+one blocking wait avoids model polling and preserves that context. Dispatch
+the operation with `--wake-policy never`. At an explicit parent-handoff
+boundary where the parent must inspect either outcome, enable `always` or an
+equivalent aggregate policy that emits one terminal wake for success and
+failure, record the operation identity and end the active host turn.
+`on-failure` is valid only when success requires no parent continuation. Do not use both
+routes for the same operation: the watcher may queue its message while the
+blocking wait is already handling the result. Use `check plan` and
+`runtime-capabilities` separately to select supported foreground or detached
+execution.
 
 The bounded status object includes `wakeup_enabled_targets` and
 `duplicate_followup_risk`. These are diagnostics, not delivery controls: a

@@ -58,7 +58,7 @@ For a reproducible adopter install, use an immutable release tag:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.4.1"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.5.0"
 ```
 
 GitHub Release archives and wheel/sdist assets are published with the tag;
@@ -112,6 +112,12 @@ If `orchestrator-engine` is not on PATH, use `python3 -m orchestrator_engine.cli
 everywhere below — but prefer a real install: the worker supervisor re-executes
 the module with the same interpreter and must be able to import it without a
 manually exported `PYTHONPATH`.
+
+Metrics are optional and should not be initialized during basic adoption. If
+the project owner explicitly wants local productivity measurement, complete the
+runtime setup first and then follow [productivity metrics and process
+advisor](metrics.md). Register only authorized sources and keep
+`.orchestrator/metrics/` private with the rest of runtime state.
 
 ## Step 2 — Adopt the project layout
 
@@ -670,7 +676,7 @@ delivery receipt has `status: "queued"`, `delivery_mode: "session_queue"` and
 agent turn. Older Codex CLIs fall back to durable headless history delivery;
 upgrade the CLI for live delivery. Do not keep an app-level Goal active while
 waiting for this delivery: the Goal can retain the current turn and prevent
-the queued message from becoming the next turn. Use a bounded workstream and
+the queued message from becoming the next turn. Use a durable workstream and
 end the turn instead.
 
 ### Host claude — stream watch, no service
@@ -841,6 +847,8 @@ To delegate a task to a CLI worker:
    waiting offers a materially better blocking window, and keep the parent in
    one native wait until the relay returns. A relay must not edit, test, review
    or poll repeatedly. See [Codex in-turn continuation](codex-in-turn-continuation.md).
+   Implementation, review, diagnosis and relay roles have different ownership
+   and waiting rules; see the [subagent execution policy](subagent-execution.md).
    For parallel workers, repeat `--task-id` and use `--mode all` to wait for the
    full set or `--mode any` to return on the first terminal result.
    For a mixed set of workers, local checks, CI monitors and PR monitors, use

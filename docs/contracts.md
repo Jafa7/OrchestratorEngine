@@ -1194,7 +1194,7 @@ verification result under `.orchestrator/checks/<monitor_id>/`. The terminal
 event uses `source_kind: github_pull_request` and the dispatch-time wake target
 snapshot, so rebinding a project later does not reroute this result.
 
-## Bounded workstream checkpoints
+## Workstream checkpoints with optional limits
 
 Path:
 
@@ -1203,8 +1203,11 @@ Path:
 - `.orchestrator/workstreams/<workstream_id>/artifacts/results/<checkpoint_id>.json`
 - `.orchestrator/workstreams/<workstream_id>/artifacts/evidence/<checkpoint_id>.json`
 
-`workstream start` snapshots the active host binding and sets explicit limits
-for automatic continuations. `workstream checkpoint` records one of
+`workstream start` snapshots the active host binding. New workstreams default
+to JSON null for `max_continuations` and `max_wall_seconds` (unlimited);
+`--unlimited` makes that choice explicit. Positive owner-selected limits have
+no arbitrary upper ceiling. Existing numeric descriptors keep their semantics.
+`workstream checkpoint` records one of
 `continue`, `waiting_external`, `needs_user`, `blocked`, `complete` or
 `paused`. Only `continue` can emit a generic follow-up signal, and it requires
 both a concrete `next_action` and the explicit `ready` declaration.
@@ -1226,13 +1229,18 @@ continuation operation identities use the unambiguous
 `workstream:<workstream_id>:<checkpoint_id>` form; legacy events remain
 readable. Generated result and evidence files live outside the checkpoint
 namespace; legacy colocated artifacts remain readable during reconciliation.
-Every mutating workstream command reconciles interrupted transitions under the
-same per-workstream lock before accepting a new transition. Reconciliation
-isolates an invalid workstream and continues processing other workstreams.
+Checkpoint/resume commands reconcile interrupted transitions under the
+same per-workstream lock before accepting a new transition. `set-policy` only
+atomically updates selected limits and appends `policy_history` with a monotonic
+`policy_revision`; it never reconciles, emits a wakeup or resumes work. Optional
+`--expected-revision` rejects stale edits; absent legacy revision means zero.
+Identity, checkpoints, counters, waiting operation and active event are retained.
+Reconciliation isolates an invalid workstream and continues processing other workstreams.
 
-Automatic continuation stops closed when either the shared automatic-resume
-count or wall-time limit is reached. Both `continue` and `waiting_external`
-consume that budget, and wall-time is checked again before timer delivery.
+Automatic continuation stops closed when an explicitly selected automatic-resume
+count or wall-time limit is reached. Null limits never expire. Both `continue`
+and `waiting_external` consume that budget, and wall-time is checked again
+before timer delivery.
 `waiting_on` is a bounded audit identity, not proof that an operation exists or
 has a working wake channel. Stopped states require explicit `workstream
 resume`; `complete` is irreversible. No checkpoint authorizes commit, push,
@@ -1884,3 +1892,107 @@ log files older than a retention window, and compacts `watcher-service.log`
 once it exceeds a size limit. It never removes `events/<event_id>.json` or
 `inbox/signals/<event_id>.json`: those are the durable audit trail. A project
 that wants to retire old terminal events and signals must do so itself.
+
+## Optional metrics contracts
+
+The opt-in metrics subsystem packages six schema-version-1 public contracts:
+`metrics-source`, `metrics-observation`, `metrics-generation`,
+`metrics-report`, `metrics-guidance` and `metrics-progress`. They are available
+through the normal `schemas` command and described in [productivity metrics and process
+advisor](metrics.md).
+
+Metrics state is a derived local evidence store, not an authority over worker,
+check, watcher, workstream, CI or PR state. No existing finalization path imports
+the metrics package. Source registration is explicit; disabled or unknown
+sources cannot ingest observations. A duplicate observation ID is idempotent
+only when its normalized content is identical, including duplicates presented
+inside one import batch. Conflicting duplicates reject the complete batch.
+
+Each source declares its stable UUID, adapter version, authority, identity
+mapping, immutable/snapshot semantics and a capability inventory. Capability
+rows bind status, units, counter semantics, precision, clock, freshness,
+permissions and bounded collection overhead; their names must exactly match the
+source's capability list.
+Full snapshots replace prior data for one logical identity. A source declared
+as `mixed` must mark intentionally additive records with
+`data.observation_mode = complement|partial_update`; otherwise replacement is
+the fail-closed default. Evidence cannot survive silently after a later full
+snapshot omits it.
+
+Generation selection is an atomic pointer to an immutable content-addressed
+closure. Normal readers fail closed on missing or hash-mismatched objects and
+never select an older generation silently. Recovery is an explicit operator
+command and does not delete source evidence or orphaned metric objects.
+
+An observation records separate observed, effective and known timestamps plus
+an explicit scope object. Reports apply both event and knowledge cutoffs and pin
+the source registry and formula catalog digests. Availability, evidence class,
+coverage and value state are separate fields; a partial or unavailable
+provider-usage record cannot become a measured zero.
+
+Native observation identity is namespaced by registered source UUID. Two
+providers may therefore use the same native execution ID without being merged.
+Within one source, adapters use `execution_kind` and `operation_kind` when
+different runtime domains can reuse the same text ID. The built-in adapter uses
+`worker` and `local_check` kinds so their attempts remain distinct while worker
+result and usage complements share one identity.
+An adapter may intentionally merge mirrors only by supplying a
+`canonical_identity` object with explicit `namespace` and `id` values and by
+registering each participating source with
+`identity_mapping = canonical_identity_authorized`.
+Canonical mapping proves identity equivalence but never delegates authority.
+Advisor reduction keeps source envelopes separate for authority-bearing fields;
+a project-owner usage complement cannot inherit worker-supplied acceptance or
+final-gate claims.
+The built-in runtime adapter also separates immutable observation snapshot IDs
+from stable logical operation IDs. Its source-specific cursor advances only
+after successful ingestion, visits bounded pages and restarts a traversal after
+the final page so later mutable snapshots are observed.
+
+`metrics-progress` selects project-owned `scope_revision` and `scope_item`
+observations from a source whose authority is exactly `project_owner`.
+Acceptance contributes to progress only when the latest project-owned
+acceptance observation says `accepted: true`, references evidence and exactly
+matches the scope item's `scope_revision_id` and `criteria_revision`.
+Conflicting current owner observations fail closed. Carryover requires a new
+acceptance for the current applicability; `carried_from_scope_revision_id` is
+optional provenance and carryover is not treated as a fresh duration sample. The
+report keeps baseline and current denominators, scope changes, uniform versus
+owner-supplied weights and module status visible. Its P50/P80 forecast is a
+deterministic sequential-equivalent scenario from paired total-cycle samples
+of comparable completed items. It is not a statistical project-duration
+quantile or deadline and does not produce a calendar date without a separate
+project scheduling policy.
+Forecast history additionally requires a project-stable `completion_cycle_id`.
+Repeated acceptance of the same completion cycle across revisions contributes
+one sample; missing or conflicting cycle identity contributes none.
+
+Guidance has `authority: advisory_only` and a content-bound snapshot ID. It
+proposes one next action, preserves the complete project-owner obligation
+manifest and cannot
+alter project verification, permissions, publication authority or completion
+routing. Package bindings, final-gate acceptance and failure dispositions count
+only from registry-declared `project_owner` sources; payload claims cannot grant
+that authority. The advisor selects the newest owner package binding before
+validating its completeness; it never falls back from a newer incomplete
+binding to an older ready one. Queued, pending, unknown and cancelled
+operations are never handed off as completed, and only the latest applicable
+attempt defines current operation state. Operation grouping retains source and
+operation-kind identity
+unless an authorized canonical mapping explicitly joins sources. Producers may
+publish a positive `attempt_sequence`; otherwise attempt applicability is
+ordered by `started_at` and then `effective_at`, with mixed or tied evidence
+treated as ambiguous. `known_at` orders corrections to one stable attempt, not
+distinct retries. Historical final-gate success remains visible but only the
+current applicable attempt can authorize publication. Obligations must repeat
+the current requirement-set,
+candidate, check-plan and policy applicability; old-candidate completion stays
+historical. Guidance applies both known/effective cutoffs at its pinned `as_of`
+time, and publication eligibility fails closed while applicable work or source
+readiness remains incomplete. Advisor failure returns the ordinary-project-policy
+fallback and never creates a waiting state.
+
+Delivery observations retain the terminal event's operation ID and kind across
+queued, delivered and acknowledged phases. When a legacy receipt omits this
+link, the built-in adapter resolves it from the durable event, including across
+bounded cursor pages, before operation filtering is applied.

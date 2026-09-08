@@ -158,7 +158,7 @@ class WorkerPolicyTests(unittest.TestCase):
             review_content = review_output.read_text(encoding="utf-8")
 
         self.assertEqual(first["kind"], worker_policy.POLICY_EXPORT_KIND)
-        self.assertEqual(first["revision"], 3)
+        self.assertEqual(first["revision"], 4)
         self.assertEqual(first["sha256"], replaced["sha256"])
         self.assertEqual(exported_content, worker_policy.QUALITY_EFFICIENT_POLICY)
         self.assertEqual(review["revision"], 1)

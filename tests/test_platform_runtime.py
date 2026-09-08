@@ -35,6 +35,19 @@ class PlatformRuntimeTests(unittest.TestCase):
             with platform_runtime.exclusive_file_lock(path):
                 self.assertEqual(path.stat().st_size, 1)
 
+    def test_exclusive_file_lock_has_an_explicit_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "operation.lock"
+            with (
+                mock.patch.object(platform_runtime, "_try_lock", return_value=False),
+                self.assertRaisesRegex(
+                    platform_runtime.PlatformRuntimeError,
+                    "timed out acquiring advisory lock",
+                ),
+                platform_runtime.exclusive_file_lock(path, timeout_seconds=0),
+            ):
+                self.fail("unreachable")
+
     def test_detached_requirement_fails_closed_when_unsupported(self) -> None:
         with (
             mock.patch.object(

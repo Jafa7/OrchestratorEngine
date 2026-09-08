@@ -145,6 +145,149 @@ def build_parser() -> argparse.ArgumentParser:
     )
     schema_parser.add_argument("name", nargs="?", choices=schemas.SCHEMA_NAMES)
 
+    metrics = subparsers.add_parser(
+        "metrics",
+        help="Collect and inspect opt-in, generation-pinned productivity metrics.",
+    )
+    metrics_subparsers = metrics.add_subparsers(dest="metrics_command", required=True)
+    metrics_subparsers.add_parser("init", help="Initialize the local metrics store.")
+    metrics_sources = metrics_subparsers.add_parser(
+        "sources", help="List or register explicit metrics sources."
+    )
+    metrics_sources_subparsers = metrics_sources.add_subparsers(
+        dest="metrics_sources_command", required=True
+    )
+    metrics_sources_subparsers.add_parser("list", help="List registered sources.")
+    metrics_source_enabled = metrics_sources_subparsers.add_parser(
+        "set-enabled", help="Enable or disable a registered source in a new generation."
+    )
+    metrics_source_enabled.add_argument("--source", required=True)
+    metrics_source_enabled_state = metrics_source_enabled.add_mutually_exclusive_group(
+        required=True
+    )
+    metrics_source_enabled_state.add_argument(
+        "--enabled", action="store_true", dest="enabled"
+    )
+    metrics_source_enabled_state.add_argument(
+        "--disabled", action="store_false", dest="enabled"
+    )
+    metrics_source_register = metrics_sources_subparsers.add_parser(
+        "register", help="Register one source without collecting data."
+    )
+    metrics_source_register.add_argument("--name", required=True)
+    metrics_source_register.add_argument("--type", required=True)
+    metrics_source_register.add_argument("--source-id")
+    metrics_source_register.add_argument("--scope", default="project")
+    metrics_source_register.add_argument("--disabled", action="store_true")
+    metrics_source_register.add_argument("--capability", action="append", default=[])
+    metrics_source_register.add_argument("--capability-inventory", type=Path)
+    metrics_source_register.add_argument("--adapter-version", default="unspecified")
+    metrics_source_register.add_argument("--authority", default="source_asserted")
+    metrics_source_register.add_argument(
+        "--identity-mapping", default="explicit_native_identity"
+    )
+    metrics_source_register.add_argument(
+        "--observation-semantics",
+        choices=["immutable_events", "mutable_snapshots", "mixed"],
+        default="mixed",
+    )
+    metrics_record = metrics_subparsers.add_parser(
+        "record", help="Record one bounded generic observation."
+    )
+    metrics_record.add_argument("--source", required=True)
+    metrics_record.add_argument(
+        "--record-type",
+        required=True,
+        choices=[
+            "source_capability",
+            "execution_attempt",
+            "work_item",
+            "classification",
+            "acceptance",
+            "quota_sample",
+            "delivery",
+            "obligation",
+            "report_snapshot",
+            "scope_revision",
+            "scope_item",
+        ],
+    )
+    metrics_record.add_argument("--data", required=True)
+    metrics_record.add_argument("--scope", default="{}")
+    metrics_record.add_argument("--observed-at")
+    metrics_record.add_argument("--effective-at")
+    metrics_record.add_argument("--known-at")
+    metrics_record.add_argument("--observation-id")
+    metrics_ingest = metrics_subparsers.add_parser(
+        "ingest", help="Import at most 1000 JSON or JSONL observations."
+    )
+    metrics_ingest.add_argument("--input", type=Path, required=True)
+    metrics_collect = metrics_subparsers.add_parser(
+        "collect", help="Read bounded OrchestratorEngine evidence into metrics."
+    )
+    metrics_collect.add_argument("--source", required=True)
+    metrics_collect.add_argument("--maximum", type=int, default=1000)
+    metrics_collect.add_argument("--dry-run", action="store_true")
+    metrics_report = metrics_subparsers.add_parser(
+        "report", help="Build one generation-pinned semantic report."
+    )
+    metrics_report.add_argument("--generation")
+    metrics_report.add_argument("--evaluation-time")
+    metrics_report.add_argument("--package-id")
+    metrics_report.add_argument("--operation-id")
+    metrics_report.add_argument(
+        "--format", choices=["json", "markdown"], default="json"
+    )
+    metrics_report.add_argument("--output", type=Path)
+    metrics_progress = metrics_subparsers.add_parser(
+        "progress",
+        help="Report project-owned scope progress and effort ranges.",
+    )
+    metrics_progress.add_argument("--generation")
+    metrics_progress.add_argument("--evaluation-time")
+    metrics_progress.add_argument("--baseline-revision")
+    metrics_progress.add_argument("--current-revision")
+    metrics_progress.add_argument("--module-id")
+    metrics_progress.add_argument("--minimum-samples", type=int, default=5)
+    metrics_progress.add_argument(
+        "--format", choices=["json", "markdown"], default="json"
+    )
+    metrics_progress.add_argument("--output", type=Path)
+    metrics_explain = metrics_subparsers.add_parser(
+        "explain", help="Print metric definitions and limitations."
+    )
+    metrics_explain.add_argument(
+        "metric_id",
+        nargs="?",
+        choices=[f"MET-{index:03d}" for index in range(1, 12)],
+    )
+    metrics_compare = metrics_subparsers.add_parser(
+        "compare", help="Compare two immutable generations."
+    )
+    metrics_compare.add_argument("--baseline", required=True)
+    metrics_compare.add_argument("--candidate", required=True)
+    metrics_advise = metrics_subparsers.add_parser(
+        "advise", help="Return one deterministic advisory next action."
+    )
+    metrics_advise.add_argument(
+        "--scope", choices=["package", "operation_only"], required=True
+    )
+    metrics_advise.add_argument("--package-id")
+    metrics_advise.add_argument("--operation-id")
+    metrics_advise.add_argument("--evaluation-time")
+    metrics_advise.add_argument("--format", choices=["json", "text"], default="json")
+    metrics_subparsers.add_parser("doctor", help="Verify the selected generation.")
+    metrics_migrate = metrics_subparsers.add_parser(
+        "migrate", help="Inspect schema status or explicitly recover the selector."
+    )
+    metrics_migrate.add_argument("--recover", action="store_true")
+    metrics_export = metrics_subparsers.add_parser(
+        "export", help="Export one immutable generation as bounded JSON."
+    )
+    metrics_export.add_argument("--generation")
+    metrics_export.add_argument("--maximum", type=int, default=1000)
+    metrics_export.add_argument("--output", type=Path)
+
     doctor = subparsers.add_parser(
         "doctor",
         help="Run read-only project health diagnostics.",
@@ -728,17 +871,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     workstream = subparsers.add_parser(
         "workstream",
-        help="Record bounded agent continuation checkpoints.",
+        help="Record agent continuation checkpoints with optional limits.",
     )
     workstream_subparsers = workstream.add_subparsers(
         dest="workstream_command", required=True
     )
     workstream_start = workstream_subparsers.add_parser(
         "start",
-        help="Start a bounded workstream and snapshot the current host target.",
+        help="Start a workstream and snapshot the current host target.",
     )
     workstream_start.add_argument("--workstream-id", required=True)
     workstream_start.add_argument("--goal", required=True)
+    workstream_start.add_argument(
+        "--unlimited", action="store_true",
+        help="Explicitly select no continuation or wall-time limit (the default).",
+    )
     workstream_start.add_argument(
         "--delay-seconds",
         type=float,
@@ -787,6 +934,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicitly return a non-complete workstream to active state.",
     )
     workstream_resume.add_argument("--workstream-id", required=True)
+    workstream_policy = workstream_subparsers.add_parser(
+        "set-policy", help="Change limits atomically without resuming or waking work."
+    )
+    workstream_policy.add_argument("--workstream-id", required=True)
+    workstream_policy.add_argument("--reason", required=True)
+    workstream_policy.add_argument("--expected-revision", type=int)
+    workstream_policy.add_argument("--unlimited", action="store_true")
+    for field, disable_flag in (
+        ("max_continuations", "--no-continuation-limit"),
+        ("max_wall_seconds", "--no-wall-time-limit"),
+    ):
+        group = workstream_policy.add_mutually_exclusive_group()
+        group.add_argument(
+            "--" + field.replace("_", "-"), type=int, default=argparse.SUPPRESS
+        )
+        group.add_argument(
+            disable_flag, dest=field, action="store_const", const=None,
+            default=argparse.SUPPRESS,
+        )
 
     ci = subparsers.add_parser(
         "ci",
@@ -1085,6 +1251,20 @@ def main(argv: list[str] | None = None) -> int:
             print_json(
                 schemas.catalog() if args.name is None else schemas.load(args.name)
             )
+        elif args.command == "metrics":
+            if len(roots) != 1:
+                raise core.OrchestratorError(
+                    "metrics commands require exactly one project root"
+                )
+            # Metrics is opt-in and must not increase imports or failure surface for
+            # normal worker, check, watcher and status commands.
+            from .metrics import cli as metrics_cli
+
+            output = metrics_cli.run(args, roots[0], state_dir=args.state_dir)
+            if isinstance(output, str):
+                print(output, end="")
+            else:
+                print_json(output)
         elif args.command == "cleanup":
             if len(roots) != 1:
                 raise core.OrchestratorError(
@@ -1328,6 +1508,12 @@ def run_bind_command(args: argparse.Namespace, root: Path) -> object:
 
 def run_workstream_command(args: argparse.Namespace, root: Path) -> object:
     if args.workstream_command == "start":
+        if args.unlimited and (
+            args.max_continuations is not None or args.max_wall_seconds is not None
+        ):
+            raise workstreams.WorkstreamError(
+                "--unlimited conflicts with explicit limits"
+            )
         return workstreams.start_workstream(
             root,
             workstream_id=args.workstream_id,
@@ -1336,6 +1522,26 @@ def run_workstream_command(args: argparse.Namespace, root: Path) -> object:
             delay_seconds=args.delay_seconds,
             max_continuations=args.max_continuations,
             max_wall_seconds=args.max_wall_seconds,
+        )
+    if args.workstream_command == "set-policy":
+        limits = {
+            field: getattr(args, field)
+            for field in ("max_continuations", "max_wall_seconds")
+            if hasattr(args, field)
+        }
+        if args.unlimited:
+            if limits:
+                raise workstreams.WorkstreamError(
+                    "--unlimited conflicts with limit options"
+                )
+            limits = {"max_continuations": None, "max_wall_seconds": None}
+        return workstreams.set_workstream_policy(
+            root,
+            workstream_id=args.workstream_id,
+            limits=limits,
+            reason=args.reason,
+            expected_revision=args.expected_revision,
+            state_dir=args.state_dir,
         )
     if args.workstream_command == "checkpoint":
         return workstreams.checkpoint_workstream(

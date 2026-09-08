@@ -21,8 +21,15 @@ class AdoptionTests(unittest.TestCase):
         policy = " ".join(worker_policy.QUALITY_EFFICIENT_POLICY.split())
 
         self.assertIn("implementation worker owns verification", policy)
-        self.assertIn("one blocking deterministic check-runner call", policy)
-        self.assertIn("requires no model polling", policy)
+        self.assertIn("check plan and runtime capabilities", policy)
+        self.assertIn("same owner must inspect the result", policy)
+        self.assertIn("one bounded wait for that decision phase", policy)
+        self.assertIn("Execution duration does not transfer ownership", policy)
+        self.assertIn("only through an explicit handoff", policy)
+        self.assertIn("end its own active turn", policy)
+        self.assertIn("Never monitor a check through repeated status", policy)
+        self.assertIn("still active, not failed", policy)
+        self.assertIn("cannot provide the required bounded bridge", policy)
         self.assertIn("not as a test-process monitor", policy)
 
     def test_adopt_creates_state_layout_when_absent(self) -> None:

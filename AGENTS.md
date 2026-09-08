@@ -28,7 +28,7 @@ documented contracts.
 - Do not create or keep an app-level Goal active for work that depends on an
   OrchestratorEngine watcher wakeup. A Goal can keep the current host turn open
   and leave queued completion messages unable to become the next turn. Use a
-  bounded `workstream`, record `waiting_external` for a named worker/check/CI
+  durable `workstream`, record `waiting_external` for a named worker/check/CI
   operation, and end the turn so the watcher can resume the chat. Use an
   in-turn deterministic wait only when deliberately choosing not to use the
   watcher delivery path.
@@ -68,6 +68,23 @@ expectations. For long checks, prefer the detached verification flow in
 open detailed logs only after a failure. If a dependency is unavailable,
 report the blocker and run the checks that are available.
 
+Workers and subagents must not monitor tests or other long commands through
+repeated status calls, sleeps or log reads. A known short check may use one
+foreground blocking tool call. Use `check plan` and `runtime-capabilities` to
+select supported foreground or detached execution. When the same implementation
+owner must inspect the result and continue debugging, disable wake delivery and
+use one bounded wait for that decision phase. Execution duration does not
+transfer ownership. A subagent may end after dispatch only through an explicit
+handoff that names the operation and enables one terminal wakeup for both
+success and failure whenever either outcome requires parent continuation.
+`on-failure` is valid only when success needs no parent action. After the
+child returns, the parent must record any `waiting_external` state and end its
+own active turn so queued delivery can resume it. A pending required check is
+not completed work. Never start another AI agent merely to poll the check. A
+relay is allowed only as an explicit host fallback when direct parent waiting
+and detached wake delivery cannot provide the required bounded bridge. See
+`docs/subagent-execution.md`.
+
 Choose exactly one completion route for each operation. For long work, enable
 its wake policy and end the turn so the watcher can resume the chat. For a
 bounded in-turn wait, dispatch with `--wake-policy never` and use one
@@ -79,3 +96,24 @@ stage that actually hands control back to the chat may emit one.
 If a final full gate fails, inspect the failed check, fix with focused tests,
 and run the full gate again only when a new final candidate is ready. Do not
 run the complete suite after every intermediate edit.
+
+## Accepted-plan execution
+
+New workstreams have no continuation-count or total wall-time ceiling unless
+the owner explicitly chooses limits. Keep old explicit limits until an
+authorized policy update; never edit live descriptors by hand. There is no
+daily slice quota or mandatory task token budget.
+
+An integration package includes all dependent slices needed for one finished
+user outcome or contract. Complete the package and review the combined diff
+before its full gate. A worker slice alone does not establish that readiness.
+Use focused checks during implementation, including completed critical
+foundations; after a failed full gate, return to focused fixes until the next
+finished candidate.
+
+Independent tasks may run concurrently. Serialize operations that mutate the
+same database, document or overlapping files; use isolated worktrees and
+existing project/resource locks where appropriate. Do not impose a global
+worker count merely to serialize one shared resource. Quota exhaustion preserves
+unfinished work and its next action; use non-AI availability monitoring with
+backoff and one terminal wakeup instead of repeated model calls.

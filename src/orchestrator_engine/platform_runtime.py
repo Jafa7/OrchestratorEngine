@@ -6,6 +6,7 @@ import contextlib
 import os
 import platform
 import sys
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import BinaryIO
@@ -43,6 +44,22 @@ def _unlock(handle: BinaryIO) -> None:
     import fcntl
 
     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _try_lock(handle: BinaryIO) -> bool:
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
 
 
 def _windows_process_alive(pid: int) -> bool:
@@ -102,7 +119,11 @@ def process_alive(pid: int) -> bool:
 
 
 @contextlib.contextmanager
-def exclusive_file_lock(path: Path) -> Iterator[None]:
+def exclusive_file_lock(
+    path: Path,
+    *,
+    timeout_seconds: float | None = None,
+) -> Iterator[None]:
     """Hold one blocking, process-wide advisory lock for ``path``."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -112,12 +133,23 @@ def exclusive_file_lock(path: Path) -> Iterator[None]:
             handle.write(b"\0")
             handle.flush()
             os.fsync(handle.fileno())
-        try:
-            _lock(handle)
-        except OSError as error:
-            raise PlatformRuntimeError(
-                f"could not acquire advisory lock: {path}"
-            ) from error
+        if timeout_seconds is None:
+            try:
+                _lock(handle)
+            except OSError as error:
+                raise PlatformRuntimeError(
+                    f"could not acquire advisory lock: {path}"
+                ) from error
+        else:
+            if timeout_seconds < 0:
+                raise ValueError("timeout_seconds must be non-negative")
+            deadline = time.monotonic() + timeout_seconds
+            while not _try_lock(handle):
+                if time.monotonic() >= deadline:
+                    raise PlatformRuntimeError(
+                        f"timed out acquiring advisory lock: {path}"
+                    )
+                time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
         try:
             yield
         finally:

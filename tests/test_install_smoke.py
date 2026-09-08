@@ -105,6 +105,22 @@ class InstallSmokeTests(unittest.TestCase):
                 timeout=30,
                 env=env,
             ).stdout
+            metrics_record_help = subprocess.run(
+                [str(cli), "metrics", "record", "--help"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+            ).stdout
+            metrics_progress_help = subprocess.run(
+                [str(cli), "metrics", "progress", "--help"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+            ).stdout
             host_capabilities = self.run_cli(cli, project, "host-capabilities")
             runtime_capabilities = self.run_cli(
                 cli, project, "runtime-capabilities"
@@ -788,6 +804,12 @@ class InstallSmokeTests(unittest.TestCase):
         )
         self.assertEqual(operation_status["successful_count"], 2)
         self.assertIn("--codex-command", codex_diagnose_help)
+        self.assertIn("--effective-at", metrics_record_help)
+        self.assertIn("--known-at", metrics_record_help)
+        self.assertIn("--scope", metrics_record_help)
+        self.assertIn("--baseline-revision", metrics_progress_help)
+        self.assertIn("--current-revision", metrics_progress_help)
+        self.assertIn("--minimum-samples", metrics_progress_help)
         self.assertEqual(
             smoke_evidence["worker_policy"]["name"],
             "quality-efficient",

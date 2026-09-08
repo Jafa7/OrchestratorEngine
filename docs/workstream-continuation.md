@@ -1,8 +1,8 @@
-# Bounded workstream continuation
+# Workstream continuation
 
 OrchestratorEngine can return an agent to an already accepted body of work,
-but continuation is always explicit, bounded and auditable. The watcher is
-only the delivery transport. It does not interpret roadmaps, choose product
+with explicit, auditable continuation and owner-selected optional limits. The
+watcher is only the delivery transport. It does not interpret roadmaps, choose product
 work or infer intent from an agent turn ending.
 
 ## Contract
@@ -14,8 +14,7 @@ orchestrator-engine --project-root /path/to/project workstream start \
   --workstream-id ROADMAP-1 \
   --goal "Complete the accepted roadmap" \
   --delay-seconds 10 \
-  --max-continuations 8 \
-  --max-wall-seconds 14400
+  --unlimited
 ```
 
 The command snapshots the current binding. Later continuation signals remain
@@ -84,10 +83,15 @@ external prerequisite. Task prose alone cannot provide this declaration.
   until its `not_before` timestamp, without model polling.
 - A checkpoint ID is immutable and idempotent. Repeating the same content is a
   no-op; reusing the ID for different content fails.
-- A workstream defaults to at most eight automatic resumptions and four hours.
-  Both timer `continue` checkpoints and `waiting_external` checkpoints consume
-  this shared budget. Reaching either limit records `needs_user` and emits no
-  timer wakeup; a timer signal that becomes due after wall-time is suppressed.
+- New workstreams default to no continuation-count or total wall-time limit.
+  `--unlimited` states this explicitly; omitted limits serialize as JSON null.
+  There is no daily slice quota. Counters still record every automatic phase.
+- An owner may explicitly set positive `--max-continuations` and/or
+  `--max-wall-seconds`, without the former 100/604800 ceilings. Existing numeric
+  descriptors keep their limits and interpretation. Timer `continue` and
+  `waiting_external` checkpoints both count, and explicit wall-time includes
+  waiting. Reaching an explicit limit records `needs_user` and suppresses timer
+  continuation; it never declares the accepted plan complete.
 - `needs_user`, `blocked`, `waiting_external` and `paused` require an explicit
   `workstream resume` before another `continue` checkpoint.
 - A completed workstream cannot be resumed.
@@ -147,3 +151,41 @@ the active host chat:
 orchestrator-engine --project-root /path/to/project workstream resume \
   --workstream-id ROADMAP-1
 ```
+
+## Changing an existing policy
+
+Use the supported command instead of editing a live descriptor:
+
+```bash
+orchestrator-engine --project-root /path/to/project workstream set-policy \
+  --workstream-id ROADMAP-1 --unlimited \
+  --expected-revision 0 --reason "Owner authorized completing the accepted plan"
+```
+
+The revision is shown by `workstream status`; legacy descriptors without
+`policy_revision` have revision zero. The optional expected revision rejects a
+stale concurrent edit. Repeating an unchanged policy is a no-op. You can also
+set either positive limit independently, or remove just one with
+`--no-continuation-limit` / `--no-wall-time-limit`. Omitted fields stay unchanged.
+
+The API is `set_workstream_policy(project_root, workstream_id=...,
+limits={"max_continuations": None, "max_wall_seconds": None}, reason=...,
+expected_revision=...)`. Each effective change atomically records before/after
+limits, reason, timestamp and monotonically increasing revision in the
+descriptor's `policy_history`, under the same lock used for delivery.
+
+A policy update does not reconcile checkpoints, emit an event, resume a stop,
+change the goal/host binding, reset counters or remove pending operation and
+`active_continuation` state. Count limits govern future automatic checkpoints;
+an already authorized pending timer remains authorized. Explicit wall-time
+continues to be checked at delivery. Cancellation, later stop checkpoints and
+stale event checks still override pending timers.
+
+If the workstream was stopped solely because an old limit was reached, an
+authorized owner agent can issue `workstream resume` after changing the policy
+and record a new ready checkpoint. This does not require a successor workstream.
+Do not resume a separate user pause, cancellation or unresolved decision merely
+because limits were removed. An already revoked event is never reauthorized.
+
+See [accepted-plan execution and migration](accepted-plan-execution.md) for
+provider waits, independent concurrency and a safe adopter transition.

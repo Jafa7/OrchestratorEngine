@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-engine://schemas/metrics-report",
+  "title": "Metrics report",
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_METRICS_REPORT",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "kind",
+    "generation_digest",
+    "registry_digest",
+    "evaluation_time",
+    "event_cutoff",
+    "knowledge_cutoff",
+    "registry_project_uuid",
+    "cohort",
+    "formula_catalog_version",
+    "formula_catalog_digest",
+    "access",
+    "observation_count",
+    "metrics"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "ORCHESTRATOR_METRICS_REPORT"},
+    "generation_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "registry_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "evaluation_time": {"type": "string", "format": "date-time"},
+    "event_cutoff": {"type": "string", "format": "date-time"},
+    "knowledge_cutoff": {"type": "string", "format": "date-time"},
+    "registry_project_uuid": {"type": "string", "format": "uuid"},
+    "policy_id": {"type": ["string", "null"]},
+    "cohort": {"type": "object"},
+    "formula_catalog_version": {"const": 1},
+    "formula_catalog_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "access": {"const": "local"},
+    "observation_count": {"type": "integer", "minimum": 0},
+    "metrics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "metric_id",
+          "name",
+          "unit",
+          "value",
+          "availability",
+          "evidence_class",
+          "value_state",
+          "coverage",
+          "details"
+        ],
+        "properties": {
+          "metric_id": {"type": "string", "pattern": "^MET-[0-9]{3}$"},
+          "name": {"type": "string"},
+          "unit": {"type": "string"},
+          "value": {},
+          "availability": {
+            "enum": ["available", "unavailable", "disabled", "not_applicable"]
+          },
+          "evidence_class": {"enum": ["observed", "estimated", "unknown"]},
+          "value_state": {
+            "enum": [
+              "known",
+              "zero",
+              "unknown",
+              "not_applicable",
+              "partial",
+              "estimated"
+            ]
+          },
+          "coverage": {
+            "type": "object",
+            "required": [
+              "status",
+              "expected",
+              "observed",
+              "unknown",
+              "total",
+              "ratio"
+            ]
+          },
+          "details": {"type": "object"}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

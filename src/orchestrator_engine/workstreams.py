@@ -1,4 +1,4 @@
-"""Durable, bounded checkpoints for explicitly continued agent workstreams."""
+"""Durable checkpoints with explicit, optional continuation limits."""
 
 from __future__ import annotations
 
@@ -25,12 +25,10 @@ DECISIONS = {
 AUTOMATIC_DECISIONS = {"continue", "waiting_external"}
 ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 DEFAULT_DELAY_SECONDS = 10.0
-DEFAULT_MAX_CONTINUATIONS = 8
-DEFAULT_MAX_WALL_SECONDS = 4 * 60 * 60
+DEFAULT_MAX_CONTINUATIONS = None
+DEFAULT_MAX_WALL_SECONDS = None
 MAX_TEXT_LENGTH = 4000
 MAX_DELAY_SECONDS = 60 * 60
-MAX_CONTINUATIONS = 100
-MAX_WALL_SECONDS = 7 * 24 * 60 * 60
 
 
 class WorkstreamError(RuntimeError):
@@ -52,9 +50,11 @@ def bounded_text(value: str, *, field: str, required: bool = True) -> str:
     return text
 
 
-def positive_limit(value: int, *, field: str, maximum: int) -> int:
-    if isinstance(value, bool) or value <= 0 or value > maximum:
-        raise WorkstreamError(f"{field} must be between 1 and {maximum}")
+def optional_limit(value: int | None, *, field: str) -> int | None:
+    if value is not None and (
+        isinstance(value, bool) or not isinstance(value, int) or value <= 0
+    ):
+        raise WorkstreamError(f"{field} must be a positive integer or null (unlimited)")
     return value
 
 
@@ -121,8 +121,8 @@ def start_workstream(
     goal: str,
     state_dir: str = core.DEFAULT_STATE_DIR,
     delay_seconds: float = DEFAULT_DELAY_SECONDS,
-    max_continuations: int = DEFAULT_MAX_CONTINUATIONS,
-    max_wall_seconds: int = DEFAULT_MAX_WALL_SECONDS,
+    max_continuations: int | None = DEFAULT_MAX_CONTINUATIONS,
+    max_wall_seconds: int | None = DEFAULT_MAX_WALL_SECONDS,
 ) -> dict[str, Any]:
     project = project_root.expanduser().resolve()
     workstream_id = validate_id(workstream_id, field="workstream id")
@@ -131,15 +131,13 @@ def start_workstream(
         raise WorkstreamError(
             f"delay_seconds must be between 0 and {MAX_DELAY_SECONDS}"
         )
-    max_continuations = positive_limit(
+    max_continuations = optional_limit(
         max_continuations,
         field="max_continuations",
-        maximum=MAX_CONTINUATIONS,
     )
-    max_wall_seconds = positive_limit(
+    max_wall_seconds = optional_limit(
         max_wall_seconds,
         field="max_wall_seconds",
-        maximum=MAX_WALL_SECONDS,
     )
     created_at = core.utc_now()
     descriptor: dict[str, Any] = {
@@ -192,6 +190,10 @@ def validate_workstream(
         or (workstream_id is not None and value.get("workstream_id") != workstream_id)
     ):
         raise WorkstreamError(f"invalid workstream descriptor: {path}")
+    for field in ("max_continuations", "max_wall_seconds"):
+        if field not in value:
+            raise WorkstreamError(f"missing {field} in workstream descriptor: {path}")
+        optional_limit(value[field], field=field)
 
 
 def parse_timestamp(value: str) -> datetime:
@@ -205,19 +207,20 @@ def parse_timestamp(value: str) -> datetime:
 
 
 def limit_reason(descriptor: dict[str, Any], *, now: datetime) -> str | None:
-    if int(descriptor.get("continuation_count", 0)) >= int(
-        descriptor["max_continuations"]
+    count_limit = descriptor["max_continuations"]
+    if count_limit is not None and (
+        int(descriptor.get("continuation_count", 0)) >= count_limit
     ):
         return "maximum automatic continuations reached"
-    created = parse_timestamp(str(descriptor["created_at"]))
-    if (now - created).total_seconds() >= int(descriptor["max_wall_seconds"]):
-        return "maximum automatic continuation wall time reached"
-    return None
+    return wall_limit_reason(descriptor, now=now)
 
 
 def wall_limit_reason(descriptor: dict[str, Any], *, now: datetime) -> str | None:
+    wall_limit = descriptor["max_wall_seconds"]
+    if wall_limit is None:
+        return None
     created = parse_timestamp(str(descriptor["created_at"]))
-    if (now - created).total_seconds() >= int(descriptor["max_wall_seconds"]):
+    if (now - created).total_seconds() >= wall_limit:
         return "maximum automatic continuation wall time reached"
     return None
 
@@ -796,6 +799,72 @@ def checkpoint_workstream(
     if event_result is not None:
         output["followup"] = event_result
     return output
+
+
+def set_workstream_policy(
+    project_root: Path,
+    *,
+    workstream_id: str,
+    limits: dict[str, int | None],
+    reason: str,
+    expected_revision: int | None = None,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+) -> dict[str, Any]:
+    """Atomically edit limits without resuming work or publishing any event."""
+
+    fields = {"max_continuations", "max_wall_seconds"}
+    if not limits or not set(limits) <= fields:
+        raise WorkstreamError("policy update requires only supported limit fields")
+    for field, value in limits.items():
+        optional_limit(value, field=field)
+    reason = bounded_text(reason, field="reason")
+    if expected_revision is not None and (
+        isinstance(expected_revision, bool)
+        or not isinstance(expected_revision, int)
+        or expected_revision < 0
+    ):
+        raise WorkstreamError("expected_revision must be a non-negative integer")
+    project = project_root.expanduser().resolve()
+    with workstream_lock(project, workstream_id, state_dir=state_dir):
+        # Do not reconcile here: changing policy must never publish a recovered
+        # signal or change a paused/waiting/complete state as a side effect.
+        descriptor = load_workstream(project, workstream_id, state_dir=state_dir)
+        revision = descriptor.get("policy_revision", 0)
+        if expected_revision is not None and revision != expected_revision:
+            raise WorkstreamError(
+                "workstream policy revision changed; read status again"
+            )
+        before = {field: descriptor[field] for field in sorted(fields)}
+        after = {**before, **limits}
+        if before == after:
+            return {"status": "unchanged", "policy_revision": revision, "limits": after}
+        updated_at = core.utc_now()
+        history = descriptor.get("policy_history", [])
+        descriptor.update(
+            **after,
+            policy_revision=revision + 1,
+            policy_history=[
+                *history,
+                {
+                    "revision": revision + 1,
+                    "before": before,
+                    "after": after,
+                    "reason": reason,
+                    "changed_at": updated_at,
+                },
+            ],
+            updated_at=updated_at,
+        )
+        core.atomic_json(
+            descriptor_path(project, workstream_id, state_dir=state_dir), descriptor
+        )
+    return {
+        "status": "updated",
+        "workstream_id": workstream_id,
+        "workstream_status": descriptor["status"],
+        "policy_revision": revision + 1,
+        "limits": after,
+    }
 
 
 def resume_workstream(

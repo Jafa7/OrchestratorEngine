@@ -1,0 +1,27 @@
+{
+  "archive_bytes": 65393223,
+  "attempts": 10000,
+  "import_seconds": 27.48516007100261,
+  "kind": "ORCHESTRATOR_METRICS_SCALE_RESULT",
+  "logical_cpu_count": 8,
+  "machine": "x86_64",
+  "observations": 100000,
+  "packages": 1000,
+  "peak_memory_bytes": 157556736,
+  "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "python": "3.12.3",
+  "report_seconds": 3.0713433570053894,
+  "reported_logical_attempts": 10000,
+  "reported_observations": 100000,
+  "schema_version": 1,
+  "source_head": "c7e349c27957699a01225d97a159a3655e869315",
+  "source_state": "working_tree_with_changes",
+  "source_tree_sha256": "bac366ddfdbeca6438ae1ee66153744f7fedf45682f020b2649402faedae5190",
+  "universal_performance_claim": false,
+  "verification_after": {
+    "status": "not_measured"
+  },
+  "verification_before": {
+    "status": "not_measured"
+  }
+}

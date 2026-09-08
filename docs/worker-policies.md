@@ -56,11 +56,28 @@ diffs, tests, schemas, review and other task evidence.
    abstractions.
 4. Use structural/focused/full verification according to risk; reserve full
    gates for finished candidates.
-5. Keep complete output in artifacts and return compact results first.
-6. Escalate investigation for security, durable data, shared contracts,
+5. Never poll tests or long commands with repeated model turns. Use `check
+   plan` and `runtime-capabilities` to select a supported execution mode, then
+   choose same-owner wait or explicit parent handoff independently.
+6. Keep complete output in artifacts and return compact results first.
+7. Escalate investigation for security, durable data, shared contracts,
    migrations, concurrency, packaging and ambiguous failures.
-7. Stop after the requested outcome is verified, or return a concrete blocker
+8. Stop after the requested outcome is verified, or return a concrete blocker
    instead of looping.
+
+This applies to native subagents as well as detached CLI workers. Duration does
+not decide ownership: an implementation subagent that needs the result for
+debugging uses one bounded deterministic wait and continues with the same
+context. It ends its turn only at an explicit handoff boundary where the parent
+accepts the next decision and one terminal wakeup covers both success and
+failure whenever either outcome needs continuation. `on-failure` is valid only
+when success needs no parent action. In either case, the
+sleeping process does not invoke the model. Repeated `status` or log-reading
+turns are not an acceptable wait strategy. After a child handoff, the parent
+must end its own active turn before watcher delivery can resume it. A relay is
+only an explicitly authorized host fallback when direct parent waiting and
+detached wake delivery are insufficient. See the complete
+[subagent execution policy](subagent-execution.md).
 
 ## Configuration and role overlays
 
@@ -159,3 +176,13 @@ corrected intent instead of asking the worker to resolve the ambiguity.
 
 Do not mass-edit existing durable task descriptors. Policy adoption affects
 new dispatches only.
+
+## Accepted plans without artificial ceilings
+
+Default example profiles omit soft token budgets; actual provider usage remains
+available through an explicit usage adapter. Old configured soft thresholds are
+informational only. A slice completing does not make its integration package
+ready: finish dependent work and review the combined diff before the full gate.
+There is no daily slice quota or task token cap. See
+[accepted-plan execution](accepted-plan-execution.md) for unlimited workstreams,
+resource-specific concurrency and provider availability recovery.

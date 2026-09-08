@@ -3,6 +3,16 @@
 This guide covers OrchestratorEngine runtime state upgrades. It is separate
 from project-specific legacy bridge work, which belongs in adopting projects.
 
+## Version 1.5.0 continuation limits
+
+New workstreams are unlimited by default; existing numeric descriptors retain
+their selected limits. The new `workstream set-policy` command updates limits
+without changing lifecycle state or emitting events, and records an audit
+revision. Upgrade all CLI/watcher readers before using JSON null limits.
+Follow [accepted-plan execution](accepted-plan-execution.md) for the safe
+migration procedure, provider recovery and adopter-owned concurrency settings.
+No installation, running watcher or adopter policy is changed automatically.
+
 ## Version Check
 
 Check the installed CLI version:
@@ -11,7 +21,7 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release is `1.4.1` and the durable JSON contract schema version is
+The current release is `1.5.0` and the durable JSON contract schema version is
 `1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
@@ -19,8 +29,29 @@ PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.4.1"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.5.0"
 ```
+
+## Version 1.5.0 optional metrics
+
+The metrics subsystem is disabled until `metrics init`. Existing
+runtime state and watcher services do not require migration. Projects that opt
+in register sources explicitly; project progress additionally requires a source
+with `authority = project_owner` and project-supplied scope and acceptance
+observations. Native IDs are source scoped, so adapters that intentionally
+mirror one external object across sources must provide an explicit canonical
+identity and opt each source into `canonical_identity_authorized` mapping.
+Historical metric generations remain immutable and replayable.
+
+## Version 1.5.0 subagent execution policy
+
+The bundled `quality-efficient` policy revision 4 defines explicit
+implementation, review, diagnosis and relay ownership. It separates supported
+foreground/detached execution from same-owner wait versus parent handoff,
+forbids model polling, and requires the active parent turn to end before a
+terminal watcher wakeup can resume it. Existing adopter policy files are not
+overwritten automatically; export the bundled policy, compare it with the local
+copy and merge deliberately.
 
 ## Verified usage and acceptance evidence in v1.4.0
 
@@ -33,9 +64,9 @@ are observational and unverified.
 Task diagnostics now report worker process completion separately from
 verification acceptance evidence. Existing handoffs remain valid; workers with
 a declared verification intent can add the optional verification block to make
-the performed level and checks visible. The bundled quality policy moves to
-revision 3 and permits risk-driven verification escalation without allowing
-generic copied instructions to broaden work.
+the performed level and checks visible. Bundled quality policy revision 3
+permits risk-driven verification escalation without allowing generic copied
+instructions to broaden work.
 
 Codex diagnostics also fail closed on malformed reports and terminate their
 process tree on timeout. Durable schema-version-1 state remains compatible.
