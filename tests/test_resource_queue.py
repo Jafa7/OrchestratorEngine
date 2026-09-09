@@ -1192,10 +1192,12 @@ class ResourceNativeTests(unittest.TestCase):
                     ledger.db.execute("SELECT count(*) FROM requests").fetchone()[0],
                     1,
                 )
+            report = self.await_terminal(connection, first["request"])
+            self.assertTrue(report["terminal"])
 
     def test_resource_cli_creates_and_submits_retained_input_contract(self):
         output = self.project / "retained-inputs.json"
-        with self.service():
+        with self.service() as connection:
             create_args = cli.build_parser().parse_args(
                 [
                     "--project-root",
@@ -1241,6 +1243,8 @@ class ResourceNativeTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ResourceError, "cannot be combined"):
                 resource_cli.run(conflicting_args, self.project)
+            report = self.await_terminal(connection, submitted["request"])
+            self.assertTrue(report["terminal"])
 
     def test_replay_adds_new_subscriber_and_rejects_changed_destination(self):
         authority = Authority(self.directory)
