@@ -7,13 +7,15 @@ shell. The adopter owns installation, updates, authentication and local
 policy for those tools.
 
 Platform support is independent from external-tool availability. Run
-`orchestrator-engine runtime-capabilities` first; detached features require
-Linux or WSL even when the provider CLI itself runs on native Windows or
-macOS. See the [platform support matrix](platform-support.md).
+`orchestrator-engine runtime-capabilities` first. Version 1.6.0 supports detached
+features on Linux, WSL, native Windows and macOS; each configured tool must also
+run on the chosen host. Cross-OS command bridges require separate validation.
+See the [platform support matrix](platform-support.md).
 
 | Feature | External tool | Required | Verify |
 | --- | --- | --- | --- |
 | Core files, schemas and status | none | always available | `orchestrator-engine --version` |
+| Resource coordination | project-owned commands and optional quiescence probes | only for registered recipes; no particular DB or Docker required | Follow [resource coordination](resource-coordination.md) |
 | Local check runtime | adopter-declared commands | only for each configured suite | Run each command's native `--version` or equivalent |
 | Codex worker, diagnostics or live host queue | Codex CLI | only for Codex profiles/host | `codex --version`; `codex exec --help` for `--ephemeral`; `codex doctor --help` for `--json`; `codex queue --help` for live delivery |
 | Claude worker | Claude Code CLI | only for Claude profiles | `claude --version` |

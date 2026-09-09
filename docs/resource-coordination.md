@@ -1,6 +1,6 @@
 # Shared local resources
 
-This is an unreleased, opt-in resource coordinator. It serializes conflicting
+Version 1.6.0 includes this opt-in resource coordinator. It serializes conflicting
 resource scopes across registered local projects while running independent
 commands concurrently. It does not impose a worker, agent, daily-slice or model
 token quota. An operation with no resource needs can run concurrently as well.
@@ -267,7 +267,9 @@ ceiling is used to conceal scheduling cost.
 `tests/test_resource_queue.py` exercises deterministic scheduling, SQLite
 concurrent writers, native admission, HTTP authorization, restart, first-class
 checks, partial release, probe failure and delivery retry with synthetic resources.
-The suite runs locally on Linux and Windows and is included in the native macOS
-and Windows CI jobs. A configured CI job is not evidence of an executed macOS
-queue test. Project DB/bridge integrations and real sleep/reboot recovery remain
-separate adopter acceptance work.
+The v1.6.0 release passed the suite on Linux, native Windows and macOS Intel/ARM,
+including Python 3.11 and 3.13 in CI. See the
+[exact-commit release verification](native-runtime-packages.md#release-verification).
+The loopback service starts without reverse DNS, and the suite covers startup
+with DNS unavailable. Project DB/bridge integrations and real sleep/reboot
+recovery remain separate adopter acceptance work.

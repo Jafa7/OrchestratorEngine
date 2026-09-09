@@ -11,16 +11,17 @@ live wakeup:
 - **Live wakeup** means the already-open host chat receives the message and
   the active agent continues in that same visible session.
 
-Everything engine-side runs where the CLI workers run. The complete detached
-runtime in released v1.5.0 requires Linux or WSL; check
+Everything engine-side runs where the CLI workers run. Version 1.6.0 supports
+the complete detached runtime on Linux, WSL, native Windows and macOS. Check
 `orchestrator-engine runtime-capabilities` and the
 [platform support matrix](platform-support.md) before setup. In WSL,
 Windows-side actions (`codex.exe`, the Codex deep link, and the `code` CLI) are
 reached through normal WSL interop.
 
-The source checkout's [native runtime packages](native-runtime-packages.md)
-extend this engine boundary to macOS and Windows. Host delivery capabilities
-still require separate verification with the installed host adapter and CLI.
+The [native runtime contracts](native-runtime-packages.md) describe the engine
+boundary. Host delivery capabilities still require separate verification with
+the installed host adapter and CLI; native process support alone does not
+certify a particular desktop host or cross-OS delivery route.
 
 Machine-readable capabilities are available with
 `orchestrator-engine host-capabilities`:

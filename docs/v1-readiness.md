@@ -1,5 +1,10 @@
 # Version 1 Readiness
 
+This is the historical v1.0 release checklist. Its platform scope records that
+baseline; native macOS and Windows detached support was added in v1.6.0. For
+current guarantees, use [Platform support](platform-support.md) and
+[Compatibility Policy](compatibility-policy.md).
+
 Version `1.0` is a stability boundary, not a request for more orchestration
 features. The existing provider-neutral core must satisfy the criteria below
 before the release tag is created.

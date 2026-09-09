@@ -19,7 +19,7 @@ Stable names are `worker-task`, `worker-result`, `worker-evidence`,
 `github-pr-monitor`, `github-pr-evidence`, `github-pr-supervisor-launch`,
 `github-pr-cancel-request`, `workstream`, `workstream-checkpoint`,
 `workstream-result`, `workstream-evidence`, `local-check`,
-`local-check-evidence`, `check-duration-history`,
+`local-check-evidence`, `check-duration-history`, `resource-queue`,
 `task-resolution`, and `artifact-resolution`. They are included in wheels and
 source distributions and require no runtime dependency.
 `orchestrator-engine schemas` lists names; pass one name to print its schema.
@@ -168,7 +168,7 @@ project, invokes an AI provider, or uses provider credentials.
 
 Modes are explicit:
 
-- `auto` selects `full` when the Linux detached lifecycle is available and
+- `auto` selects `full` when the current native detached lifecycle is available and
   otherwise selects `portable`;
 - `portable` verifies create-only adoption, a terminal result/evidence pair,
   hash-bound event and inbox signal, deterministic notification delivery and a
@@ -855,8 +855,9 @@ foreground execution. A detached descriptor snapshots the dispatching host's
 descriptors whose recorded supervisor identity is proven gone: it recovers
 already-written terminal artifacts when possible, otherwise records an
 `errored` result and terminal event. A detached supervisor records the active
-command's process identity and process group. Reaping stops and verifies that
-group before finalization; an unavailable identity or surviving group leaves
+command's process identity and native containment boundary (a POSIX process
+group or Windows Job Object). Reaping stops and verifies that boundary before
+finalization; an unavailable identity or surviving process tree leaves
 the check non-terminal with an explicit diagnostic. Unsupported descriptor
 schema versions are never mutated. Reaping never deletes logs or reruns
 commands.
@@ -1010,6 +1011,26 @@ Exit codes match other diagnostic commands: `0` for no diagnostics or `info`
 only, `2` for warnings, `3` for errors and `1` for CLI/runtime failures such
 as an unknown `--check-id` filter.
 
+## Shared local resource coordination
+
+Version 1.6.0 adds an opt-in native-local resource authority. The `resource-queue`
+schema describes `ORCHESTRATOR_RESOURCE_QUEUE` status with authority identity,
+stages, allocations, epochs, terminal state and action-required state. Public
+status omits launch tokens. Projects authenticate to explicitly registered
+recipes; the engine does not discover or grant access to neighboring projects.
+
+A check suite may select `resource_recipe` instead of local `commands`. Execution
+then belongs to the resource authority, and `check status` projects its state.
+Ordinary `check reap` leaves resource-managed recovery to that authority. A
+quiescence advisory is not a terminal test failure: successful work can complete
+after recovery, with separate immutable advisory and final-result artifacts.
+
+The owner contract for complete-set admission, resource selectors, captured
+inputs, dependency readiness, cancellation, recovery evidence, subscriber
+delivery and metrics is [Shared local resources](resource-coordination.md).
+Resource capacities constrain declared resources; they introduce no default
+global worker count, daily-slice quota or model token budget.
+
 ## GitHub Actions exact-run monitor
 
 `ci watch` starts a local detached monitor and returns immediately. It is an
@@ -1082,7 +1103,7 @@ operation ID.
 
 For an explicit run ID, `--timeout-seconds` is optional. With no timeout, the
 detached local process may wait for a legitimately long CI run. `ci cancel
---monitor-id ID --reason TEXT` stops only the local monitor process group; it
+--monitor-id ID --reason TEXT` stops only the local monitor process tree; it
 never cancels or reruns the GitHub workflow. `ci status [--monitor-id ID]`
 reads compact local state, including whether an active monitor is discovering
 or watching its resolved run.
@@ -1358,27 +1379,33 @@ before it spawns the supervisor, reports `status: "starting"` and then never
 writes it again. The supervisor takes ownership as its first action, recording
 `status: "running"` and its own `supervisor_pid`; a task that stays `starting`
 was therefore dispatched but never claimed. Once the worker is spawned the
-supervisor also records `worker_pid` and `worker_pgid` (the process group the
-worker leads), which is the identity needed to stop the whole worker tree.
+supervisor also records `worker_pid`, `worker_pgid` and the native process
+identity. On POSIX, `worker_pgid` identifies the worker's process group; on
+Windows the legacy integer identifies the job leader and is usable only with
+its full recorded identity. A PID alone does not authorize stopping a tree.
 
 On worker exit the supervisor calls the standard terminal event contract:
 `completed` on exit code 0, `failed` otherwise, `timed_out` when
 `timeout_seconds` is exceeded.
 
-A timed-out worker is stopped through its process group, not as a single
-process, so the model CLI's own subprocesses cannot outlive the task: the
-supervisor sends `SIGTERM` to the group, allows a bounded grace period, then
-escalates to `SIGKILL`. The signal ledger is durable in `result.json` as an
-optional `termination` object (`reason`, `scope`, `process_group`,
-`grace_seconds`, `escalated`, `exited`, `signals`).
+A timed-out worker is stopped through its native containment boundary. Linux
+and macOS send `SIGTERM` to the verified process group, allow a bounded grace
+period, then escalate to `SIGKILL`. Native Windows uses `TerminateJobObject`
+and waits for process exit; it does not promise a POSIX graceful-signal interval.
+The durable `termination` object in `result.json` retains `reason`, `scope`,
+`process_group`, `grace_seconds`, `escalated`, `exited` and `signals`. Windows
+records `scope: "job_object"` and `TerminateJobObject` in the action ledger.
+Deliberately escaped POSIX groups and cross-OS bridges need separate containment
+contracts; see [Native runtime packages](native-runtime-packages.md).
 
 Workers without `timeout_seconds` may run indefinitely (hours-long tasks are
 expected). While a worker runs, the supervisor refreshes `task.json` every 30
 seconds with `status: "running"`, `worker_pid` and `last_alive_at`, so long
 tasks remain observable. The same heartbeat renews `lease.json`, which records
-Linux `/proc` process identity tokens for the supervisor and worker. These
-tokens include the boot id and kernel start time; signaling code refuses to act
-on a reused PID.
+native process identity tokens for the supervisor and worker: Linux process-stat
+start ticks and boot ID, macOS BSD start time and boot-session UUID, or Windows
+creation FILETIME and machine identity. Foreign or unavailable identities are
+unknown; termination refuses to act on an unrelated reused PID.
 
 `worker reap` is a conservative, idempotent recovery operation. It only
 finalizes a running task after its lease has expired and its recorded
@@ -1395,8 +1422,9 @@ second terminal event or delete any artifact.
 positive integers. With no limits, dispatch remains immediate and backward
 compatible. When a limit is full, `worker run` stores `status: "queued"` and a
 FIFO entry under `.orchestrator/queue/pending/`; no provider process starts.
-Admission is serialized with a POSIX `flock`. `worker queue tick` admits as many
-entries as current global and profile slots permit. A finishing supervisor also
+Admission is serialized with the platform file lock (`flock` on Linux/macOS,
+`msvcrt` locking on native Windows). `worker queue tick` admits as many entries
+as the configured global and profile slots permit. A finishing supervisor also
 runs the same idempotent tick. Watcher scans invoke it while pending entries
 exist, so a retry whose `not_before` becomes due progresses even when no other
 worker finishes. This is deterministic local scheduling and does not invoke a
@@ -1406,8 +1434,9 @@ model.
 Queued cancellation atomically moves the queue entry to `queue/cancelled` and
 emits a normal `cancelled` result/evidence/event/signal without starting the
 worker. Running cancellation writes a separate control request; the supervisor
-acknowledges it, signals the verified worker process group, and preserves the
-request, acknowledgement and signal ledger. Repeating cancellation is safe.
+acknowledges it, stops the verified native worker boundary, and preserves the
+request, acknowledgement and termination ledger. The POSIX and Windows
+termination mechanisms are described above. Repeating cancellation is safe.
 
 Each accepted dispatch has an exact SHA-256 fingerprint over the original task
 prompt, selected policy identity, task intent, worker and command. An identical

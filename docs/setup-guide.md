@@ -90,8 +90,8 @@ Before continuing with detached workers or a watcher service, expect
 `"detached_lifecycle": "supported"`. An unsupported result is not repaired by
 installing a provider CLI.
 
-When working from a development checkout that exposes `conformance run`, it
-can be run here without a provider CLI or credentials. Its default `auto` mode
+The installed v1.6.0 package includes `orchestrator-engine conformance run`.
+Run it here without a provider CLI or credentials. Its default `auto` mode
 runs the full detached synthetic-worker path when that lifecycle is supported
 and otherwise verifies the portable event, signal, notification and
 idempotency path. Both modes validate the generated disabled worker profile,
@@ -101,13 +101,14 @@ Full mode additionally checks six concurrent
 synthetic workers, aggregate waits, host-scoped signal routing and deterministic
 reaping of an abandoned unclaimed task descriptor. Continue only when its JSON
 report says `"status": "passed"`; a failed fixture is retained at the reported
-path for diagnosis. This command becomes a required check when the immutable
-release installed above contains it; do not require it from an older pinned
-release.
+path for diagnosis. This is a required check for the v1.6.0 installation;
+older pinned releases that lack the command need their own upgrade procedure.
 
-The repository CI runs portable conformance from the installed package on
-native Windows and macOS. Its Linux wheel smoke runs full conformance without
-`PYTHONPATH`, covering the packaged CLI, schema and detached supervisor path.
+The v1.6.0 CI runs native lifecycle, resource coordination and full conformance
+on macOS Intel/ARM and Windows, plus portable-core checks. The Linux wheel smoke
+also runs full conformance without `PYTHONPATH`, covering the packaged CLI,
+schema and detached supervisor path. See
+[release verification](native-runtime-packages.md#release-verification).
 
 If `orchestrator-engine` is not on PATH, use `python3 -m orchestrator_engine.cli`
 everywhere below — but prefer a real install: the worker supervisor re-executes
@@ -119,6 +120,12 @@ the project owner explicitly wants local productivity measurement, complete the
 runtime setup first and then follow [productivity metrics and process
 advisor](metrics.md). Register only authorized sources and keep
 `.orchestrator/metrics/` private with the rest of runtime state.
+
+Resource coordination is optional. After basic adoption, follow
+[Shared local resources](resource-coordination.md) only if the project needs
+coordination of mutable resources. Register the authority, projects and recipes
+explicitly, then select `resource_recipe` in the relevant check suite. Ordinary
+checks do not join a resource queue automatically.
 
 ## Step 2 — Adopt the project layout
 

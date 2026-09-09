@@ -6,14 +6,17 @@ private implementation details or adopter-owned policy text.
 
 ## Supported runtime scope
 
-This released scope describes v1.5.0. The source checkout also contains
-[native runtime packages](native-runtime-packages.md), with separate native
-acceptance requirements before release.
+The current released scope is v1.6.0. The
+[native runtime contracts](native-runtime-packages.md) describe containment and
+exact-candidate acceptance evidence.
 
-- Linux and WSL support the complete detached worker, monitor, check and
-  watcher lifecycle.
-- Native Windows and macOS support the portable core and compatible foreground
-  checks. Unsupported detached commands fail before creating runtime state.
+- Linux, WSL, native Windows and macOS support the complete detached worker,
+  monitor, check and watcher lifecycle when `runtime-capabilities` reports
+  support. Configured commands must be compatible with the selected OS.
+- Resource coordination is opt-in and native-local. Project registration,
+  resource recipes and quiescence probes are explicit; no cross-OS shared-ledger
+  or cross-authority acquisition guarantee is implied. See
+  [Shared local resources](resource-coordination.md).
 - Releases are distributed through immutable Git tags and digest-verified
   GitHub Release assets. Publication to PyPI is not part of the `1.0` contract.
 

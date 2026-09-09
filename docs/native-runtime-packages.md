@@ -5,6 +5,22 @@ shipped in v1.5.0. Earlier release assets remain unchanged.
 macOS acceptance requires the native GitHub Actions jobs to pass for the exact
 candidate; a Linux mock result is not macOS acceptance evidence.
 
+## Release verification
+
+[v1.6.0](https://github.com/Jafa7/OrchestratorEngine/releases/tag/v1.6.0) is
+published from commit `85b5dea6fb10c8bfb9ef2a1d3c88e3b8eaca83e9`.
+Its [exact-commit CI run](https://github.com/Jafa7/OrchestratorEngine/actions/runs/34330574701)
+passed all 14 jobs, including native lifecycle, resource coordination and full
+conformance on macOS Intel/ARM and Windows with Python 3.11/3.13, plus Linux,
+portable-core, packaging and historical upgrade checks.
+The [release workflow](https://github.com/Jafa7/OrchestratorEngine/actions/runs/34330794883)
+verified provenance, installed-wheel conformance and uploaded asset digests
+before publishing the wheel, sdist and `SHA256SUMS`.
+
+This evidence covers the synthetic native contracts below. Project-specific
+commands, desktop delivery and bridge topologies retain their separate
+acceptance requirements. Later candidates require their own exact-commit CI.
+
 ## Shared contract
 
 The same worker, check, monitor and watcher commands use a native process

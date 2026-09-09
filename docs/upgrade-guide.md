@@ -212,16 +212,18 @@ required.
 Projects using SHA discovery should keep `gh` authenticated and their target
 repository explicitly allowlisted in `.orchestrator/integrations.toml`. Use an
 exact `--workflow-name` when one commit starts multiple workflows. Run
-`conformance run --mode portable` after upgrading; Linux and WSL adopters can
-use `--mode full` to include detached lifecycle and routing checks.
+`conformance run --mode portable` when checking that historical baseline.
+For v1.6.0, use `--mode full` on any supported native runtime to include detached
+lifecycle and routing checks.
 
 ## Platform capability boundary after v0.8.1
 
-Version 0.9.0 makes the operating-system boundary explicit. Run
-`orchestrator-engine runtime-capabilities` after upgrading. Linux and WSL
-provide the complete detached lifecycle. Native Windows and macOS support the
-portable core and compatible foreground checks; detached workers, monitors,
-reapers and watcher services fail closed before changing their runtime state.
+Version 0.9.0 introduced an explicit operating-system boundary. In releases
+0.9.0 through 1.5.0, Linux and WSL provided the complete detached lifecycle;
+native Windows and macOS provided the portable core and compatible foreground
+checks, rejecting detached operations before creating runtime state. Version
+1.6.0 adds native detached support on both systems. Run
+`orchestrator-engine runtime-capabilities` for the installed runtime.
 
 No durable state migration is required. When inspecting Linux/WSL state from
 another platform, an unverifiable process identity is reported as `unknown`
