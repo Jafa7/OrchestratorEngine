@@ -19,7 +19,7 @@ except ModuleNotFoundError:  # Direct `python tools/...` execution.
     import run_reliability_soak  # type: ignore[no-redef]
 
 KIND = "ORCHESTRATOR_NATIVE_ACCEPTANCE_REPORT"
-SUPPORTED_SYSTEMS = {"Darwin": "darwin", "Windows": "windows"}
+SUPPORTED_SYSTEMS = {"Darwin": "darwin", "Windows": "win32"}
 
 
 class NativeAcceptanceError(RuntimeError):

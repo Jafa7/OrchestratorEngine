@@ -91,7 +91,7 @@ class NativeAcceptanceTests(unittest.TestCase):
 
     def test_windows_amd64_matches_normalized_x86_64_expectation(self) -> None:
         report = self._run_report(
-            system="Windows", machine="AMD64", capability_platform="windows"
+            system="Windows", machine="AMD64", capability_platform="win32"
         )
 
         self.assertEqual(report["status"], "passed")
