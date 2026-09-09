@@ -716,6 +716,7 @@ def start_check(
     wake_policy: str = "auto",
     long_threshold_seconds: float = DEFAULT_LONG_THRESHOLD_SECONDS,
     popen_factory=subprocess.Popen,
+    wake_target: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if execution not in EXECUTION_MODES:
         raise LocalCheckError(f"unsupported execution mode: {execution}")
@@ -733,6 +734,7 @@ def start_check(
             wake_policy=wake_policy,
             state_dir=state_dir,
             long_threshold_seconds=long_threshold_seconds,
+            wake_target=wake_target,
         )
     plan = plan_check(
         project,
@@ -746,11 +748,22 @@ def start_check(
     if selected_execution == "detached":
         platform_runtime.require_detached_lifecycle("detached check run")
     selected_wake_policy = resolved_wake_policy(wake_policy, selected_execution)
-    wake_target = capture_wake_target(
-        project,
-        state_dir=state_dir,
-        wake_policy=selected_wake_policy,
-    )
+    if wake_target is not None:
+        if selected_wake_policy == "never":
+            raise LocalCheckError(
+                "an explicit wake target requires a wake-enabled policy"
+            )
+        try:
+            binding.validate_wake_target(wake_target)
+        except binding.BindingError as error:
+            raise LocalCheckError(str(error)) from error
+        wake_target = json.loads(json.dumps(wake_target))
+    else:
+        wake_target = capture_wake_target(
+            project,
+            state_dir=state_dir,
+            wake_policy=selected_wake_policy,
+        )
     directory = check_dir(project, check_id, state_dir=state_dir)
     path = directory / "check.json"
     try:
@@ -789,6 +802,9 @@ def start_check(
             and existing.get("fingerprint") == spec["fingerprint"]
             and existing.get("execution") == selected_execution
             and existing.get("wake_policy") == selected_wake_policy
+            and binding.same_wake_destination(
+                existing.get("wake_target"), wake_target
+            )
         ):
             return {**existing, "descriptor_path": str(path), "idempotent": True}
         raise LocalCheckError(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -117,6 +118,15 @@ def validate_wake_target(target: dict[str, Any]) -> None:
         raise BindingError("unsupported wake target schema")
     if target.get("kind") != WAKE_TARGET_KIND:
         raise BindingError("unsupported wake target kind")
+    captured_at = target.get("captured_at")
+    if not isinstance(captured_at, str):
+        raise BindingError("wake target is missing captured_at")
+    try:
+        parsed = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise BindingError("wake target captured_at is invalid") from error
+    if parsed.tzinfo is None:
+        raise BindingError("wake target captured_at must include a timezone")
     validate_binding(
         {
             "schema_version": target["schema_version"],
@@ -133,6 +143,16 @@ def validate_wake_target(target: dict[str, Any]) -> None:
                 else {}
             ),
         }
+    )
+
+
+def same_wake_destination(
+    first: dict[str, Any] | None, second: dict[str, Any] | None
+) -> bool:
+    """Compare immutable routing identity while ignoring capture timestamps."""
+    fields = ("schema_version", "kind", "host", "target_thread_id", "codex_command")
+    return all(
+        (first or {}).get(field) == (second or {}).get(field) for field in fields
     )
 
 

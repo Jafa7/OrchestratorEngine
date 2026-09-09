@@ -112,11 +112,14 @@ canonical procedure. It contains host-specific branches, checks after each
 step, strict-admission examples and troubleshooting. The shorter sequence
 below is only a human-readable preview.
 
-Version 1.6.1 supports the complete detached runtime on Linux, WSL, native
+Version 1.7.0 supports the complete detached runtime on Linux, WSL, native
 Windows and macOS. Configured commands and external tools must support the
 selected OS. See the [platform support matrix](docs/platform-support.md) and
 [Native runtime packages](docs/native-runtime-packages.md) for containment
-boundaries and native CI acceptance.
+boundaries and native CI acceptance. The separate
+[native acceptance guide](docs/native-acceptance.md) explains what CI proves
+and how a Windows or Mac owner can verify Desktop delivery without sharing
+private data.
 
 ### Manual preview
 
@@ -124,14 +127,14 @@ Install an immutable release, scaffold the project and bind the host chat:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.6.1"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.7.0"
 orchestrator-engine runtime-capabilities
 orchestrator-engine --project-root /path/to/project adopt --host HOST
 orchestrator-engine --project-root /path/to/project bind --host HOST
 ```
 
 Replace `HOST` with `codex`, `claude` or `vscode` and run `bind` from the chat
-that should own completions. The installed v1.6.1 package includes provider-free
+that should own completions. The installed v1.7.0 package includes provider-free
 `orchestrator-engine conformance run`, which verifies a new temporary fixture.
 Its default `auto` mode selects full detached verification when the runtime
 supports it, including native Windows/macOS as well as Linux/WSL. Explicit
@@ -145,7 +148,7 @@ project. Full mode additionally runs six concurrent synthetic workers, checks
 aggregate `wait any/all`, proves that snapshotted Codex and VS Code targets are
 consumed only by their host-scoped watcher state, and verifies deterministic
 reaping of an abandoned unclaimed task descriptor. Run it as part of the
-v1.6.1 installation check and require a `passed` report.
+v1.7.0 installation check and require a `passed` report.
 
 Edit the generated `.orchestrator/workers.toml`, enabling only profiles whose
 CLI, model and non-interactive permission strategy have been verified. The
@@ -553,6 +556,7 @@ Additional documentation:
 - [Subagent execution policy](docs/subagent-execution.md)
 - [Adopter upgrade checklist](docs/adopter-upgrade-checklist.md)
 - [Reliability and upgrade validation](docs/reliability-validation.md)
+- [Native Windows/macOS acceptance](docs/native-acceptance.md)
 - [Version 1 readiness](docs/v1-readiness.md)
 - [Project integration and legacy adoption](docs/project-adoption.md)
 - [Release process](docs/release-process.md)

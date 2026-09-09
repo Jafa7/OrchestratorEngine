@@ -1,6 +1,6 @@
 # Platform support
 
-The table below describes v1.6.1. Native macOS and Windows lifecycle backends
+The table below describes v1.7.0. Native macOS and Windows lifecycle backends
 join Linux/WSL support. See [Native runtime packages](native-runtime-packages.md)
 for process containment boundaries and the exact-candidate CI acceptance gates.
 
@@ -23,6 +23,10 @@ commands reject the request before creating task or service artifacts.
 | Native Windows | Supported | Supported for portable configured commands | Supported with native Job Objects |
 | macOS | Supported | Supported for portable configured commands | Supported with native POSIX groups |
 
+The hosted native baseline is Windows Server 2022 x64 and macOS 15 on Intel and
+Apple Silicon. Other editions, architectures and OS releases retain the same
+contract only after exact-environment field verification.
+
 The portable core includes package import, schemas, immutable JSON contracts,
 read-only capability reports, bounded status inspection and cross-process
 advisory locks. Native Windows is exercised directly during development and
@@ -41,3 +45,20 @@ an engine running in WSL can invoke the Windows Codex or VS Code CLI while
 retaining Linux lifecycle guarantees for its local watcher and workers. See
 [Host setup](hosts.md) for delivery-specific requirements and
 [External tool prerequisites](external-tools.md) for adopter-owned CLIs.
+
+## Desktop host boundary
+
+Native runtime support does not by itself certify a desktop application's live
+chat behavior. The macOS CI runners have no interactive Codex Desktop session,
+so they verify CLI/runtime lifecycle and durable delivery contracts but do not
+claim that a particular Desktop and CLI version visibly resumes a live chat.
+Login/logout, sleep/resume, reboot persistence and app-update behavior remain
+field checks for the exact host versions. Record an untested field as
+`not_tested`, never as inferred support. See
+[Native acceptance](native-acceptance.md).
+
+Hosted CI covers local runner storage. OneDrive, SMB/NFS, external volumes,
+case-sensitive APFS and Windows/WSL shared paths are separate field-test
+topologies. Security products and OS policy can also alter process, file and
+background-app behavior. A successful local-filesystem CI job must not be used
+as evidence for those environments.

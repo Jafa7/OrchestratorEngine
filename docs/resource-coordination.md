@@ -94,6 +94,14 @@ old activity cannot interfere. A healthy or empty database is not necessarily a
 quiescent database. A dirty but quiescent resource can be granted to a preparation
 recipe; the coordinator does not mandate resets or expensive health gates.
 
+Cancellation immediately revokes the ordinary work context. The current
+runner receives a distinct epoch-scoped maintenance context for registered
+cleanup and release probes, including after cancellation. That capability is
+never passed to ordinary work commands and disappears when the stage releases
+ownership. Cleanup and probes remain project code under the same local OS user;
+this separation prevents accidental phase escalation but is not a hostile-code
+sandbox.
+
 Initialize and run the service in the selected native environment:
 
 ```text
@@ -102,6 +110,28 @@ orchestrator-engine resource serve --directory AUTHORITY_DIR
 orchestrator-engine --project-root PROJECT resource connect --directory AUTHORITY_DIR --project sample
 orchestrator-engine --project-root PROJECT resource submit --recipe verify --id attempt-001 --wake-policy never
 ```
+
+`init` returns configuration revision `1`. To add projects, change registered
+recipes or change a drained resource registry, stop the service, ensure
+`resource status` reports no active, waiting or recovery stages, and run:
+
+```text
+orchestrator-engine resource update --directory AUTHORITY_DIR --config CONFIG.json --expected-revision REVISION
+orchestrator-engine resource serve --directory AUTHORITY_DIR
+```
+
+The compare-and-swap revision prevents overwriting a newer administrator
+change. An update preserves authority identity and existing project bearer
+credentials, permits new projects, and refuses project removal or root changes.
+It also refuses every nonterminal stage, including waiting and
+`recovery_required`; cancel or recover those attempts first. Existing v1.6.x
+authorities without a stored revision are treated as revision `1` on their
+first update.
+
+Drain all resource stages before upgrading from a release that predates
+phase-scoped maintenance capabilities. The engine never invents a capability
+for an already persisted owner. A legacy active stage that reaches cleanup
+without one fails closed and requires explicit recovery evidence.
 
 `serve` runs until stopped; a local service manager may supervise it. It binds
 only `127.0.0.1`, reuses its previous port after restart and refuses a second

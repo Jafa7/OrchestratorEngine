@@ -466,6 +466,40 @@ authorizations = { commit = false, push = false, network = false }
         self.assertEqual(tick["admitted_task_ids"], ["T-RETRY-a2"])
         self.assertEqual(admitted["status"], "starting")
 
+    def test_retry_inherits_operation_scoped_wake_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            target = {
+                "schema_version": 1,
+                "kind": "ORCHESTRATOR_WAKE_TARGET",
+                "host": "codex",
+                "target_thread_id": "original-owner",
+                "captured_at": "2026-09-09T00:00:00+00:00",
+            }
+            original = workers.run_worker(
+                root,
+                worker="slow",
+                task_id="T-RETRY-WAKE",
+                prompt_file=prompt(root, "retry wake"),
+                wake_policy="always",
+                wake_target=target,
+                popen_factory=FakePopen,
+            )
+            descriptor_path = Path(original["descriptor_path"])
+            descriptor = core.load_object(descriptor_path)
+            descriptor["status"] = "rate_limited"
+            core.atomic_json(descriptor_path, descriptor)
+            retried = workers.retry_worker_task(
+                root,
+                task_id="T-RETRY-WAKE",
+                reason="provider quota reset",
+                max_attempts=2,
+                delay_seconds=60,
+            )
+
+        self.assertEqual(retried["wake_target"], target)
+
 
 class WorkerWaitTests(unittest.TestCase):
     def write_wait_task(

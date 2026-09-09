@@ -49,6 +49,29 @@ def write_config(
 
 
 class LocalCheckTests(unittest.TestCase):
+    def test_check_uses_explicit_operation_wake_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            binding.write_binding(root, host="codex", target_thread_id="binding")
+            target = {
+                "schema_version": 1,
+                "kind": "ORCHESTRATOR_WAKE_TARGET",
+                "host": "codex",
+                "target_thread_id": "operation-owner",
+                "captured_at": "2026-09-09T00:00:00+00:00",
+            }
+            result = local_checks.start_check(
+                root,
+                check_id="CHECK-EXPLICIT-WAKE",
+                suite="gate",
+                execution="foreground",
+                wake_policy="always",
+                wake_target=target,
+            )
+
+        self.assertEqual(result["wake_target"], target)
+
     def test_start_rejects_check_id_owned_by_another_operation_type(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

@@ -54,8 +54,11 @@ before downgrading.
 - The shared integration points cover workers, foreground/detached checks,
   CI/PR monitors and watcher service start/stop.
 - The `macos-runtime` CI job installs the package and runs native acceptance
-  plus full synthetic conformance on Intel and Apple Silicon, Python 3.11 and
-  3.13. It runs no model CLI and requires no provider credentials.
+  plus full synthetic conformance from the candidate wheel on Intel and Apple
+  Silicon. Python 3.11/3.13 run on both architectures, while 3.12 runs on Apple
+  Silicon. Each combination records a bounded five-iteration acceptance soak
+  as a retained CI artifact. It runs no model CLI and requires no provider
+  credentials.
 
 This retains the POSIX containment boundary: a deliberately daemonized process
 that leaves its group is outside that group. An external reaper cannot safely
@@ -89,7 +92,9 @@ this package does not claim container-like isolation or resource reservation.
   this does not certify cross-session service or cross-OS shared-state access.
 - The `windows-runtime` CI job installs the package and runs native lifecycle,
   controller-crash, launch-barrier and full synthetic conformance checks on
-  Python 3.11 and 3.13. Existing Linux tests continue to protect the shared core.
+  Python 3.11, 3.12 and 3.13 from the candidate wheel. It retains the same
+  bounded native acceptance artifact as macOS. Existing Linux tests continue
+  to protect the shared core.
 
 Windows Job Objects require compatible nested-job support. If the enclosing
 host prohibits job assignment, launch fails before user work starts. Running
@@ -111,13 +116,20 @@ assignment. Desktop host delivery, login/logout, sleep/resume, reboot and
 external tool availability need adopter/environment testing. Watchers remain
 CLI-managed processes; neither package installs an OS startup service.
 
-Native machines can check the installed candidate with:
+Native Windows and macOS machines can check the installed candidate from an
+exact-tag checkout with:
 
-```text
-python -m unittest discover -s tests -p test_native_runtime.py
-python -m orchestrator_engine.cli conformance run --mode full --timeout-seconds 15
-python tools/check_portable_core.py --expect-detached supported
+```bash
+python tools/run_native_acceptance.py \
+  --cli "$(command -v orchestrator-engine)" \
+  --expected-system Darwin \
+  --expected-machine "$(uname -m)" \
+  --output native-acceptance.json
 ```
 
+The PowerShell equivalent is documented in
+[Native acceptance](native-acceptance.md).
 The runtime capability report describes available mechanisms on the current
-machine. It does not replace the exact-candidate release evidence.
+machine. It does not replace the exact-candidate release evidence. See
+[Native acceptance](native-acceptance.md) for the report contract and the
+separate interactive Desktop field check.

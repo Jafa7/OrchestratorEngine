@@ -240,6 +240,41 @@ class CliTests(unittest.TestCase):
                 ]
             )
 
+    def test_dispatch_commands_accept_operation_scoped_wake_target_file(self) -> None:
+        parser = cli.build_parser()
+        worker = parser.parse_args(
+            [
+                "worker", "run", "--worker", "w", "--task-id", "T",
+                "--prompt-file", "prompt.md", "--wake-target-file", "target.json",
+            ]
+        )
+        check = parser.parse_args(
+            [
+                "check", "run", "--check-id", "C", "--suite", "gate",
+                "--wake-target-file", "target.json",
+            ]
+        )
+
+        self.assertEqual(worker.wake_target_file, Path("target.json"))
+        self.assertEqual(check.wake_target_file, Path("target.json"))
+
+    def test_resource_update_requires_expected_revision(self) -> None:
+        parser = cli.build_parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args(
+                [
+                    "resource", "update", "--directory", "authority",
+                    "--config", "config.json",
+                ]
+            )
+        parsed = parser.parse_args(
+            [
+                "resource", "update", "--directory", "authority",
+                "--config", "config.json", "--expected-revision", "2",
+            ]
+        )
+        self.assertEqual(parsed.expected_revision, 2)
+
     def test_emit_and_inbox_round_trip_through_cli(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

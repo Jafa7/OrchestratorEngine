@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from . import core, local_checks, verification
+from . import binding, core, local_checks, verification
 from .resource_queue import ResourceError
 from .resource_service import client, input_manifest
 
@@ -18,6 +18,7 @@ def start(
     wake_policy,
     state_dir,
     long_threshold_seconds,
+    wake_target=None,
 ):
     if not math.isfinite(long_threshold_seconds) or long_threshold_seconds <= 0:
         raise ResourceError("long threshold must be positive and finite")
@@ -27,9 +28,20 @@ def start(
         )
     requested_wake_policy = wake_policy
     wake_policy = local_checks.resolved_wake_policy(wake_policy, "detached")
-    target = local_checks.capture_wake_target(
-        project, state_dir=state_dir, wake_policy=wake_policy
-    )
+    if wake_target is not None:
+        if wake_policy == "never":
+            raise ResourceError(
+                "an explicit wake target requires a wake-enabled policy"
+            )
+        try:
+            binding.validate_wake_target(wake_target)
+        except binding.BindingError as error:
+            raise ResourceError(str(error)) from error
+        target = dict(wake_target)
+    else:
+        target = local_checks.capture_wake_target(
+            project, state_dir=state_dir, wake_policy=wake_policy
+        )
     verification.claim_check_owner(
         project,
         operation_id=check_id,
@@ -45,6 +57,9 @@ def start(
             if (
                 descriptor.get("fingerprint") != spec["fingerprint"]
                 or descriptor.get("wake_policy") != wake_policy
+                or not binding.same_wake_destination(
+                    descriptor.get("wake_target"), target
+                )
                 or not descriptor.get("resource_managed")
             ):
                 raise ResourceError("check ID already has different options")
@@ -89,6 +104,8 @@ def start(
                     "subscriber": subscriber,
                 },
             }
+            if target is not None:
+                descriptor["wake_target"] = target
             core.atomic_json(path, descriptor)
         result = client(connection, "submit", descriptor["resource_submission"])
         descriptor["resource_request"] = result["request"]

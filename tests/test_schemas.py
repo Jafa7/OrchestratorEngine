@@ -97,6 +97,9 @@ class SchemaContractTests(unittest.TestCase):
         snapshot = json.loads((root / "resource-queue.json").read_text())
         snapshot["stages"][0]["launch_token"] = "must-not-leak"
         self.assertTrue(list(self.validators["resource-queue"].iter_errors(snapshot)))
+        snapshot["stages"][0].pop("launch_token")
+        snapshot["stages"][0]["maintenance_token"] = "must-not-leak"
+        self.assertTrue(list(self.validators["resource-queue"].iter_errors(snapshot)))
 
     def test_guidance_fixture_matches_operation_only_semantics(self) -> None:
         path = (

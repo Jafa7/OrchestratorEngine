@@ -25,6 +25,20 @@ investigation runs may raise the iteration count up to the bounded maximum of
 reproduced failure must be reduced to an owning-module test before it is
 considered fixed.
 
+## Native Windows and macOS acceptance
+
+`tools/run_native_acceptance.py` combines installed CLI identity, bounded
+platform capabilities and a five-iteration full conformance soak into one
+`ORCHESTRATOR_NATIVE_ACCEPTANCE_REPORT`. Native CI runs it from the candidate
+wheel on Windows x64 and macOS Intel/Apple Silicon and retains the JSON report
+as a build artifact. Python 3.12 has a native Windows and Apple Silicon lane in
+addition to the 3.11/3.13 boundary coverage. The report stores hashes and sizes
+instead of raw command output and omits hostname and local paths.
+
+This acceptance does not exercise an interactive Desktop session. Desktop live
+delivery remains `not_tested` until a Windows or Mac owner performs the field
+procedure in [Native acceptance](native-acceptance.md).
+
 ## Historical upgrade matrix
 
 `tools/verify_upgrade_path.py` creates a synthetic project with one installed

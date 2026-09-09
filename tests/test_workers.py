@@ -663,6 +663,75 @@ class WorkerRunTests(unittest.TestCase):
             "/mnt/c/apps/codex.exe",
         )
 
+    def test_run_worker_prefers_explicit_operation_wake_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            binding.write_binding(
+                root, host="codex", target_thread_id="mutable-binding"
+            )
+            target = {
+                "schema_version": 1,
+                "kind": "ORCHESTRATOR_WAKE_TARGET",
+                "host": "codex",
+                "target_thread_id": "operation-owner",
+                "captured_at": "2026-09-09T00:00:00+00:00",
+            }
+            descriptor = workers.run_worker(
+                root,
+                worker="echo",
+                task_id="T-EXPLICIT-WAKE",
+                prompt_file=write_prompt(root),
+                wake_target=target,
+                popen_factory=FakePopen,
+            )
+            binding.write_binding(
+                root, host="codex", target_thread_id="later-binding"
+            )
+            stored = core.load_object(Path(descriptor["descriptor_path"]))
+
+        self.assertEqual(stored["wake_target"], target)
+
+    def test_run_worker_rejects_explicit_target_with_never_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            with self.assertRaisesRegex(workers.WorkerError, "wake-enabled"):
+                workers.run_worker(
+                    root,
+                    worker="echo",
+                    task_id="T-INVALID-WAKE",
+                    prompt_file=write_prompt(root),
+                    wake_policy="never",
+                    wake_target={
+                        "schema_version": 1,
+                        "kind": "ORCHESTRATOR_WAKE_TARGET",
+                        "host": "codex",
+                        "target_thread_id": "operation-owner",
+                        "captured_at": "2026-09-09T00:00:00+00:00",
+                    },
+                    popen_factory=FakePopen,
+                )
+
+    def test_run_worker_rejects_non_schema_wake_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            with self.assertRaisesRegex(workers.WorkerError, "captured_at"):
+                workers.run_worker(
+                    root,
+                    worker="echo",
+                    task_id="T-INCOMPLETE-WAKE",
+                    prompt_file=write_prompt(root),
+                    wake_target={
+                        "schema_version": 1,
+                        "kind": "ORCHESTRATOR_WAKE_TARGET",
+                        "host": "codex",
+                        "target_thread_id": "operation-owner",
+                    },
+                    popen_factory=FakePopen,
+                )
+
     def test_run_worker_never_wake_policy_skips_wake_target(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

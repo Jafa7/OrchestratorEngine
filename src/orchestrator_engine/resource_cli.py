@@ -19,6 +19,10 @@ def add_parser(subparsers):
     init = commands.add_parser("init")
     init.add_argument("--directory", type=Path, required=True)
     init.add_argument("--config", type=Path, required=True)
+    update = commands.add_parser("update")
+    update.add_argument("--directory", type=Path, required=True)
+    update.add_argument("--config", type=Path, required=True)
+    update.add_argument("--expected-revision", type=int, required=True)
     server = commands.add_parser("serve")
     server.add_argument("--directory", type=Path, required=True)
     server.add_argument("--port", type=int, default=0)
@@ -53,11 +57,24 @@ def add_parser(subparsers):
 
 def run(args, root):
     from .resource_queue import Ledger, ResourceError
-    from .resource_service import client, connect, initialize, serve, submit_recipe
+    from .resource_service import (
+        client,
+        connect,
+        initialize,
+        serve,
+        submit_recipe,
+        update_configuration,
+    )
 
     command = args.resource_command
     if command == "init":
         return initialize(args.directory, core.load_object(args.config))
+    if command == "update":
+        return update_configuration(
+            args.directory,
+            core.load_object(args.config),
+            expected_revision=args.expected_revision,
+        )
     if command == "serve":
         serve(args.directory, port=args.port)
         return {"status": "stopped"}

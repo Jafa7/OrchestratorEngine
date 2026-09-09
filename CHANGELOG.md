@@ -4,6 +4,16 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-09-09
+
+- Added phase-scoped resource maintenance capabilities so a cancelled current
+  owner can run registered cleanup and quiescence probes without retaining work
+  authority; private capabilities remain absent from public status and events.
+- Added operation-scoped wake-target files for worker and check dispatch, plus a
+  revision-guarded, stopped-and-drained resource configuration update command.
+- Added privacy-safe native acceptance reports, installed-wheel CI soaks for
+  Windows and macOS, and explicit Desktop/environment field-test boundaries.
+
 ## [1.6.1] - 2026-09-09
 
 - Hardened local resource transport by creating credential files atomically with

@@ -3,6 +3,22 @@
 This guide covers OrchestratorEngine runtime state upgrades. It is separate
 from project-specific legacy bridge work, which belongs in adopting projects.
 
+## Version 1.7.0 resource authority and native acceptance
+
+Resource stages now receive separate epoch-scoped work and maintenance
+capabilities. Before upgrading an active resource authority, stop submissions
+and drain every stage. Existing running stages are not granted new credentials
+retroactively. If an undrained legacy owner reaches cleanup after the upgrade,
+maintenance authentication fails closed and the stage requires the normal
+explicit recovery workflow.
+
+The new revision-guarded `resource update` command requires a stopped and fully
+drained authority. Worker/check dispatch can capture an operation-scoped wake
+target file; existing bindings and operations remain valid. Native release CI
+now installs the candidate wheel and retains privacy-safe Windows/macOS
+acceptance reports. Desktop, sleep/restart and nonlocal-filesystem fields remain
+explicit environment tests rather than inferred support.
+
 ## Version 1.6.0 native runtimes and resource coordination
 
 Native macOS and Windows now support detached lifecycle operations. Upgrade all
@@ -37,7 +53,7 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release is `1.6.1` and the durable JSON contract schema version is
+The current release is `1.7.0` and the durable JSON contract schema version is
 `1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
@@ -45,7 +61,7 @@ PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.6.1"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.7.0"
 ```
 
 ## Version 1.5.0 optional metrics

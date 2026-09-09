@@ -1365,6 +1365,7 @@ def run_worker(
     allow_duplicate: bool = False,
     duplicate_reason: str | None = None,
     lineage: dict[str, Any] | None = None,
+    wake_target: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Spawn a detached supervisor for the worker and return immediately.
 
@@ -1378,6 +1379,14 @@ def run_worker(
         raise WorkerError(
             "wake policy must be one of: " + ", ".join(sorted(WAKE_POLICIES))
         )
+    if wake_target is not None:
+        if wake_policy == "never":
+            raise WorkerError("an explicit wake target requires a wake-enabled policy")
+        try:
+            binding.validate_wake_target(wake_target)
+        except binding.BindingError as error:
+            raise WorkerError(str(error)) from error
+        wake_target = json.loads(json.dumps(wake_target))
     project = project_root.expanduser().resolve()
     config = require_worker(project, worker, state_dir=state_dir)
     if preflight_availability and availability_mode is not None:
@@ -1494,11 +1503,8 @@ def run_worker(
     # Snapshot the dispatching chat BEFORE spawning: the supervisor reads
     # wake_target from task.json, so it must be durable before the child can
     # possibly look for it.
-    wake_target = (
-        capture_wake_target(project, state_dir=state_dir)
-        if wake_policy != "never"
-        else None
-    )
+    if wake_target is None and wake_policy != "never":
+        wake_target = capture_wake_target(project, state_dir=state_dir)
     descriptor = {
         "schema_version": core.SCHEMA_VERSION,
         "kind": TASK_KIND,
@@ -1971,6 +1977,11 @@ def retry_worker_task(
         intent_file=Path(intent_path) if isinstance(intent_path, str) else None,
         wake_policy=str(parent.get("wake_policy", "always")),
         lineage=lineage,
+        wake_target=(
+            parent.get("wake_target")
+            if isinstance(parent.get("wake_target"), dict)
+            else None
+        ),
     )
 
 

@@ -29,6 +29,7 @@ from .resource_queue import (
     canonical,
     digest,
     identifier,
+    normalize_registry,
     validate_subscriber,
 )
 
@@ -165,11 +166,90 @@ def initialize(directory, config):
         ledger.configure(config["resources"])
         config = json.loads(canonical(config))
         config["authority"] = ledger.get("authority")
+        config["revision"] = 1
+        config["resource_digest"] = digest(ledger.get("registry"))
         for project in config["projects"].values():
             project["token"] = secrets.token_urlsafe(32)
             project["root"] = str(Path(project["root"]).resolve())
         _private_atomic_json(directory / "config.json", config)
-    return {"authority": config["authority"], "directory": str(directory)}
+    return {
+        "authority": config["authority"],
+        "directory": str(directory),
+        "revision": config["revision"],
+        "resource_digest": config["resource_digest"],
+    }
+
+
+def update_configuration(directory, config, *, expected_revision):
+    """Replace a drained authority configuration without replacing its identity."""
+    directory = local_directory(directory)
+    validate_config(config)
+    if type(expected_revision) is not int or expected_revision < 1:
+        raise ResourceError("expected revision must be a positive integer")
+    with platform_runtime.exclusive_file_lock(
+        directory / "service.lock", timeout_seconds=0
+    ):
+        current = core.load_object(directory / "config.json")
+        revision = current.get("revision", 1)
+        if revision != expected_revision:
+            raise ResourceError(
+                f"configuration revision changed: expected {expected_revision}, "
+                f"found {revision}"
+            )
+        with contextlib.closing(Ledger(directory)) as ledger:
+            if ledger.get("authority") != current.get("authority"):
+                raise ResourceError(
+                    "authority identity mismatch; reconcile restored state"
+                )
+            old_registry = ledger.get("registry")
+            recorded_digest = current.get("resource_digest")
+            if recorded_digest is not None and recorded_digest != digest(old_registry):
+                raise ResourceError(
+                    "authority configuration does not match the resource ledger"
+                )
+            active = ledger.stages(active=True)
+            if active:
+                raise ResourceError(
+                    "configuration update requires a stopped, fully drained authority"
+                )
+            updated = json.loads(canonical(config))
+            for name, registered in current["projects"].items():
+                replacement = updated["projects"].get(name)
+                if replacement is None:
+                    raise ResourceError("configuration update cannot remove projects")
+                if Path(replacement["root"]).resolve() != Path(registered["root"]):
+                    raise ResourceError(
+                        "configuration update cannot change an existing project root"
+                    )
+                replacement["token"] = registered["token"]
+            for name, project in updated["projects"].items():
+                project["root"] = str(Path(project["root"]).resolve())
+                if name not in current["projects"]:
+                    project["token"] = secrets.token_urlsafe(32)
+            registry = normalize_registry(updated["resources"])
+            updated.update(
+                authority=current["authority"],
+                revision=revision + 1,
+                resource_digest=digest(registry),
+            )
+            staged = directory / "config.next.json"
+            _private_atomic_json(staged, updated)
+            try:
+                ledger.configure(updated["resources"])
+                core.atomic_replace(staged, directory / "config.json")
+            except BaseException:
+                if ledger.get("registry") != old_registry:
+                    ledger.configure(old_registry)
+                raise
+            finally:
+                with contextlib.suppress(OSError):
+                    staged.unlink()
+    return {
+        "authority": updated["authority"],
+        "directory": str(directory),
+        "revision": updated["revision"],
+        "resource_digest": updated["resource_digest"],
+    }
 
 
 def input_manifest(root, inputs):
@@ -230,6 +310,13 @@ class Authority:
                 raise ResourceError(
                     "authority identity mismatch; reconcile restored state"
                 )
+            expected_registry = self.config.get("resource_digest")
+            if expected_registry is not None and expected_registry != digest(
+                ledger.get("registry")
+            ):
+                raise ResourceError(
+                    "authority configuration does not match the resource ledger"
+                )
 
     def authenticate(self, project, token):
         registered = self.config["projects"].get(project)
@@ -256,20 +343,36 @@ class Authority:
                 return ledger.metrics(project)
             if action == "context":
                 stage = ledger.stage(payload["stage"])
+                purpose = payload.get("purpose", "work")
+                expected_token = (
+                    stage.get("launch_token", "")
+                    if purpose == "work"
+                    else stage.get("maintenance_token", "")
+                    if purpose == "maintenance"
+                    else ""
+                )
+                supplied_token = payload.get("token")
+                token_valid = (
+                    isinstance(expected_token, str)
+                    and bool(expected_token)
+                    and isinstance(supplied_token, str)
+                    and bool(supplied_token)
+                    and hmac.compare_digest(expected_token, supplied_token)
+                )
                 if (
                     stage["project"] != project
                     or stage["request"] != request
                     or stage["state"] != "running"
-                    or stage.get("cancel_requested")
                     or stage["epoch"] != payload.get("epoch")
-                    or not hmac.compare_digest(
-                        stage.get("launch_token", ""), payload.get("token", "")
-                    )
+                    or purpose not in {"work", "maintenance"}
+                    or (purpose == "work" and stage.get("cancel_requested"))
+                    or not token_valid
                 ):
                     raise ResourceError("resource execution context is revoked")
                 return {
                     "authority": ledger.get("authority"),
                     "valid": True,
+                    "purpose": purpose,
                     "allocation": stage["allocation"],
                     "incarnations": stage["resource_incarnations"],
                 }

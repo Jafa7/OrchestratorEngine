@@ -757,6 +757,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     worker_run.add_argument("--intent-file", type=Path)
     worker_run.add_argument(
+        "--wake-target-file",
+        type=Path,
+        help="Use this validated operation-scoped wake target snapshot.",
+    )
+    worker_run.add_argument(
         "--wake-policy",
         choices=("always", "on-failure", "never"),
         default="always",
@@ -850,6 +855,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--wake-policy",
         choices=sorted(local_checks.WAKE_POLICIES),
         default="auto",
+    )
+    check_run.add_argument(
+        "--wake-target-file",
+        type=Path,
+        help="Use this validated operation-scoped wake target snapshot.",
     )
     check_run.add_argument(
         "--long-threshold-seconds",
@@ -1596,6 +1606,11 @@ def run_local_check_command(args: argparse.Namespace, root: Path) -> dict:
             execution=args.execution,
             wake_policy=args.wake_policy,
             long_threshold_seconds=args.long_threshold_seconds,
+            wake_target=(
+                core.load_object(args.wake_target_file)
+                if args.wake_target_file
+                else None
+            ),
         )
     if args.check_command == "supervise":
         return local_checks.supervise_check(
@@ -1787,6 +1802,11 @@ def run_worker_cli_command(args: argparse.Namespace, root: Path) -> object:
             intent_file=args.intent_file,
             allow_duplicate=args.allow_duplicate,
             duplicate_reason=args.duplicate_reason,
+            wake_target=(
+                core.load_object(args.wake_target_file)
+                if args.wake_target_file
+                else None
+            ),
         )
     if args.worker_command == "retry":
         return workers.retry_worker_task(

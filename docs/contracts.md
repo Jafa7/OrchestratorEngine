@@ -509,6 +509,17 @@ optional and is used when the bound thread is only reachable through a
 specific launcher, for example Windows `codex.exe` for Codex Desktop threads
 stored on the Windows side.
 
+For concurrent dispatchers, avoid a mutable `bind` followed by dispatch as one
+logical operation. Pass an already captured and schema-valid snapshot with
+`worker run --wake-target-file TARGET.json` or
+`check run --wake-target-file TARGET.json`. The operation stores that exact
+destination before launching and does not read the current project binding.
+The file is local dispatch authority: protect it with the same OS-account and
+repository-state controls as the binding. `--wake-policy never` rejects an
+explicit target because the two contracts would conflict. Bounded worker
+retries inherit the original operation target instead of consulting a later
+project binding.
+
 ## Channel routing
 
 Each delivery channel only consumes signals for hosts it can handle:
@@ -1016,8 +1027,15 @@ as an unknown `--check-id` filter.
 Version 1.6.0 adds an opt-in native-local resource authority. The `resource-queue`
 schema describes `ORCHESTRATOR_RESOURCE_QUEUE` status with authority identity,
 stages, allocations, epochs, terminal state and action-required state. Public
-status omits launch tokens. Projects authenticate to explicitly registered
+status omits work and maintenance capability tokens. Projects authenticate to explicitly registered
 recipes; the engine does not discover or grant access to neighboring projects.
+
+Each admitted stage receives separate work and maintenance capabilities.
+Cancellation revokes work context immediately, while the current owner may use
+the maintenance capability only for runner-selected registered cleanup and
+release-probe phases. Both capabilities are epoch-scoped and are removed when
+ownership ends. This is lifecycle isolation inside the cooperative authority,
+not a sandbox against arbitrary same-user project code.
 
 A check suite may select `resource_recipe` instead of local `commands`. Execution
 then belongs to the resource authority, and `check status` projects its state.

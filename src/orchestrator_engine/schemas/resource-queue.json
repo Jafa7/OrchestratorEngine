@@ -17,7 +17,12 @@
       "items": {
         "type": "object",
         "required": ["id", "request", "project", "name", "state", "allocation", "epoch"],
-        "not": {"required": ["launch_token"]},
+        "not": {
+          "anyOf": [
+            {"required": ["launch_token"]},
+            {"required": ["maintenance_token"]}
+          ]
+        },
         "properties": {
           "id": {"type": "string", "minLength": 1},
           "request": {"type": "string", "minLength": 1},

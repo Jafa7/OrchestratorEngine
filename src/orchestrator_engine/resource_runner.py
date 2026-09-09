@@ -15,6 +15,18 @@ from . import core, platform_runtime, worker_lease, workers
 from .resource_queue import Ledger, ResourceError
 
 
+def phase_capability(stage, *, maintenance):
+    field = "maintenance_token" if maintenance else "launch_token"
+    token = stage.get(field)
+    if not isinstance(token, str) or not token:
+        phase = "maintenance" if maintenance else "work"
+        raise ResourceError(
+            f"{phase} capability is unavailable; drain before upgrade or recover "
+            "the legacy stage explicitly"
+        )
+    return token
+
+
 def run_command(command, workspace, output, *, ledger, stage, index, cleanup=False):
     argv = [
         arg.replace("{python}", sys.executable).replace("{workspace}", str(workspace))
@@ -37,7 +49,8 @@ def run_command(command, workspace, output, *, ledger, stage, index, cleanup=Fal
             "request": stage["request"],
             "epoch": stage["epoch"],
             "allocation": stage["allocation"],
-            "token": stage["launch_token"],
+            "purpose": "maintenance" if cleanup else "work",
+            "token": phase_capability(stage, maintenance=cleanup),
         }
     )
     start = time.monotonic()

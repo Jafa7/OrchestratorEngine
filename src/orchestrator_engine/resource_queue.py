@@ -21,6 +21,7 @@ from . import binding, core, worker_lease
 
 TERMINAL = {"passed", "failed", "cancelled", "invalidated", "skipped"}
 OWNING = {"granted", "launching", "running", "cleanup", "recovery_required"}
+PRIVATE_STAGE_FIELDS = {"launch_token", "maintenance_token", "commands"}
 
 
 class ResourceError(core.OrchestratorError):
@@ -489,6 +490,7 @@ class Ledger:
                     "ready_seq",
                     "protection",
                     "launch_token",
+                    "maintenance_token",
                     "cancel_requested",
                     "supervisor_identity",
                 ):
@@ -584,6 +586,7 @@ class Ledger:
                         allocation=chosen,
                         epoch=stage["epoch"] + 1,
                         launch_token=secrets.token_urlsafe(32),
+                        maintenance_token=secrets.token_urlsafe(32),
                         granted_at=self.clock(),
                         reason=None,
                     )
@@ -799,6 +802,7 @@ class Ledger:
             finished_at=self.clock(),
         )
         stage.pop("launch_token", None)
+        stage.pop("maintenance_token", None)
         self.save(stage)
         self.put("released", sorted(set(self.get("released")) | set(released)))
         self.event(
@@ -863,7 +867,7 @@ class Ledger:
                         {
                             k: v
                             for k, v in s.items()
-                            if k not in {"launch_token", "commands"}
+                            if k not in PRIVATE_STAGE_FIELDS
                         }
                         for s in stages
                     ],
@@ -887,7 +891,7 @@ class Ledger:
             else self.stages(active=True, project=project)
         )
         stages = [
-            {k: v for k, v in s.items() if k not in {"launch_token", "commands"}}
+            {k: v for k, v in s.items() if k not in PRIVATE_STAGE_FIELDS}
             for s in stages
             if s["project"] == project
         ]

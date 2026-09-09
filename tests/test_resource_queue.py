@@ -24,6 +24,7 @@ from orchestrator_engine import (
     resource_queue,
     resource_runner,
     resource_service,
+    worker_lease,
 )
 from orchestrator_engine.resource_queue import (
     OWNING,
@@ -42,6 +43,7 @@ from orchestrator_engine.resource_service import (
     input_manifest,
     local_directory,
     serve,
+    update_configuration,
 )
 
 
@@ -737,6 +739,186 @@ class ResourceNativeTests(unittest.TestCase):
         with contextlib.closing(Ledger(self.directory)) as ledger:
             self.assertEqual(ledger.stages(request)[0]["state"], "cancelled")
             self.assertEqual(ledger.stages(request)[0]["allocation"], {})
+
+    def test_cancelled_runner_cleanup_and_probe_use_maintenance_context(self):
+        self.directory = self.directory / "maintenance-authority"
+        context_check = (
+            "import json, os; from pathlib import Path; "
+            "from orchestrator_engine import core; "
+            "from orchestrator_engine.resource_service import client; "
+            "connection=core.load_object(Path(os.environ["
+            "'ORCHESTRATOR_RESOURCE_CONNECTION'])); "
+            "context=json.loads(os.environ['ORCHESTRATOR_RESOURCE_CONTEXT']); "
+            "result=client(connection, 'context', context); "
+            "assert result['valid'] and result['purpose']=='maintenance'"
+        )
+        stage = self.config["projects"]["sample"]["recipes"]["verify"]["stages"][0]
+        stage["commands"] = [
+            {"argv": ["{python}", "-c", "import time; time.sleep(30)"]}
+        ]
+        stage["cleanup"] = [{"argv": ["{python}", "-c", context_check]}]
+        self.config["resources"]["db"] = {
+            "release": "probe",
+            "probe": {
+                "argv": ["{python}", "-c", context_check],
+                "timeout_seconds": 5,
+            },
+        }
+        initialize(self.directory, self.config)
+
+        with self.service() as connection:
+            request = client(connection, "submit", self.payload())["request"]
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                with contextlib.closing(Ledger(self.directory)) as ledger:
+                    if ledger.stages(request)[0].get("command_identity"):
+                        break
+                time.sleep(0.05)
+            else:
+                self.fail("resource command did not start")
+            client(connection, "cancel", {"request": request})
+            report = self.await_terminal(connection, request)
+
+        self.assertTrue(report["terminal"])
+        self.assertFalse(report["action_required"])
+        self.assertEqual(report["stages"][0]["state"], "cancelled")
+        evidence = core.load_object(Path(report["stages"][0]["evidence"]["path"]))
+        self.assertEqual(evidence["results"][-1]["exit_code"], 0)
+        self.assertEqual(evidence["probes"]["db"]["exit_code"], 0)
+
+    def test_cancelled_owner_retains_only_phase_scoped_maintenance_context(self):
+        authority = Authority(self.directory)
+        request = authority.submit("sample", self.payload())["request"]
+        with contextlib.closing(Ledger(self.directory)) as ledger:
+            stage = ledger.schedule()[0]
+            ledger.attach(
+                stage["id"],
+                stage["epoch"],
+                worker_lease.process_identity(os.getpid()),
+            )
+            stage = ledger.admit(stage["id"], stage["launch_token"])
+        common = {
+            "request": request,
+            "stage": stage["id"],
+            "epoch": stage["epoch"],
+        }
+        work = {**common, "purpose": "work", "token": stage["launch_token"]}
+        maintenance = {
+            **common,
+            "purpose": "maintenance",
+            "token": stage["maintenance_token"],
+        }
+        self.assertEqual(authority.call("sample", "context", work)["purpose"], "work")
+        with contextlib.closing(Ledger(self.directory)) as ledger:
+            ledger.cancel(request)
+        with self.assertRaisesRegex(ResourceError, "revoked"):
+            authority.call("sample", "context", work)
+        with self.assertRaisesRegex(ResourceError, "revoked"):
+            authority.call(
+                "sample",
+                "context",
+                {**common, "purpose": "maintenance", "token": ""},
+            )
+        self.assertEqual(
+            authority.call("sample", "context", maintenance)["purpose"],
+            "maintenance",
+        )
+        with self.assertRaisesRegex(ResourceError, "revoked"):
+            authority.call(
+                "sample",
+                "context",
+                {**work, "token": stage["maintenance_token"]},
+            )
+        with contextlib.closing(Ledger(self.directory)) as ledger:
+            ledger.finish(
+                stage["id"], stage["epoch"], "cancelled", ["db"], {"ok": True}
+            )
+        with self.assertRaisesRegex(ResourceError, "revoked"):
+            authority.call("sample", "context", maintenance)
+
+    def test_legacy_stage_without_maintenance_capability_fails_closed(self):
+        with self.assertRaisesRegex(ResourceError, "drain before upgrade"):
+            resource_runner.phase_capability(
+                {"launch_token": "legacy-work-token"}, maintenance=True
+            )
+
+    def test_legacy_running_stage_cannot_authenticate_empty_maintenance_token(self):
+        authority = Authority(self.directory)
+        request = authority.submit("sample", self.payload())["request"]
+        with contextlib.closing(Ledger(self.directory)) as ledger:
+            stage = ledger.schedule()[0]
+            ledger.attach(
+                stage["id"],
+                stage["epoch"],
+                worker_lease.process_identity(os.getpid()),
+            )
+            stage = ledger.admit(stage["id"], stage["launch_token"])
+            stage.pop("maintenance_token")
+            ledger.save(stage)
+        payload = {
+            "request": request,
+            "stage": stage["id"],
+            "epoch": stage["epoch"],
+            "purpose": "maintenance",
+        }
+
+        for supplied in (None, ""):
+            candidate = dict(payload)
+            if supplied is not None:
+                candidate["token"] = supplied
+            with self.subTest(token=supplied), self.assertRaisesRegex(
+                ResourceError, "revoked"
+            ):
+                authority.call("sample", "context", candidate)
+
+    def test_private_stage_capabilities_never_enter_public_status(self):
+        authority = Authority(self.directory)
+        request = authority.submit("sample", self.payload())["request"]
+        with contextlib.closing(Ledger(self.directory)) as ledger:
+            stage = ledger.schedule()[0]
+            snapshot = ledger.snapshot("sample", request)
+        self.assertIn("launch_token", stage)
+        self.assertIn("maintenance_token", stage)
+        self.assertNotIn("launch_token", snapshot["stages"][0])
+        self.assertNotIn("maintenance_token", snapshot["stages"][0])
+
+    def test_configuration_update_is_revisioned_drained_and_preserves_identity(self):
+        before = core.load_object(self.directory / "config.json")
+        updated = json.loads(json.dumps(self.config))
+        updated["projects"]["sample"]["recipes"]["verify"]["stages"][0][
+            "commands"
+        ][0]["argv"] = ["{python}", "-c", "print('updated')"]
+        result = update_configuration(
+            self.directory, updated, expected_revision=before["revision"]
+        )
+        after = core.load_object(self.directory / "config.json")
+        self.assertEqual(result["revision"], before["revision"] + 1)
+        self.assertEqual(after["authority"], before["authority"])
+        self.assertEqual(
+            after["projects"]["sample"]["token"],
+            before["projects"]["sample"]["token"],
+        )
+        Authority(self.directory)
+        with self.assertRaisesRegex(ResourceError, "revision changed"):
+            update_configuration(
+                self.directory, updated, expected_revision=before["revision"]
+            )
+
+    def test_configuration_update_refuses_live_or_waiting_work(self):
+        authority = Authority(self.directory)
+        authority.submit("sample", self.payload())
+        with self.assertRaisesRegex(ResourceError, "fully drained"):
+            update_configuration(
+                self.directory, self.config, expected_revision=1
+            )
+
+    def test_configuration_update_rejects_inconsistent_ledger(self):
+        with contextlib.closing(Ledger(self.directory)) as ledger:
+            ledger.configure({"changed": leaf()})
+        with self.assertRaisesRegex(ResourceError, "does not match"):
+            update_configuration(
+                self.directory, self.config, expected_revision=1
+            )
 
     def test_missing_runner_evidence_blocks_delivery_but_not_capacity(self):
         authority = Authority(self.directory)
