@@ -484,6 +484,7 @@ def heartbeat_health(
     heartbeat: dict[str, Any] | None,
     *,
     alive: bool = True,
+    process_member_checker=platform_runtime.process_group_member_state,
 ) -> dict[str, Any]:
     max_age = heartbeat_max_age_seconds(service_state)
     if not alive:
@@ -502,14 +503,24 @@ def heartbeat_health(
         }
     service_pid = service_state.get("pid")
     heartbeat_pid = heartbeat.get("pid")
+    process_membership = "leader"
     if heartbeat_pid != service_pid:
-        return {
-            "healthy": False,
-            "reason": "pid_mismatch",
-            "age_seconds": heartbeat_age_seconds(heartbeat),
-            "max_age_seconds": max_age,
-            "heartbeat_pid": heartbeat_pid,
-        }
+        process_membership = process_member_checker(
+            service_state.get("process_identity"), heartbeat_pid
+        )
+        if process_membership != "member":
+            return {
+                "healthy": False,
+                "reason": "pid_mismatch",
+                "age_seconds": heartbeat_age_seconds(heartbeat),
+                "max_age_seconds": max_age,
+                "heartbeat_pid": heartbeat_pid,
+                "process_membership": process_membership,
+            }
+    process_identity = {
+        "heartbeat_pid": heartbeat_pid,
+        "process_membership": process_membership,
+    }
     age = heartbeat_age_seconds(heartbeat)
     if age is None:
         return {
@@ -517,6 +528,7 @@ def heartbeat_health(
             "reason": "invalid_timestamp",
             "age_seconds": None,
             "max_age_seconds": max_age,
+            **process_identity,
         }
     if age > max_age:
         return {
@@ -524,12 +536,14 @@ def heartbeat_health(
             "reason": "stale",
             "age_seconds": age,
             "max_age_seconds": max_age,
+            **process_identity,
         }
     return {
         "healthy": True,
         "reason": "fresh",
         "age_seconds": age,
         "max_age_seconds": max_age,
+        **process_identity,
     }
 
 
@@ -1343,6 +1357,7 @@ def service_status(
     service_file: Path | None = None,
     host: str | None = None,
     process_checker=process_alive,
+    process_member_checker=platform_runtime.process_group_member_state,
 ) -> dict[str, Any]:
     projects = [path.expanduser().resolve() for path in project_roots]
     service_path = service_file or default_callback_service_path(
@@ -1440,7 +1455,12 @@ def service_status(
         alive = identity_status["state"] == "alive"
     else:
         alive = isinstance(pid, int) and process_checker(pid)
-    heartbeat_status = heartbeat_health(state, heartbeat, alive=alive)
+    heartbeat_status = heartbeat_health(
+        state,
+        heartbeat,
+        alive=alive,
+        process_member_checker=process_member_checker,
+    )
     if alive and heartbeat_status["healthy"] and isinstance(recorded_identity, dict):
         status = "running"
     elif alive:
@@ -1469,6 +1489,8 @@ def service_status(
         "heartbeat_status": heartbeat_status["reason"],
         "heartbeat_healthy": heartbeat_status["healthy"],
         "heartbeat_max_age_seconds": heartbeat_status["max_age_seconds"],
+        "heartbeat_pid": heartbeat_status.get("heartbeat_pid"),
+        "heartbeat_process_membership": heartbeat_status.get("process_membership"),
         "log_path": state.get("log_path"),
         "command": state.get("command"),
         "pending_inbox_count": inbox_count,

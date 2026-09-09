@@ -227,6 +227,19 @@ def process_group(pid: int) -> int | None:
         return None
 
 
+def process_group_member_state(identity: object, pid: object) -> str:
+    """Return member, not_member, or unknown for a recorded process group."""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return "not_member"
+    if os.name == "nt":
+        from . import runtime_windows
+
+        return runtime_windows.job_member_state(identity, pid)
+    if not isinstance(identity, dict):
+        return "unknown"
+    return "member" if identity.get("pid") == pid else "not_member"
+
+
 def signal_group(pgid: int, sent: int, *, identity: object = None) -> None:
     if os.name == "nt":
         from . import runtime_windows

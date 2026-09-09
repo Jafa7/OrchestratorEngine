@@ -4,6 +4,12 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-09-09
+
+- Native Windows watcher health now accepts a heartbeat from a process proven
+  to belong to the service's exact recorded Job Object. Unrelated, unavailable
+  and stale process identities remain fail-closed.
+
 ## [1.8.0] - 2026-09-09
 
 - Added point-in-time completion-delivery admission for workers, local checks,

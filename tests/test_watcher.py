@@ -1259,6 +1259,76 @@ class WatcherTests(unittest.TestCase):
         self.assertFalse(status["heartbeat_healthy"])
         self.assertEqual(status["heartbeat_status"], "pid_mismatch")
 
+    def test_service_status_accepts_heartbeat_from_proven_owned_member(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            service_file = watcher.default_service_path(root)
+            heartbeat_file = watcher.default_heartbeat_path(root)
+            identity = {
+                "source": "synthetic-process",
+                "pid": 4242,
+                "start_ticks": 100,
+            }
+            core.atomic_json(
+                service_file,
+                {
+                    "schema_version": 1,
+                    "kind": watcher.SERVICE_KIND,
+                    "status": "running",
+                    "pid": 4242,
+                    "process_group": 4242,
+                    "process_identity": identity,
+                    "interval_seconds": 5,
+                },
+            )
+            core.atomic_json(
+                heartbeat_file,
+                {
+                    "schema_version": 1,
+                    "kind": "LOCAL_AI_ORCHESTRATOR_WATCHER_HEARTBEAT",
+                    "pid": 7777,
+                    "checked_at": core.utc_now(),
+                },
+            )
+            with mock.patch.object(
+                worker_lease,
+                "identity_state",
+                return_value={
+                    "state": "alive",
+                    "identity_verified": True,
+                    "observed": identity,
+                },
+            ):
+                status = watcher.service_status(
+                    [root],
+                    process_member_checker=lambda _identity, _pid: "member",
+                )
+
+        self.assertEqual(status["status"], "running")
+        self.assertTrue(status["heartbeat_healthy"])
+        self.assertEqual(status["heartbeat_status"], "fresh")
+        self.assertEqual(status["heartbeat_pid"], 7777)
+        self.assertEqual(status["heartbeat_process_membership"], "member")
+
+    def test_heartbeat_rejects_unproven_mismatched_process(self) -> None:
+        service = {
+            "pid": 4242,
+            "process_identity": {"pid": 4242},
+            "interval_seconds": 5,
+        }
+        heartbeat = {"pid": 7777, "checked_at": core.utc_now()}
+
+        for membership in ("not_member", "unknown"):
+            with self.subTest(membership=membership):
+                result = watcher.heartbeat_health(
+                    service,
+                    heartbeat,
+                    process_member_checker=lambda _identity, _pid: membership,
+                )
+                self.assertFalse(result["healthy"])
+                self.assertEqual(result["reason"], "pid_mismatch")
+                self.assertEqual(result["process_membership"], membership)
+
     def test_service_status_counts_only_unseen_signals(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

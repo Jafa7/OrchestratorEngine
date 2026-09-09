@@ -232,8 +232,8 @@ def active_processes(handle) -> int:
     return info.active
 
 
-def member_handles(handle) -> list:
-    """Reserve process objects before termination; accounting alone is not exit."""
+def member_pids(handle) -> tuple[int, ...]:
+    """Return the active process IDs owned by an already-open Job Object."""
     capacity = 16
     while True:
         buffer = ctypes.create_string_buffer(
@@ -242,13 +242,17 @@ def member_handles(handle) -> list:
         if api().QueryInformationJobObject(handle, 3, buffer, len(buffer), None):
             count = ctypes.c_uint32.from_buffer(buffer, 4).value
             pids = (ctypes.c_size_t * count).from_buffer(buffer, 8)
-            break
+            return tuple(int(pid) for pid in pids)
         if ctypes.get_last_error() != 234:
             raise ctypes.WinError(ctypes.get_last_error())
         capacity = max(capacity * 2, ctypes.c_uint32.from_buffer(buffer).value)
+
+
+def member_handles(handle) -> list:
+    """Reserve process objects before termination; accounting alone is not exit."""
     handles = []
     try:
-        for pid in pids:
+        for pid in member_pids(handle):
             process = api().OpenProcess(SYNCHRONIZE, False, pid)
             if process:
                 handles.append(process)
@@ -259,6 +263,25 @@ def member_handles(handle) -> list:
         for process in handles:
             api().CloseHandle(process)
         raise
+
+
+def job_member_state(identity: object, pid: object) -> str:
+    """Prove whether a live PID belongs to the exact recorded Job Object."""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return "not_member"
+    try:
+        name = job_name(identity)
+    except ValueError:
+        return "unknown"
+    handle = api().OpenJobObjectW(JOB_QUERY, False, name)
+    if not handle:
+        return "unknown"
+    try:
+        return "member" if pid in member_pids(handle) else "not_member"
+    except OSError:
+        return "unknown"
+    finally:
+        api().CloseHandle(handle)
 
 
 def job_state(identity: object) -> str:

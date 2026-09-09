@@ -1,6 +1,6 @@
 # Platform support
 
-The table below describes v1.8.0. Native macOS and Windows lifecycle backends
+The table below describes v1.8.1. Native macOS and Windows lifecycle backends
 join Linux/WSL support. See [Native runtime packages](native-runtime-packages.md)
 for process containment boundaries and the exact-candidate CI acceptance gates.
 
@@ -37,7 +37,9 @@ Process inspection uses native kernel creation identities: Linux process-stat
 ticks and boot ID, macOS BSD process start time and boot-session UUID, and
 Windows creation FILETIME and machine identity. Unavailable identity is unknown,
 not evidence of exit. Native Windows termination uses Job Objects; Linux and
-macOS use POSIX groups. Deliberately escaped POSIX groups and cross-OS process
+macOS use POSIX groups. A Windows watcher heartbeat from a virtual-environment
+redirector descendant is accepted only after the runtime proves membership in
+the service's exact recorded Job Object. Deliberately escaped POSIX groups and cross-OS process
 bridges require separate adopter containment contracts.
 
 Host delivery may cross that boundary through platform interop. For example,

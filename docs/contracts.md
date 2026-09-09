@@ -1837,6 +1837,16 @@ The watcher writes:
 - `thread-wakeups/<event_id>.json` — legacy-named host delivery receipt path,
   retained as a schema-version-1 file contract.
 
+Callback service health binds a fresh heartbeat to the recorded service
+identity. On Linux and macOS the heartbeat PID is the service leader. Native
+Windows launch barriers and virtual-environment redirectors may place the
+executing interpreter below that leader; in that case the heartbeat is healthy
+only when its PID is proven to be an active member of the exact named Job Object
+derived from the recorded process creation identity. An unrelated PID, an
+unavailable membership query, a reused leader PID or a stale heartbeat remains
+unhealthy. `service status` reports `heartbeat_pid` and
+`heartbeat_process_membership` for this decision.
+
 Within one watcher state file, delivery identity is the full resolved project
 root plus `event_id`, represented internally by a bounded
 `seen_signal_keys` hash key. This prevents two projects with the same basename

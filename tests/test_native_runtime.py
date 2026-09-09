@@ -331,6 +331,55 @@ class MacOSIdentityTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name == "nt", "requires native Windows Job Objects")
 class WindowsJobTests(unittest.TestCase):
+    def test_venv_redirected_watcher_heartbeat_is_owned_and_stops(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            spawned = []
+            spawn = platform_runtime.spawn
+
+            def capture(*args, **kwargs):
+                process = spawn(*args, **kwargs)
+                spawned.append(process)
+                return process
+
+            with mock.patch.object(platform_runtime, "spawn", side_effect=capture):
+                started = watcher.start_service(
+                    [root],
+                    interval_seconds=0.05,
+                    state_path=None,
+                    service_file=None,
+                    action="callback",
+                    target_thread_id=None,
+                    codex=sys.executable,
+                    host="codex",
+                )
+            service_path = Path(started["service_file"])
+            deadline = time.monotonic() + 10
+            status = None
+            try:
+                while time.monotonic() < deadline:
+                    status = watcher.service_status([root], host="codex")
+                    if status["status"] == "running":
+                        break
+                    time.sleep(0.05)
+                self.assertIsNotNone(status)
+                self.assertEqual(status["status"], "running", status)
+                self.assertNotEqual(status["heartbeat_pid"], started["pid"])
+                self.assertEqual(
+                    status["heartbeat_process_membership"], "member"
+                )
+            finally:
+                stopped = watcher.stop_service(
+                    [root], service_file=service_path, host="codex"
+                )
+                for process in spawned:
+                    process.wait(timeout=5)
+            self.assertEqual(stopped["status"], "stopped")
+            self.assertEqual(
+                worker_lease.identity_state(started["process_identity"])["state"],
+                "gone",
+            )
+
     def test_delayed_assignment_contains_the_executing_python_process(self):
         from ctypes import wintypes
 
