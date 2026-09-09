@@ -955,7 +955,7 @@ class WatcherTests(unittest.TestCase):
                     "pid": 4242,
                     "process_group": 4242,
                     "process_identity": {
-                        "source": "linux-proc-v1",
+                        "source": worker_lease.IDENTITY_SOURCE,
                         "pid": 4242,
                         "start_ticks": 10,
                     },
@@ -966,7 +966,7 @@ class WatcherTests(unittest.TestCase):
                 worker_lease,
                 "process_identity",
                 return_value={
-                    "source": "linux-proc-v1",
+                    "source": worker_lease.IDENTITY_SOURCE,
                     "pid": 4242,
                     "start_ticks": 20,
                     "state": "S",
@@ -983,7 +983,7 @@ class WatcherTests(unittest.TestCase):
 
     def test_service_stop_signals_only_matching_identity(self) -> None:
         recorded = {
-            "source": "linux-proc-v1",
+            "source": worker_lease.IDENTITY_SOURCE,
             "pid": 4242,
             "start_ticks": 10,
             "state": "S",
@@ -2418,6 +2418,7 @@ class CodexSessionQueueTests(unittest.TestCase):
                         signal_record,
                         target_thread_id="thread-1",
                         runner=runner,
+                        activator=lambda _thread: {"activation": "test_stub"},
                     )
                 )
             )
@@ -2428,6 +2429,7 @@ class CodexSessionQueueTests(unittest.TestCase):
                         signal_record,
                         target_thread_id="thread-1",
                         runner=runner,
+                        activator=lambda _thread: {"activation": "test_stub"},
                     )
                 )
             )

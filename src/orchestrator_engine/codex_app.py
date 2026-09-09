@@ -194,28 +194,13 @@ def _terminate_diagnostic_process_tree(
     """Stop a timed-out diagnostic and fail closed if cleanup is uncertain."""
 
     if os.name == "nt":
-        taskkill_succeeded = False
         try:
-            taskkill = subprocess.run(
-                ["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
-                check=False,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=CODEX_DIAGNOSTIC_TERMINATION_TIMEOUT_SECONDS,
-            )
-            taskkill_succeeded = taskkill.returncode == 0
-        except (OSError, subprocess.SubprocessError):
-            with contextlib.suppress(OSError):
-                process.kill()
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            process.wait(timeout=CODEX_DIAGNOSTIC_TERMINATION_TIMEOUT_SECONDS)
-        direct_process_gone = not platform_runtime.process_alive(process.pid)
+            result = platform_runtime.stop_owned(process, reason="diagnostic_timeout")
+        except OSError:
+            return {"scope": "job_object", "termination": "unconfirmed"}
         return {
-            "scope": "process_tree",
-            "termination": "confirmed"
-            if taskkill_succeeded and direct_process_gone
-            else "unconfirmed",
+            "scope": "job_object",
+            "termination": "confirmed" if result["exited"] else "unconfirmed",
         }
 
     process_group = process.pid
@@ -240,8 +225,7 @@ def _terminate_diagnostic_process_tree(
 
     deadline = time.monotonic() + CODEX_DIAGNOSTIC_TERMINATION_GRACE_SECONDS
     while (
-        _diagnostic_process_group_alive(process_group)
-        and time.monotonic() < deadline
+        _diagnostic_process_group_alive(process_group) and time.monotonic() < deadline
     ):
         time.sleep(0.02)
     if _diagnostic_process_group_alive(process_group):
@@ -260,8 +244,7 @@ def _terminate_diagnostic_process_tree(
         process.wait(timeout=CODEX_DIAGNOSTIC_TERMINATION_TIMEOUT_SECONDS)
     deadline = time.monotonic() + CODEX_DIAGNOSTIC_TERMINATION_TIMEOUT_SECONDS
     while (
-        _diagnostic_process_group_alive(process_group)
-        and time.monotonic() < deadline
+        _diagnostic_process_group_alive(process_group) and time.monotonic() < deadline
     ):
         time.sleep(0.02)
     return {
@@ -493,11 +476,13 @@ def diagnose_codex_host(
                 tempfile.TemporaryFile() as stderr_file,
             ):
                 try:
-                    process = subprocess.Popen(
+                    process = platform_runtime.spawn(
+                        subprocess.Popen,
                         [codex, "doctor", "--json"],
                         stdin=subprocess.DEVNULL,
                         stdout=stdout_file,
                         stderr=stderr_file,
+                        owned=True,
                         start_new_session=os.name != "nt",
                         creationflags=(
                             subprocess.CREATE_NEW_PROCESS_GROUP
@@ -574,8 +559,7 @@ def diagnose_codex_host(
     capture_metadata = {**output_metadata, **stderr_metadata}
     if (
         output_metadata["output_bytes"] > CODEX_DIAGNOSTIC_OUTPUT_LIMIT_BYTES
-        or stderr_metadata["stderr_bytes"]
-        > CODEX_DIAGNOSTIC_OUTPUT_LIMIT_BYTES
+        or stderr_metadata["stderr_bytes"] > CODEX_DIAGNOSTIC_OUTPUT_LIMIT_BYTES
     ):
         return {
             **base,
@@ -618,8 +602,7 @@ def diagnose_codex_host(
             **summary,
         }
     context_limited_exit = (
-        completed.returncode == 1
-        and _nonzero_exit_is_context_limited(summary)
+        completed.returncode == 1 and _nonzero_exit_is_context_limited(summary)
     )
     result = {
         **base,
@@ -774,13 +757,15 @@ class AppServer:
     ) -> None:
         stderr_path.parent.mkdir(parents=True, exist_ok=True)
         self._stderr = stderr_path.open("a", encoding="utf-8")
-        self._process = subprocess.Popen(
+        self._process = platform_runtime.spawn(
+            subprocess.Popen,
             command or [codex, "app-server", "--stdio"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=self._stderr,
             text=True,
             bufsize=1,
+            owned=True,
         )
         self._messages: queue.Queue[dict[str, Any]] = queue.Queue()
         self._send_lock = threading.Lock()

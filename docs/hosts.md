@@ -12,11 +12,15 @@ live wakeup:
   the active agent continues in that same visible session.
 
 Everything engine-side runs where the CLI workers run. The complete detached
-runtime currently requires Linux or WSL; check
+runtime in released v1.5.0 requires Linux or WSL; check
 `orchestrator-engine runtime-capabilities` and the
 [platform support matrix](platform-support.md) before setup. In WSL,
 Windows-side actions (`codex.exe`, the Codex deep link, and the `code` CLI) are
 reached through normal WSL interop.
+
+The source checkout's [native runtime packages](native-runtime-packages.md)
+extend this engine boundary to macOS and Windows. Host delivery capabilities
+still require separate verification with the installed host adapter and CLI.
 
 Machine-readable capabilities are available with
 `orchestrator-engine host-capabilities`:

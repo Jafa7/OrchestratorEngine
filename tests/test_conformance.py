@@ -158,7 +158,7 @@ class ConformanceTests(unittest.TestCase):
         self.assertEqual(report["status"], "failed")
         self.assertEqual(report["fixture"]["reason"], "failure")
         self.assertTrue(fixture_exists)
-        self.assertIn("Linux detached-runtime", report["failure"]["message"])
+        self.assertIn("identity-safe detached-runtime", report["failure"]["message"])
         self.assertEqual(report["adoption_summary"]["status"], "not_run")
         self.assertEqual(report["concurrency_summary"]["status"], "not_run")
         self.assertEqual(

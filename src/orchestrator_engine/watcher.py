@@ -1722,7 +1722,8 @@ def _start_service_unlocked(
         ]
     )
     with log_path.open("ab") as log:
-        process = popen_factory(
+        process = platform_runtime.spawn(
+            popen_factory,
             command,
             cwd=str(projects[0]),
             stdin=subprocess.DEVNULL,
@@ -1983,7 +1984,15 @@ def _stop_service_unlocked(
         raise WatcherError("watcher service process_group must equal its pid")
 
     if kill_group is None:
-        kill_group = getattr(os, "killpg", None)
+        kill_group = (
+            (
+                lambda group, sent: platform_runtime.signal_group(
+                    group, sent, identity=recorded_identity
+                )
+            )
+            if os.name == "nt"
+            else getattr(os, "killpg", None)
+        )
     if kill_group is None:
         raise WatcherError(
             "watcher service stop requires identity-safe process-group signalling"
@@ -2025,7 +2034,7 @@ def _stop_service_unlocked(
         )
         core.atomic_json(service_path, state)
         return {**state, "service_file": str(service_path)}
-    kill_group(process_group, signal_module.SIGKILL)
+    kill_group(process_group, getattr(signal_module, "SIGKILL", signal_module.SIGTERM))
     state.update(status="stopped", stopped_at=core.utc_now(), stop_reason="killed")
     core.atomic_json(service_path, state)
     return {**state, "service_file": str(service_path)}

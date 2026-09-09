@@ -60,6 +60,31 @@ class SchemaContractTests(unittest.TestCase):
                 )
                 self.assertEqual(list(self.validators[name].iter_errors(fixture)), [])
 
+    def test_native_worker_lease_identity_contracts(self) -> None:
+        path = Path(__file__).parent / "fixtures/schemas/valid/worker-lease.json"
+        fixture = json.loads(path.read_text(encoding="utf-8"))
+        for source, extra in [
+            ("darwin-proc-bsdinfo", {"boot_id": "synthetic-boot"}),
+            ("windows-process-times", {"machine_id": "a" * 64}),
+        ]:
+            with self.subTest(source=source):
+                value = copy.deepcopy(fixture)
+                value["supervisor_identity"] = {
+                    "source": source,
+                    "pid": 123,
+                    "start_ticks": 456,
+                    "state": "R",
+                    **extra,
+                }
+                self.assertEqual(
+                    list(self.validators["worker-lease"].iter_errors(value)), []
+                )
+                for field in extra:
+                    del value["supervisor_identity"][field]
+                self.assertTrue(
+                    list(self.validators["worker-lease"].iter_errors(value))
+                )
+
     def test_guidance_fixture_matches_operation_only_semantics(self) -> None:
         path = (
             Path(__file__).parent

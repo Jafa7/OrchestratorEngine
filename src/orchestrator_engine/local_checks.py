@@ -328,6 +328,9 @@ def relative_path(path: Path, project_root: Path) -> str:
 
 
 def terminate_process(process: subprocess.Popen[str]) -> None:
+    if os.name == "nt" and hasattr(process, "runtime_identity"):
+        platform_runtime.stop_owned(process, reason="check_cleanup")
+        return
     if hasattr(os, "killpg"):
         with contextlib.suppress(OSError, ProcessLookupError):
             os.killpg(process.pid, signal.SIGTERM)
@@ -434,7 +437,8 @@ def run_command(
     if descriptor_path is not None:
         record_command_launch(descriptor_path, spec)
     try:
-        process = subprocess.Popen(
+        process = platform_runtime.spawn(
+            subprocess.Popen,
             spec.argv,
             cwd=spec.cwd,
             stdout=subprocess.PIPE,
@@ -443,6 +447,7 @@ def run_command(
             encoding="utf-8",
             errors="replace",
             start_new_session=True,
+            owned=True,
         )
     except OSError as error:
         if descriptor_path is not None:
@@ -766,10 +771,9 @@ def start_check(
     supervisor_log = directory / "supervisor.log"
     try:
         with supervisor_log.open("ab") as log:
-            process = popen_factory(
-                supervisor_command(
-                    project, check_id=check_id, state_dir=state_dir
-                ),
+            process = platform_runtime.spawn(
+                popen_factory,
+                supervisor_command(project, check_id=check_id, state_dir=state_dir),
                 cwd=str(project),
                 stdin=subprocess.DEVNULL,
                 stdout=log,
@@ -1230,7 +1234,7 @@ def reap_checks(
                         continue
                     if (
                         worker_lease.process_group_state(
-                            active.get("process_group")
+                            active.get("process_group"), active.get("process_identity")
                         )
                         != "gone"
                     ):
@@ -1244,7 +1248,9 @@ def reap_checks(
                         continue
                     descriptor["active_command_stop"] = stopped
                 elif (
-                    worker_lease.process_group_state(active.get("process_group"))
+                    worker_lease.process_group_state(
+                        active.get("process_group"), active.get("process_identity")
+                    )
                     != "gone"
                 ):
                     outcomes.append(
@@ -1297,9 +1303,7 @@ def reap_checks(
         "kind": "ORCHESTRATOR_LOCAL_CHECK_REAP_REPORT",
         "project_root": str(project),
         "reaped_count": sum(item.get("status") == "reaped" for item in outcomes),
-        "recovered_count": sum(
-            item.get("status") == "recovered" for item in outcomes
-        ),
+        "recovered_count": sum(item.get("status") == "recovered" for item in outcomes),
         "outcomes": outcomes,
     }
 

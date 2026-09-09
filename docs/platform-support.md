@@ -1,5 +1,11 @@
 # Platform support
 
+The table below describes released v1.5.0. The source checkout additionally
+implements native macOS and Windows lifecycle backends; see
+[Native runtime packages](native-runtime-packages.md) for the implementation
+scope and the separate native CI acceptance gates. Until those gates pass on
+the candidate, source implementation is not release certification.
+
 OrchestratorEngine separates its portable data/CLI core from the process
 lifecycle guarantees required by detached workers, monitors and watcher
 services. Check the current machine before adoption:
@@ -30,7 +36,7 @@ signal zero. Reaper commands remain unavailable outside Linux because an
 unreadable Linux process identity is `unknown`, not evidence that a supervisor
 has exited.
 
-Detached lifecycle support currently requires Linux `/proc` process identity
+Released v1.5.0 detached lifecycle support requires Linux `/proc` process identity
 and POSIX process-group behavior. The engine does not silently substitute a
 weaker process model on another operating system because doing so could report
 a recycled process as the original supervisor or leave descendants running.

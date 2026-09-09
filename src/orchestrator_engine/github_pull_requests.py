@@ -30,8 +30,7 @@ MONITOR_KIND = "GITHUB_PR_READINESS_MONITOR"
 EVIDENCE_KIND = "GITHUB_PR_READINESS_EVIDENCE"
 STATUS_KIND = "GITHUB_PR_READINESS_STATUS"
 VIEW_FIELDS = (
-    "number,state,isDraft,headRefOid,reviewDecision,mergeable,"
-    "statusCheckRollup,url"
+    "number,state,isDraft,headRefOid,reviewDecision,mergeable,statusCheckRollup,url"
 )
 REVIEW_POLICIES = {"ignore", "approved"}
 WAKE_POLICIES = github_actions.WAKE_POLICIES
@@ -306,9 +305,7 @@ def start_monitor(
                 or existing_identity["pr_number"] != identity["pr_number"]
             ):
                 continue
-            existing_dispatch = {
-                key: existing.get(key) for key in dispatch_identity
-            }
+            existing_dispatch = {key: existing.get(key) for key in dispatch_identity}
             if path == descriptor_path:
                 comparable_existing = {
                     **existing_dispatch,
@@ -348,7 +345,8 @@ def start_monitor(
                 monitor_id=resolved_id,
                 state_dir=state_dir,
             )
-            process = popen_factory(
+            process = platform_runtime.spawn(
+                popen_factory,
                 command,
                 cwd=str(project),
                 stdin=subprocess.DEVNULL,

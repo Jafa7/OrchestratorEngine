@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import signal
+import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -67,6 +68,14 @@ def process_identity_probe(pid: object) -> dict[str, Any]:
 
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return {"state": "unknown", "identity": None}
+    if sys.platform == "darwin":
+        from . import runtime_macos
+
+        return runtime_macos.probe(pid)
+    if sys.platform == "win32":
+        from . import runtime_windows
+
+        return runtime_windows.probe(pid)
     try:
         stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
     except (FileNotFoundError, ProcessLookupError):
@@ -107,11 +116,25 @@ def identity_matches(recorded: object, observed: dict[str, Any] | None) -> bool:
     """
     if not isinstance(recorded, dict) or observed is None:
         return False
+    # Source-less historical Linux identities retain compatibility only with
+    # the Linux backend; other token formats cannot be compared.
+    if recorded.get("source") != observed.get("source") and (
+        recorded.get("source") is not None or observed.get("source") != IDENTITY_SOURCE
+    ):
+        return False
     for key in ("pid", "start_ticks"):
-        if recorded.get(key) != observed.get(key):
+        if (
+            not isinstance(recorded.get(key), int)
+            or isinstance(recorded.get(key), bool)
+            or recorded.get(key) != observed.get(key)
+        ):
             return False
+    if recorded.get("machine_id") != observed.get("machine_id"):
+        return False
     recorded_boot = recorded.get("boot_id")
     observed_boot = observed.get("boot_id")
+    if observed.get("source") == "darwin-proc-bsdinfo" and not recorded_boot:
+        return False
     if recorded_boot is not None and observed_boot is not None:
         return recorded_boot == observed_boot
     return True
@@ -131,6 +154,32 @@ def identity_state(recorded: object) -> dict[str, Any]:
         return {"state": "unknown", "identity_verified": False, "observed": None}
     if not isinstance(recorded, dict) or not isinstance(recorded.get("pid"), int):
         return {"state": "unknown", "identity_verified": False, "observed": None}
+    if any(
+        not isinstance(recorded.get(key), int) or isinstance(recorded.get(key), bool)
+        for key in ("pid", "start_ticks")
+    ) or (sys.platform == "darwin" and not recorded.get("boot_id")):
+        return {"state": "unknown", "identity_verified": False, "observed": None}
+    expected_source = {
+        "darwin": "darwin-proc-bsdinfo",
+        "win32": "windows-process-times",
+    }.get(sys.platform, IDENTITY_SOURCE)
+    if recorded.get("source", IDENTITY_SOURCE) != expected_source:
+        return {
+            "state": "unknown",
+            "identity_verified": False,
+            "observed": None,
+            "reason": "foreign_process_identity",
+        }
+    if sys.platform == "win32":
+        from . import runtime_windows
+
+        if recorded.get("machine_id") != runtime_windows.machine_id():
+            return {
+                "state": "unknown",
+                "identity_verified": False,
+                "observed": None,
+                "reason": "foreign_process_identity",
+            }
     observed = process_identity(recorded["pid"])
     if observed is None:
         probe = process_identity_probe(recorded["pid"])
@@ -179,11 +228,17 @@ def pid_state(pid: object) -> dict[str, Any]:
     return {"state": "alive", "identity_verified": False, "observed": observed}
 
 
-def process_group_state(pgid: object) -> str:
+def process_group_state(pgid: object, identity: object = None) -> str:
     """Return alive, gone or unknown without signalling a process group."""
 
     if not isinstance(pgid, int) or isinstance(pgid, bool) or pgid <= 0:
         return "unknown"
+    if os.name == "nt":
+        from . import runtime_windows
+
+        if not isinstance(identity, dict) or identity.get("pid") != pgid:
+            return "unknown"
+        return runtime_windows.job_state(identity)
     try:
         os.killpg(pgid, 0)
     except ProcessLookupError:
@@ -225,7 +280,7 @@ def acquire_lease(
     if identity is None:
         raise WorkerLeaseError(
             f"cannot read a process identity token for supervisor pid {pid}; "
-            "the lease requires a Linux /proc filesystem"
+            "the lease requires an available native process identity backend"
         )
     now = core.utc_now()
     lease = {
@@ -333,6 +388,43 @@ def stop_worker_tree(
     if not isinstance(worker_pid, int) or isinstance(worker_pid, bool):
         ledger["stop_outcome"] = "no_worker_recorded"
         return ledger
+
+    if os.name == "nt":
+        from . import runtime_windows
+
+        if (
+            not isinstance(worker_identity, dict)
+            or worker_identity.get("pid") != worker_pid
+            or worker_pgid != worker_pid
+        ):
+            return {
+                **ledger,
+                "exited": False,
+                "stop_outcome": "refused_no_identity_token",
+            }
+        try:
+            exited = runtime_windows.terminate_job(worker_identity, timeout_seconds)
+        except (OSError, ValueError):
+            return {
+                **ledger,
+                "exited": False,
+                "stop_outcome": "refused_job_unavailable",
+            }
+        return {
+            **ledger,
+            "scope": "job_object",
+            "process_group": worker_pid,
+            "exited": exited,
+            "identity_verified": True,
+            "stop_outcome": "job_terminated" if exited else "kill_not_confirmed",
+            "signals": [
+                {
+                    "signal": "TerminateJobObject",
+                    "scope": "job_object",
+                    "at": core.utc_now(),
+                }
+            ],
+        }
 
     state = identity_state(worker_identity)
     if state["state"] == "unknown":

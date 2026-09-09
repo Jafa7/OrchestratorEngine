@@ -106,10 +106,14 @@ canonical procedure. It contains host-specific branches, checks after each
 step, strict-admission examples and troubleshooting. The shorter sequence
 below is only a human-readable preview.
 
-The complete detached runtime currently requires Linux or WSL. Native Windows
+In released v1.5.0, the complete detached runtime requires Linux or WSL. Native Windows
 and macOS support the portable core and compatible foreground checks, while
 detached commands fail before creating runtime artifacts. See the
 [platform support matrix](docs/platform-support.md).
+
+The source checkout adds native macOS and Windows runtime packages. Their
+contracts and separate native CI gates are described in
+[Native runtime packages](docs/native-runtime-packages.md).
 
 ### Manual preview
 

@@ -1093,7 +1093,8 @@ def spawn_supervisor(
 ) -> Any:
     platform_runtime.require_detached_lifecycle("worker run")
     with supervisor_log.open("ab") as log:
-        process = popen_factory(
+        process = platform_runtime.spawn(
+            popen_factory,
             supervisor_command(
                 project_root,
                 worker=worker,
@@ -1220,7 +1221,7 @@ def release_dispatch_claim(
     )
     history.parent.mkdir(parents=True, exist_ok=True)
     try:
-        os.replace(claim_path, history)
+        core.atomic_replace(claim_path, history)
     except FileNotFoundError:
         return
 
@@ -1313,7 +1314,7 @@ def queue_tick(
             claimed = queue_root(project, state_dir=state_dir) / "admitted" / path.name
             claimed.parent.mkdir(parents=True, exist_ok=True)
             try:
-                os.replace(path, claimed)
+                core.atomic_replace(path, claimed)
             except FileNotFoundError:
                 continue
             descriptor["status"] = "starting"
@@ -1335,7 +1336,7 @@ def queue_tick(
                 descriptor["queue_last_error"] = str(error)
                 descriptor.pop("admitted_at", None)
                 core.atomic_json(descriptor_path, descriptor)
-                os.replace(claimed, path)
+                core.atomic_replace(claimed, path)
                 continue
             admitted.append(task_id)
             entry["supervisor_pid"] = int(process.pid)
@@ -1603,13 +1604,7 @@ def worker_process_group(pid: int) -> int | None:
     ignores `process_group`) must be signalled as a single process, because
     signalling that group would kill the supervisor too.
     """
-    try:
-        group = os.getpgid(pid)
-    except OSError:
-        return None
-    if group != pid or group == os.getpgid(0):
-        return None
-    return group
+    return platform_runtime.process_group(pid)
 
 
 def wait_for_exit(pid: int, *, timeout_seconds: float, poll_seconds: float) -> bool:
@@ -1621,6 +1616,18 @@ def wait_for_exit(pid: int, *, timeout_seconds: float, poll_seconds: float) -> b
     """
     deadline = time.monotonic() + max(timeout_seconds, 0.0)
     while True:
+        if not hasattr(os, "waitid"):
+            # Darwin on Python 3.11/3.12: inspect without reaping, preserving
+            # the child PID reservation until the final group sweep.
+            probe = worker_lease.process_identity_probe(pid)
+            if probe["state"] == "gone" or (
+                probe["identity"] and probe["identity"].get("state") == "Z"
+            ):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(poll_seconds)
+            continue
         try:
             state = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
         except ChildProcessError:
@@ -1649,6 +1656,10 @@ def terminate_worker(
     orphans that keep writing into the task's inherited log files after the
     result is durable.
     """
+    if os.name == "nt":
+        return platform_runtime.stop_owned(
+            process, reason=reason, timeout=timeout_seconds
+        )
     scope = "process_group" if process_group is not None else "process"
     signals: list[dict[str, str]] = []
 
@@ -1696,6 +1707,8 @@ def terminate_worker(
 def force_terminate_worker(
     process: Any, *, process_group: int | None
 ) -> dict[str, Any]:
+    if os.name == "nt":
+        return platform_runtime.stop_owned(process, reason="cancelled_forced")
     scope = "process_group" if process_group is not None else "process"
     sent = False
     try:
@@ -1822,7 +1835,7 @@ def cancel_worker_task(
                 )
                 cancelled_entry.parent.mkdir(parents=True, exist_ok=True)
                 if pending.exists():
-                    os.replace(pending, cancelled_entry)
+                    core.atomic_replace(pending, cancelled_entry)
                 result, evidence = queued_cancellation_artifacts(
                     descriptor, reason=reason, mode=mode
                 )
@@ -2572,7 +2585,8 @@ def supervise_worker(
             stdout_path.open("wb") as stdout,
             stderr_path.open("wb") as stderr,
         ):
-            process = popen_factory(
+            process = platform_runtime.spawn(
+                popen_factory,
                 command,
                 cwd=str(project),
                 env={
@@ -2590,6 +2604,7 @@ def supervise_worker(
                 # stop the whole worker tree — the model CLI's own subprocesses
                 # included — without signalling itself.
                 process_group=0,
+                owned=True,
             )
             # Record the group before any wait: a supervisor that dies here must
             # still leave behind the identity needed to stop the worker tree.

@@ -6,6 +6,10 @@ private implementation details or adopter-owned policy text.
 
 ## Supported runtime scope
 
+This released scope describes v1.5.0. The source checkout also contains
+[native runtime packages](native-runtime-packages.md), with separate native
+acceptance requirements before release.
+
 - Linux and WSL support the complete detached worker, monitor, check and
   watcher lifecycle.
 - Native Windows and macOS support the portable core and compatible foreground

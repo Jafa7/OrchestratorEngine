@@ -43,12 +43,17 @@
       "type": "object",
       "required": ["source", "pid", "start_ticks", "state"],
       "properties": {
-        "source": {"const": "linux-proc-stat"},
+        "source": {"enum": ["linux-proc-stat", "darwin-proc-bsdinfo", "windows-process-times"]},
         "pid": {"type": "integer", "minimum": 1},
         "start_ticks": {"type": "integer", "minimum": 0},
         "state": {"type": "string", "minLength": 1},
-        "boot_id": {"type": "string", "minLength": 1}
+        "boot_id": {"type": "string", "minLength": 1},
+        "machine_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
       },
+      "allOf": [
+        {"if": {"properties": {"source": {"const": "darwin-proc-bsdinfo"}}}, "then": {"required": ["boot_id"]}},
+        {"if": {"properties": {"source": {"const": "windows-process-times"}}}, "then": {"required": ["machine_id"]}}
+      ],
       "additionalProperties": true
     }
   },

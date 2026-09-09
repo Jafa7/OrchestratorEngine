@@ -249,7 +249,7 @@ def export_bundled_policy(
     try:
         temporary.write_bytes(raw)
         if replace:
-            os.replace(temporary, destination)
+            core.atomic_replace(temporary, destination)
         else:
             try:
                 os.link(temporary, destination)
@@ -545,7 +545,7 @@ def atomic_text(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     temporary.write_text(value, encoding="utf-8")
-    os.replace(temporary, path)
+    core.atomic_replace(temporary, path)
 
 
 def load_snapshotted_prompt(

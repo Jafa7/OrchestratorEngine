@@ -57,7 +57,7 @@ class PlatformRuntimeTests(unittest.TestCase):
             ),
             self.assertRaisesRegex(
                 platform_runtime.PlatformRuntimeError,
-                "requires the Linux detached-runtime capability",
+                "requires an available identity-safe detached-runtime capability",
             ),
         ):
             platform_runtime.require_detached_lifecycle("worker run")

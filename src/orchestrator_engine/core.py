@@ -67,7 +67,40 @@ def atomic_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     temporary.write_text(json_text(value), encoding="utf-8")
-    os.replace(temporary, path)
+    atomic_replace(temporary, path)
+
+
+def transient_file_error(error: OSError) -> bool:
+    """Recognize bounded filesystem races, without hiding permanent failures."""
+    return error.errno == errno.ENODATA or (
+        os.name == "nt" and (
+            getattr(error, "winerror", None) in {5, 32, 33}
+            or error.errno == errno.EACCES
+        )
+    )
+
+
+def atomic_replace(source: Path, destination: Path) -> None:
+    if os.name == "nt":
+        from .runtime_windows import file_access
+
+        with file_access(destination):
+            _atomic_replace(source, destination)
+        return
+    _atomic_replace(source, destination)
+
+
+def _atomic_replace(source: Path, destination: Path) -> None:
+    # Windows readers and virus scanners may briefly deny rename/delete.
+    # Retry the same atomic rename; never unlink the destination first.
+    for attempt in range(10):
+        try:
+            os.replace(source, destination)
+            return
+        except OSError as error:
+            if not transient_file_error(error) or attempt == 9:
+                raise
+            time.sleep(0.02)
 
 
 def claim_json(path: Path, value: object) -> bool:
@@ -130,14 +163,19 @@ def load_object(path: Path) -> dict[str, Any]:
     text: str | None = None
     for attempt in range(5):
         try:
-            text = path.read_text(encoding="utf-8")
+            if os.name == "nt":
+                from .runtime_windows import read_shared_text
+
+                text = read_shared_text(path)
+            else:
+                text = path.read_text(encoding="utf-8")
             break
         except FileNotFoundError as error:
             if attempt == 4:
                 raise OrchestratorError(f"file not found: {path}") from error
             time.sleep(0.02)
         except OSError as error:
-            if error.errno != errno.ENODATA or attempt == 4:
+            if not transient_file_error(error) or attempt == 4:
                 raise
             time.sleep(0.02)
     assert text is not None

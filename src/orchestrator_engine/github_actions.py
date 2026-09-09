@@ -64,9 +64,7 @@ REPOSITORY_PATTERN = re.compile(
     r"^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})/"
     r"[A-Za-z0-9_.-](?:[A-Za-z0-9_.-]{0,99})$"
 )
-HOSTNAME_PATTERN = re.compile(
-    r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$"
-)
+HOSTNAME_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
 MONITOR_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 SECRET_PATTERNS = (
     re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
@@ -385,9 +383,7 @@ def start_monitor(
     if normalized_repo.casefold() not in {
         item.casefold() for item in config["allowed_repositories"]
     }:
-        raise GitHubActionsError(
-            f"repository is not allowlisted: {normalized_repo}"
-        )
+        raise GitHubActionsError(f"repository is not allowlisted: {normalized_repo}")
     if normalized_host not in config["allowed_hosts"]:
         raise GitHubActionsError(f"hostname is not allowlisted: {normalized_host}")
     if wake_policy not in WAKE_POLICIES:
@@ -416,8 +412,7 @@ def start_monitor(
             raise GitHubActionsError("attempt requires an explicit run-id")
         if expected_head_sha is None or len(expected_head_sha) not in {40, 64}:
             raise GitHubActionsError(
-                "run discovery requires a full 40- or 64-character "
-                "expected-head-sha"
+                "run discovery requires a full 40- or 64-character expected-head-sha"
             )
         if timeout_seconds is None:
             timeout_seconds = DEFAULT_DISCOVERY_TIMEOUT_SECONDS
@@ -425,8 +420,7 @@ def start_monitor(
         workflow_name = workflow_name.strip()
         if not workflow_name or len(workflow_name) > MAX_WORKFLOW_NAME_LENGTH:
             raise GitHubActionsError(
-                "workflow-name must contain 1 to "
-                f"{MAX_WORKFLOW_NAME_LENGTH} characters"
+                f"workflow-name must contain 1 to {MAX_WORKFLOW_NAME_LENGTH} characters"
             )
         if any(character in workflow_name for character in ("\n", "\r", "\x00")):
             raise GitHubActionsError("workflow-name contains invalid characters")
@@ -520,8 +514,7 @@ def start_monitor(
             existing_dispatch = {
                 key: (
                     existing.get("run_id")
-                    if key == "requested_run_id"
-                    and "requested_run_id" not in existing
+                    if key == "requested_run_id" and "requested_run_id" not in existing
                     else existing.get(key)
                 )
                 for key in (
@@ -559,15 +552,13 @@ def start_monitor(
                 }
             if existing.get("status") in TERMINAL_MONITOR_STATUSES:
                 continue
-            same_host_repo = (
-                existing.get("hostname") == run_identity["hostname"]
-                and same_repository(
-                    existing.get("repository"), run_identity["repository"]
-                )
+            same_host_repo = existing.get("hostname") == run_identity[
+                "hostname"
+            ] and same_repository(
+                existing.get("repository"), run_identity["repository"]
             )
             same_exact_run = (
-                parsed_run_id is not None
-                and existing.get("run_id") == parsed_run_id
+                parsed_run_id is not None and existing.get("run_id") == parsed_run_id
             )
             existing_requested = existing.get(
                 "requested_run_id", existing.get("run_id")
@@ -599,7 +590,8 @@ def start_monitor(
     supervisor_log = Path(descriptor["supervisor_log"])
     try:
         with supervisor_log.open("ab") as log:
-            process = popen_factory(
+            process = platform_runtime.spawn(
+                popen_factory,
                 supervisor_command(
                     project,
                     monitor_id=resolved_monitor_id,
@@ -737,12 +729,14 @@ def run_bounded_command(
     *,
     timeout_seconds: float,
 ) -> dict[str, Any]:
-    process = subprocess.Popen(
+    process = platform_runtime.spawn(
+        subprocess.Popen,
         command,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=True,
+        owned=True,
         close_fds=True,
     )
     stdout_capture = _BoundedStreamCapture(limit=MAX_VIEW_BYTES)
@@ -1363,10 +1357,13 @@ def _write_text(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     temporary.write_text(value, encoding="utf-8")
-    os.replace(temporary, path)
+    core.atomic_replace(temporary, path)
 
 
 def _terminate_process(process: subprocess.Popen[Any]) -> None:
+    if os.name == "nt":
+        platform_runtime.stop_owned(process, reason="ci_watch_cleanup")
+        return
     try:
         group = os.getpgid(process.pid)
     except OSError:
@@ -1418,20 +1415,22 @@ def run_watch(
         else None
     )
     outcome = "exited"
-    process = popen_factory(
+    process = platform_runtime.spawn(
+        popen_factory,
         command,
         cwd=str(project_root),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         start_new_session=True,
+        owned=True,
         close_fds=True,
     )
     current = core.load_object(directory / "monitor.json")
     if current.get("status") not in TERMINAL_MONITOR_STATUSES:
         current["watch_pid"] = int(process.pid)
         with contextlib.suppress(OSError):
-            current["watch_pgid"] = os.getpgid(process.pid)
+            current["watch_pgid"] = platform_runtime.process_group(process.pid)
         watch_identity = worker_lease.process_identity(int(process.pid))
         if watch_identity is not None:
             current["watch_identity"] = watch_identity

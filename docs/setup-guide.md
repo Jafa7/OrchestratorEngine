@@ -47,10 +47,14 @@ command -v copilot
 ```
 
 Constraints: Python >= 3.11 on the machine where workers run. The complete
-detached runtime requires Linux or WSL; native Windows and macOS currently
+detached runtime in released v1.5.0 requires Linux or WSL; native Windows and macOS
 support the portable core and compatible foreground checks only. See the
 [platform support matrix](platform-support.md). If the host is Codex Desktop
 on Windows in WSL mode, everything below runs inside WSL.
+
+The development source adds [native runtime packages](native-runtime-packages.md)
+for macOS and Windows. Those packages have separate native CI acceptance gates;
+installing the v1.5.0 tag below does not install these unreleased additions.
 
 ## Step 1 — Install the engine
 

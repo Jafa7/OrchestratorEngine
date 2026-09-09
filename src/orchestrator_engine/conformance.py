@@ -340,6 +340,15 @@ def _cancel_and_reap(
 
 
 def _reap_supervisor(pid: int, *, timeout_seconds: float) -> None:
+    if os.name == "nt":
+        # Windows waitpid takes a process handle, not the recorded PID.
+        for process in workers._DETACHED_PROCESSES:
+            if process.pid == pid:
+                process.wait(timeout=timeout_seconds)
+                return
+        if not platform_runtime.process_alive(pid):
+            return
+        raise ConformanceError("synthetic supervisor handle is unavailable")
     deadline = time.monotonic() + timeout_seconds
     while True:
         try:
