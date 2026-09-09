@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from . import binding, core, local_checks, verification
+from . import binding, core, delivery_preflight, local_checks, verification
 from .resource_queue import ResourceError
 from .resource_service import client, input_manifest
 
@@ -19,6 +19,7 @@ def start(
     state_dir,
     long_threshold_seconds,
     wake_target=None,
+    completion_delivery_mode=None,
 ):
     if not math.isfinite(long_threshold_seconds) or long_threshold_seconds <= 0:
         raise ResourceError("long threshold must be positive and finite")
@@ -42,6 +43,19 @@ def start(
         target = local_checks.capture_wake_target(
             project, state_dir=state_dir, wake_policy=wake_policy
         )
+    try:
+        completion_delivery = delivery_preflight.run(
+            project,
+            operation_kind="local_check",
+            operation_id=check_id,
+            wake_policy=wake_policy,
+            wake_target=target,
+            mode=completion_delivery_mode,
+            state_dir=state_dir,
+        )
+        delivery_preflight.enforce(completion_delivery)
+    except delivery_preflight.DeliveryPreflightError as error:
+        raise ResourceError(str(error)) from error
     verification.claim_check_owner(
         project,
         operation_id=check_id,
@@ -64,9 +78,14 @@ def start(
             ):
                 raise ResourceError("check ID already has different options")
             if descriptor.get("resource_request"):
-                return {
-                    k: v for k, v in descriptor.items() if k != "resource_submission"
-                }
+                return delivery_preflight.attach(
+                    {
+                        k: v
+                        for k, v in descriptor.items()
+                        if k != "resource_submission"
+                    },
+                    completion_delivery,
+                )
         else:
             contract = client(connection, "recipe", {"recipe": spec["resource_recipe"]})
             subscriber = {
@@ -111,7 +130,10 @@ def start(
         descriptor["resource_request"] = result["request"]
         descriptor["resource_contract_digest"] = result["contract_digest"]
         core.atomic_json(path, descriptor)
-    return {k: v for k, v in descriptor.items() if k != "resource_submission"}
+    return delivery_preflight.attach(
+        {k: v for k, v in descriptor.items() if k != "resource_submission"},
+        completion_delivery,
+    )
 
 
 def status(project, descriptor):

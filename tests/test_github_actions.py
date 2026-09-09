@@ -112,6 +112,24 @@ class RunningProcess:
 
 
 class GitHubActionsTests(unittest.TestCase):
+    def test_delivery_require_ready_rejects_before_monitor_descriptor(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            popen = mock.Mock(side_effect=AssertionError("must not spawn"))
+            with self.assertRaisesRegex(
+                github_actions.GitHubActionsError, "no_binding"
+            ):
+                github_actions.start_monitor(
+                    root,
+                    repository="Example/Project",
+                    run_id=123,
+                    completion_delivery_mode="require-ready",
+                    popen_factory=popen,
+                )
+
+        popen.assert_not_called()
+
     def test_start_can_discover_run_from_full_sha_idempotently(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

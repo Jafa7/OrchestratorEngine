@@ -252,6 +252,18 @@ def project_id(project_root: Path) -> str:
     return project_root.expanduser().resolve().name
 
 
+def read_config_text(path: Path) -> str:
+    """Read adopter-authored configuration text, tolerating a UTF-8 BOM.
+
+    Windows editors and shells can write UTF-8 with a byte order mark.
+    A TOML parser reports that mark as a syntax error at line 1, column 1,
+    which gives an adopter no usable hint. ``utf-8-sig`` reads plain UTF-8
+    unchanged and strips the mark when present.
+    """
+
+    return path.read_text(encoding="utf-8-sig")
+
+
 def ensure_file(path: Path, *, field: str) -> Path:
     resolved = path.expanduser().resolve()
     if not resolved.is_file():
@@ -555,6 +567,13 @@ def survey_schema_versions(
             )
         )
     )
+    candidates.extend(
+        sorted(
+            (state_root(project, state_dir=state_dir) / "delivery-preflights").glob(
+                "*/*/*.json"
+            )
+        )
+    )
     supported: list[dict[str, Any]] = []
     unsupported: list[dict[str, Any]] = []
     unreadable: list[dict[str, Any]] = []
@@ -649,6 +668,16 @@ def cleanup(
         for path in sorted((root / directory_name).glob("*.json")):
             if old(path):
                 remove(path)
+    from . import delivery_preflight
+
+    removed.extend(
+        delivery_preflight.prune(
+            project_root,
+            cutoff_timestamp=cutoff,
+            state_dir=state_dir,
+            dry_run=dry_run,
+        )
+    )
     for path in sorted((root / "logs").glob("*.log")):
         if old(path) and path.name != "watcher-service.log":
             remove(path)

@@ -22,11 +22,16 @@ class HostCapabilityTests(unittest.TestCase):
                 capability["live_refresh_support"],
                 host_capabilities.LIVE_REFRESH_SUPPORT,
             )
+            self.assertIn(
+                capability["channel_lifecycle"],
+                host_capabilities.CHANNEL_LIFECYCLES,
+            )
 
     def test_codex_capability_prefers_live_queue_and_declares_fallback(self) -> None:
         receipt = host_capabilities.receipt_fields("codex")
         self.assertEqual(receipt["delivery_mode"], "session_queue")
         self.assertEqual(receipt["live_refresh_support"], "supported")
+        self.assertEqual(receipt["channel_lifecycle"], "detached_service")
         self.assertEqual(receipt["requirement"], "codex queue")
         self.assertEqual(
             receipt["fallback_delivery_mode"], "headless_app_server_turn"
@@ -37,3 +42,8 @@ class HostCapabilityTests(unittest.TestCase):
         )
         self.assertEqual(fallback["delivery_mode"], "headless_app_server_turn")
         self.assertEqual(fallback["live_refresh_support"], "unsupported")
+        self.assertEqual(fallback["channel_lifecycle"], "detached_service")
+
+    def test_claude_capability_declares_session_bound_channel(self) -> None:
+        capability = host_capabilities.for_host("claude")
+        self.assertEqual(capability["channel_lifecycle"], "session_bound")

@@ -1,6 +1,6 @@
 # Platform support
 
-The table below describes v1.7.0. Native macOS and Windows lifecycle backends
+The table below describes v1.8.0. Native macOS and Windows lifecycle backends
 join Linux/WSL support. See [Native runtime packages](native-runtime-packages.md)
 for process containment boundaries and the exact-candidate CI acceptance gates.
 

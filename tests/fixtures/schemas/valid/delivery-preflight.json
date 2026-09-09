@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_DELIVERY_PREFLIGHT",
+  "preflight_id": "53c6468e-3e30-4c96-8f68-c7459ab6f9f3",
+  "operation_kind": "worker",
+  "operation_id": "SYNTHETIC-TASK-001",
+  "mode": "require-ready",
+  "wake_policy": "always",
+  "checked_at": "2026-09-09T12:00:00.000+00:00",
+  "point_in_time": true,
+  "status": "ready",
+  "reason_code": "service_running",
+  "detail": "codex callback service is running",
+  "host": "codex",
+  "channel_lifecycle": "detached_service",
+  "binding_match": true,
+  "probe": {
+    "channel_status": "running",
+    "service_action": "callback",
+    "host_filter": ["codex"],
+    "heartbeat_status": "fresh",
+    "heartbeat_age_seconds": 1.25,
+    "process_identity_status": "same"
+  },
+  "warnings": []
+}

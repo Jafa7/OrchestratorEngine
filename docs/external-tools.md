@@ -7,7 +7,7 @@ shell. The adopter owns installation, updates, authentication and local
 policy for those tools.
 
 Platform support is independent from external-tool availability. Run
-`orchestrator-engine runtime-capabilities` first. Version 1.7.0 supports detached
+`orchestrator-engine runtime-capabilities` first. Version 1.8.0 supports detached
 features on Linux, WSL, native Windows and macOS; each configured tool must also
 run on the chosen host. Cross-OS command bridges require separate validation.
 See the [platform support matrix](platform-support.md).
@@ -24,12 +24,24 @@ See the [platform support matrix](platform-support.md).
 | GitHub Actions monitor | GitHub CLI (`gh`) | only for `ci watch` | `gh --version`; `gh auth status --hostname github.com` |
 | GitHub PR readiness monitor | GitHub CLI (`gh`) | only for `pr watch` | `gh --version`; `gh auth status --hostname github.com` |
 
+Claude's persistent Monitor/background-task setting is a host-session feature,
+not another executable dependency. Arm `watcher stream` with
+`persistent: true` in every Claude session that owns wake-enabled work; the
+local stream state file cannot keep the host-side Monitor alive after that
+session or Monitor ends.
+
 Install external tools from their official documentation. For GitHub CLI use
 the official [installation guide](https://github.com/cli/cli#installation)
 and [authentication guide](https://cli.github.com/manual/gh_auth_login).
 OrchestratorEngine never requests, prints or stores a GitHub token. A missing,
 unauthenticated or incompatible executable is reported as an integration
 failure, not silently installed or repaired.
+
+When WSL does not expose `gh` on its PATH but Windows GitHub CLI is installed,
+`release preflight` reports the detected `/mnt/c/.../gh.exe` as a suggested
+local `gh_command`. It never selects, installs or authenticates that bridge
+silently. Verify the suggested executable and store the machine-specific path
+only in ignored local integration configuration.
 
 Machine-specific paths belong in ignored adopter-local configuration such as
 `.orchestrator/workers.toml`, `.orchestrator/checks.toml` or

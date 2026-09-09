@@ -335,7 +335,11 @@ def check_watcher_channel(
         bound = binding.load_binding(project, state_dir=state_dir)
     except (OSError, RuntimeError, ValueError) as error:
         binding_error = str(error)
-    selected_host = host or (bound.get("host") if bound else None)
+    bound_host = bound.get("host") if bound else None
+    selected_host = host or bound_host
+    binding_match = (
+        selected_host == bound_host if selected_host is not None and bound else None
+    )
     if selected_host is None:
         return check(
             "watcher_channel",
@@ -343,10 +347,17 @@ def check_watcher_channel(
             "skipped",
             "no host selected and no binding configured",
             hint="Bind a host or pass `doctor --host HOST`.",
-            data={"binding_error": binding_error},
+            data={"binding_error": binding_error, "binding_match": binding_match},
         )
     if selected_host == "claude":
-        return check_claude_stream(project, state_dir=state_dir)
+        result = check_claude_stream(project, state_dir=state_dir)
+        result["data"]["binding_match"] = binding_match
+        if host is not None and binding_match is False:
+            result["hint"] = (
+                "The requested host differs from the current binding. "
+                + (result.get("hint") or "Verify the intended delivery host.")
+            )
+        return result
     capabilities = host_capabilities.for_host(selected_host)
     if capabilities["live_refresh_support"] == "unsupported":
         return check(
@@ -365,6 +376,7 @@ def check_watcher_channel(
                 "host": selected_host,
                 "capabilities": capabilities,
                 "delivery": "history_only_manual_review",
+                "binding_match": binding_match,
             },
         )
     if selected_host not in watcher.HOST_ADAPTERS:
@@ -374,7 +386,7 @@ def check_watcher_channel(
             "error",
             f"host {selected_host} has no callback adapter",
             hint="Use the host's documented wake mechanism.",
-            data={"host": selected_host},
+            data={"host": selected_host, "binding_match": binding_match},
         )
     status = watcher.service_status([project], state_dir=state_dir, host=selected_host)
     if status["status"] in {"running"} and not status.get("warnings"):
@@ -397,6 +409,7 @@ def check_watcher_channel(
             "host": selected_host,
             "capabilities": capabilities,
             "service_status": status,
+            "binding_match": binding_match,
         },
     )
 

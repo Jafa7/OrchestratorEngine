@@ -1196,7 +1196,15 @@ def scan_once(
         )
         if any(pending_queue.glob("*.json")):
             try:
-                worker_queue_ticks.append(queue_tick(project, state_dir=state_dir))
+                worker_queue_ticks.append(
+                    queue_tick(
+                        project,
+                        state_dir=state_dir,
+                        delivery_recheck_min_age_seconds=(
+                            workers.WATCHER_DELIVERY_RECHECK_SECONDS
+                        ),
+                    )
+                )
             except (OSError, RuntimeError, ValueError) as error:
                 action_errors.append(
                     {
@@ -1603,6 +1611,149 @@ def start_service(
             popen_factory=popen_factory,
             process_identity_reader=process_identity_reader,
         )
+
+
+def _ensure_service_host(
+    project: Path,
+    *,
+    state_dir: str,
+) -> str | None:
+    """Resolve which host an unscoped ``service ensure`` should arm.
+
+    An existing unscoped service file is recovered exactly as recorded. With
+    no such file the binding decides: a callback host gets its host-scoped
+    service, and a stream-only host is refused instead of silently arming a
+    channel that can never reach it.
+    """
+
+    legacy = default_callback_service_path(project, host=None, state_dir=state_dir)
+    if legacy.exists():
+        return None
+    try:
+        bound = binding_module.load_binding(project, state_dir=state_dir)
+    except (OSError, RuntimeError, ValueError) as error:
+        raise WatcherError(
+            f"cannot resolve watcher service host from binding: {error}"
+        ) from error
+    if bound is None:
+        raise WatcherError(
+            "watcher service ensure cannot infer a delivery host: no existing "
+            "service or host binding was found; run `orchestrator-engine bind "
+            "--host ...` or pass an explicit `--host` or `--action notify`"
+        )
+    if not isinstance(bound, dict):
+        raise WatcherError("watcher host binding has an invalid shape")
+    bound_host = bound.get("host")
+    if not isinstance(bound_host, str) or not bound_host:
+        raise WatcherError("watcher host binding does not declare a host")
+    if bound_host not in HOST_ADAPTERS:
+        raise WatcherError(
+            f"binding host {bound_host!r} wakes via `watcher stream`; a "
+            "callback service cannot wake it — arm a stream watch from the "
+            "host chat instead"
+        )
+    return bound_host
+
+
+def ensure_service(
+    project_roots: list[Path],
+    *,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    interval_seconds: float | None,
+    state_path: Path | None,
+    service_file: Path | None,
+    action: str | None,
+    target_thread_id: str | None,
+    codex: str,
+    host: str | None = None,
+    popen_factory=subprocess.Popen,
+    process_identity_reader=worker_lease.process_identity,
+) -> dict[str, Any]:
+    """Idempotently start a missing/stopped service or recover a crashed one."""
+
+    projects = [path.expanduser().resolve() for path in project_roots]
+    if host is None and service_file is None and action in (None, "callback"):
+        host = _ensure_service_host(projects[0], state_dir=state_dir)
+    status = service_status(
+        project_roots,
+        state_dir=state_dir,
+        service_file=service_file,
+        host=host,
+    )
+    current = status.get("status")
+    if current == "running":
+        return {**status, "ensured": True, "changed": False}
+    if current == "degraded":
+        raise WatcherError(
+            "watcher service is degraded while its process is still alive; "
+            "inspect service status and use service restart explicitly"
+        )
+    if current not in {"not_started", "stopped", "crashed"}:
+        raise WatcherError(f"watcher service cannot be ensured from status {current!r}")
+    service_path = service_file or default_callback_service_path(
+        projects[0], host=host, state_dir=state_dir
+    )
+    existing = load_optional_object(service_path)
+    if existing is not None:
+        if existing.get("kind") != SERVICE_KIND:
+            raise WatcherError(f"{service_path} is not a watcher service state file")
+        if not core.is_supported_schema_version(existing.get("schema_version")):
+            raise WatcherError(
+                "watcher service state uses an unsupported schema version"
+            )
+    resolved_interval = interval_seconds
+    if resolved_interval is None and existing is not None:
+        stored_interval = existing.get("interval_seconds")
+        if isinstance(stored_interval, (int, float)) and not isinstance(
+            stored_interval, bool
+        ):
+            resolved_interval = float(stored_interval)
+    resolved_action = action
+    if resolved_action is None and existing is not None:
+        stored_action = existing.get("action")
+        if isinstance(stored_action, str):
+            resolved_action = stored_action
+    resolved_state_path = state_path
+    if resolved_state_path is None and existing is not None:
+        stored_state_path = existing.get("state_path")
+        if isinstance(stored_state_path, str) and stored_state_path:
+            resolved_state_path = Path(stored_state_path)
+    resolved_target = target_thread_id
+    if resolved_target is None and existing is not None:
+        stored_target = existing.get("target_thread_id")
+        if isinstance(stored_target, str) and stored_target:
+            resolved_target = stored_target
+    try:
+        started = start_service(
+            project_roots,
+            state_dir=state_dir,
+            interval_seconds=resolved_interval or 5.0,
+            state_path=resolved_state_path,
+            service_file=service_path,
+            action=resolved_action or ("callback" if host else "notify"),
+            target_thread_id=resolved_target,
+            codex=codex,
+            host=host,
+            popen_factory=popen_factory,
+            process_identity_reader=process_identity_reader,
+        )
+    except WatcherError:
+        raced = service_status(
+            project_roots,
+            state_dir=state_dir,
+            service_file=service_path,
+            host=host,
+        )
+        if raced.get("status") == "running":
+            return {
+                **raced,
+                "ensured": True,
+                "changed": False,
+                "previous_status": current,
+                "race_resolved": True,
+            }
+        raise
+    return {**started, "ensured": True, "changed": True, "previous_status": current}
 
 
 def _start_service_unlocked(

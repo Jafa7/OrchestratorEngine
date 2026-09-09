@@ -4,6 +4,39 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-09-09
+
+- Added point-in-time completion-delivery admission for workers, local checks,
+  GitHub Actions and pull-request monitors, and workstream continuations. The
+  new `off`, `warn` and `require-ready` modes let autonomous dispatch fail
+  before the host turn ends when its callback service or session stream is not
+  ready.
+- Added bounded append-only delivery-preflight sidecars, read-only history,
+  retention that preserves each operation's newest sample, queue-batch probe
+  reuse and host capability `channel_lifecycle` metadata.
+- Claude setup now requires a session-length Monitor (`persistent: true`) and
+  explicitly documents that `watcher stream` must be re-armed for every host
+  session. Follow-up prompts remind agents to verify that channel before the
+  next wake-enabled dispatch.
+- Added a read-only `release preflight` report for version, Git state,
+  untracked whitespace, tag, GitHub CLI and completion-delivery readiness.
+- Added `ci watch --expected-head-from-git REF` to resolve an immutable full
+  commit SHA before monitor admission.
+- Added idempotent `watcher service ensure`, which recovers only non-running
+  services and refuses to replace a live degraded process. Without an
+  explicit `--host` it now arms the bound callback host, and refuses a
+  stream-only, missing or unreadable binding instead of starting a channel
+  that cannot reach it. Legacy `notify` behavior remains available only when
+  requested explicitly or recovered from an existing service.
+- `release preflight` now proves the completion channel through the same
+  check as `doctor`, so a stream host reports its armed stream instead of
+  being reported as unprovable and blocking `--require-watcher`.
+- Adopter-authored TOML configuration is read as `utf-8-sig`, so a file
+  saved with a UTF-8 byte order mark by a Windows editor no longer fails
+  as a syntax error at line 1, column 1.
+- The WSL `/mnt/c` interop probes are skipped on native Windows and never
+  propagate a filesystem error, so `bind --host codex` works off WSL.
+
 ## [1.7.0] - 2026-09-09
 
 - Added phase-scoped resource maintenance capabilities so a cancelled current

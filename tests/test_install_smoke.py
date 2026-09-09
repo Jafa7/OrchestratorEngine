@@ -169,6 +169,7 @@ class InstallSmokeTests(unittest.TestCase):
                         "",
                         "[dispatch]",
                         'intent_enforcement = "strict"',
+                        'completion_delivery_mode = "warn"',
                         "",
                         "[workers.smoke]",
                         "enabled = true",
@@ -449,12 +450,35 @@ class InstallSmokeTests(unittest.TestCase):
                 text=True,
                 env=clean_env(),
             ).stdout
+            delivery_history_help = subprocess.run(
+                [str(cli), "delivery", "preflight", "history", "--help"],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=clean_env(),
+            ).stdout
             ci_watch_help = subprocess.run(
                 [str(cli), "ci", "watch", "--help"],
                 check=True,
                 capture_output=True,
                 text=True,
                 env=clean_env(),
+            ).stdout
+            release_preflight_help = subprocess.run(
+                [str(cli), "release", "preflight", "--help"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+            ).stdout
+            watcher_ensure_help = subprocess.run(
+                [str(cli), "watcher", "service", "ensure", "--help"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
             ).stdout
             pr_watch_help = subprocess.run(
                 [str(cli), "pr", "watch", "--help"],
@@ -552,6 +576,17 @@ class InstallSmokeTests(unittest.TestCase):
                 str(prompt),
             )
             result = wait_result("SMOKE-1")
+            delivery_history = self.run_cli(
+                cli,
+                project,
+                "delivery",
+                "preflight",
+                "history",
+                "--operation-kind",
+                "worker",
+                "--operation-id",
+                "SMOKE-1",
+            )
             failed_result = wait_result("SMOKE-FAIL")
             check_result = wait_result("SMOKE-CHECK")
             wait_status = self.run_cli(
@@ -764,17 +799,26 @@ class InstallSmokeTests(unittest.TestCase):
         self.assertEqual(worker_diagnostics["kind"], "WORKER_DIAGNOSTICS")
         self.assertEqual(worker_diagnostics["diagnostic_count"], 0)
         self.assertIn("--availability-mode", worker_run_help)
+        self.assertIn("--completion-delivery-mode", worker_run_help)
         self.assertIn("--wake-policy", worker_run_help)
         self.assertIn("--mode", worker_wait_help)
         self.assertIn("--target", operation_wait_help)
         self.assertIn("--target", operation_status_help)
         self.assertIn("--expected-head-sha", ci_watch_help)
+        self.assertIn("--expected-head-from-git", ci_watch_help)
         self.assertIn("--workflow-name", ci_watch_help)
         self.assertIn("--wake-policy", ci_watch_help)
+        self.assertIn("--completion-delivery-mode", ci_watch_help)
+        self.assertIn("--require-watcher", release_preflight_help)
+        self.assertIn("--interval-seconds", watcher_ensure_help)
         self.assertIn("--expected-head-sha", pr_watch_help)
         self.assertIn("--review-policy", pr_watch_help)
+        self.assertIn("--completion-delivery-mode", pr_watch_help)
         self.assertIn("--ready", workstream_checkpoint_help)
+        self.assertIn("--completion-delivery-mode", workstream_checkpoint_help)
         self.assertIn("--execution", local_check_help)
+        self.assertIn("--completion-delivery-mode", local_check_help)
+        self.assertIn("--operation-kind", delivery_history_help)
         self.assertIn("--path", artifact_resolve_help)
         self.assertIn("--reason", artifact_resolve_help)
         self.assertIn("--strict", upgrade_check_help)
@@ -788,6 +832,8 @@ class InstallSmokeTests(unittest.TestCase):
         # Dispatch hands the descriptor to the supervisor, which claims it and
         # records `running` itself; the dispatcher never writes it again.
         self.assertEqual(dispatched["status"], "starting")
+        self.assertEqual(dispatched["completion_delivery"]["mode"], "warn")
+        self.assertEqual(delivery_history["count"], 1)
         self.assertEqual(result["terminal_status"], "completed")
         self.assertEqual(wait_status["kind"], "WORKER_WAIT_STATUS")
         self.assertEqual(wait_status["status"], "completed")

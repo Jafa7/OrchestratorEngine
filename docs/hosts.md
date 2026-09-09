@@ -11,7 +11,7 @@ live wakeup:
 - **Live wakeup** means the already-open host chat receives the message and
   the active agent continues in that same visible session.
 
-Everything engine-side runs where the CLI workers run. Version 1.7.0 supports
+Everything engine-side runs where the CLI workers run. Version 1.8.0 supports
 the complete detached runtime on Linux, WSL, native Windows and macOS. Check
 `orchestrator-engine runtime-capabilities` and the
 [platform support matrix](platform-support.md) before setup. In WSL,
@@ -26,16 +26,20 @@ certify a particular desktop host or cross-OS delivery route.
 Machine-readable capabilities are available with
 `orchestrator-engine host-capabilities`:
 
-| Host | `delivery_mode` | `live_refresh_support` |
-| --- | --- | --- |
-| Claude | `session_stream` | `supported` |
-| VS Code | `ui_injection` | `best_effort` |
-| Codex Desktop | `session_queue` | `supported` |
+| Host | `delivery_mode` | `live_refresh_support` | `channel_lifecycle` |
+| --- | --- | --- | --- |
+| Claude | `session_stream` | `supported` | `session_bound` |
+| VS Code | `ui_injection` | `best_effort` | `detached_service` |
+| Codex Desktop | `session_queue` | `supported` | `detached_service` |
 
 This is a versioned report with `schema_version`, `kind`, `host_count` and a
 bounded, stable `hosts` collection. Codex also declares its `codex queue`
 requirement and the `headless_app_server_turn` / `unsupported` fallback. These
 describe message delivery, not deep-link or window activation success.
+
+For parallel tasks on any host, repeat `--task-id` and select `--mode all` or
+`--mode any`. One aggregate wait is cheaper and easier to deduplicate than one
+relay or host notification per task.
 
 `ui_injection` is a stable machine-readable version 1 identifier for invoking the
 documented VS Code chat CLI. It does not mean that the engine bypasses host
@@ -118,9 +122,6 @@ See [Codex in-turn continuation](codex-in-turn-continuation.md) for the verified
 behavior, role boundaries, token tradeoffs and recovery rules. Do not repeatedly
 ask either the parent model or a relay model for task status.
 
-For parallel tasks, repeat `--task-id` and select `--mode all` or `--mode any`.
-One aggregate wait is cheaper and easier to deduplicate than one relay per task.
-
 ## Claude Code / Claude for Windows
 
 Delivery mechanism: the Claude harness natively wakes a session when a watched
@@ -130,8 +131,8 @@ callback service for this host.
 Live status: recommended live host. The watched stream wakes the same Claude
 session that armed it.
 
-From the Claude chat you orchestrate from, arm a watch (Monitor / background
-task) on:
+From the Claude chat you orchestrate from, arm a persistent, session-length
+watch (Monitor / background task with `persistent: true`) on:
 
 ```bash
 orchestrator-engine --project-root /path/to/project watcher stream
@@ -143,6 +144,12 @@ hosts do not consume Claude signals. A signal is marked seen only after its
 line is written successfully. A failed write remains retryable after the
 stream is re-armed. Delivery is therefore at-least-once across a crash window;
 host integrations must deduplicate by the stable `event_id`.
+
+The Monitor belongs to the current Claude host session; the stream state file
+does not keep that host-side watch alive. Re-arm it at the beginning of every
+new session and after any Monitor cancellation or host restart. Before ending a
+turn that depends on a future stream wakeup, dispatch with
+`--completion-delivery-mode require-ready`.
 
 Check stream health:
 

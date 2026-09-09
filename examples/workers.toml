@@ -37,6 +37,7 @@ role = "review"
 # max_concurrent = 3
 # availability_mode = "require-available" # requires a configured profile probe
 # intent_enforcement = "strict"           # requires profile admission metadata
+# completion_delivery_mode = "require-ready" # autonomous wake-enabled work
 # In strict mode, every enabled AI profile should declare supported
 # admission.verification levels, and every AI dispatch should carry an intent
 # file. That value is the required baseline; a concrete discovered risk may

@@ -17,6 +17,7 @@ from . import (
     codex_app,
     conformance,
     core,
+    delivery_preflight,
     diagnostics,
     github_actions,
     github_pull_requests,
@@ -24,6 +25,7 @@ from . import (
     local_checks,
     operation_wait,
     platform_runtime,
+    release_preflight,
     schemas,
     status,
     task_diagnostics,
@@ -40,6 +42,17 @@ from . import (
 
 def print_json(value: object) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def add_completion_delivery_mode(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--completion-delivery-mode",
+        choices=sorted(delivery_preflight.MODES),
+        help=(
+            "Override point-in-time completion-channel admission: off, warn, "
+            "or require-ready."
+        ),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -761,6 +774,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Use this validated operation-scoped wake target snapshot.",
     )
+    add_completion_delivery_mode(worker_run)
     worker_run.add_argument(
         "--wake-policy",
         choices=("always", "on-failure", "never"),
@@ -791,14 +805,41 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup = subparsers.add_parser(
         "cleanup",
         help=(
-            "Prune old notifications, thread-wakeup receipts and rotated logs. "
-            "Terminal events and inbox signals are kept as the durable audit trail."
+            "Prune old notifications, delivery preflight history, thread-wakeup "
+            "receipts and rotated logs. Terminal events and inbox signals are "
+            "kept as the durable audit trail."
         ),
     )
     cleanup.add_argument("--retention-days", type=int, default=30)
     cleanup.add_argument("--log-max-bytes", type=int, default=50 * 1024 * 1024)
     cleanup.add_argument("--log-keep-bytes", type=int, default=10 * 1024 * 1024)
     cleanup.add_argument("--dry-run", action="store_true")
+
+    delivery = subparsers.add_parser(
+        "delivery",
+        help="Inspect point-in-time completion-delivery admission evidence.",
+    )
+    delivery_subparsers = delivery.add_subparsers(
+        dest="delivery_command", required=True
+    )
+    delivery_preflight_parser = delivery_subparsers.add_parser(
+        "preflight",
+        help="Inspect completion-delivery preflight evidence.",
+    )
+    delivery_preflight_subparsers = delivery_preflight_parser.add_subparsers(
+        dest="delivery_preflight_command", required=True
+    )
+    delivery_history = delivery_preflight_subparsers.add_parser(
+        "history",
+        help="Read bounded preflight history for one operation.",
+    )
+    delivery_history.add_argument(
+        "--operation-kind",
+        choices=sorted(delivery_preflight.OPERATION_KINDS),
+        required=True,
+    )
+    delivery_history.add_argument("--operation-id", required=True)
+    delivery_history.add_argument("--limit", type=int, default=20)
 
     checks = subparsers.add_parser(
         "checks",
@@ -851,6 +892,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=sorted(local_checks.EXECUTION_MODES),
         default="auto",
     )
+    add_completion_delivery_mode(check_run)
     check_run.add_argument(
         "--wake-policy",
         choices=sorted(local_checks.WAKE_POLICIES),
@@ -923,6 +965,7 @@ def build_parser() -> argparse.ArgumentParser:
     workstream_checkpoint.add_argument(
         "--decision", choices=sorted(workstreams.DECISIONS), required=True
     )
+    add_completion_delivery_mode(workstream_checkpoint)
     workstream_checkpoint.add_argument("--summary", required=True)
     workstream_checkpoint.add_argument("--next-action")
     workstream_checkpoint.add_argument(
@@ -980,11 +1023,18 @@ def build_parser() -> argparse.ArgumentParser:
     ci_watch.add_argument("--run-id")
     ci_watch.add_argument("--hostname", default="github.com")
     ci_watch.add_argument("--attempt")
-    ci_watch.add_argument("--expected-head-sha")
+    ci_head = ci_watch.add_mutually_exclusive_group()
+    ci_head.add_argument("--expected-head-sha")
+    ci_head.add_argument(
+        "--expected-head-from-git",
+        metavar="REF",
+        help="Resolve a local Git ref (for example HEAD) to the exact full SHA.",
+    )
     ci_watch.add_argument(
         "--workflow-name",
         help="Exact workflow name used to disambiguate full-SHA discovery.",
     )
+    add_completion_delivery_mode(ci_watch)
     ci_watch.add_argument("--gh-command")
     ci_watch.add_argument("--timeout-seconds", type=float)
     ci_watch.add_argument(
@@ -1053,6 +1103,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="always",
     )
     pr_watch.add_argument("--gh-command")
+    add_completion_delivery_mode(pr_watch)
     pr_status = pr_subparsers.add_parser("status", help="Read PR monitor state.")
     pr_status.add_argument("--monitor-id")
     pr_cancel = pr_subparsers.add_parser(
@@ -1182,6 +1233,11 @@ def build_parser() -> argparse.ArgumentParser:
         "status",
         help="Report watcher process health and pending inbox count.",
     )
+    service_ensure = service_subparsers.add_parser(
+        "ensure",
+        help="Idempotently start or recover a non-running watcher service.",
+    )
+    service_ensure.add_argument("--interval-seconds", type=float, default=None)
     service_stop = service_subparsers.add_parser(
         "stop",
         help="Stop a running watcher process.",
@@ -1193,6 +1249,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     service_restart.add_argument("--interval-seconds", type=float, default=None)
     service_restart.add_argument("--timeout-seconds", type=float, default=5)
+
+    release = subparsers.add_parser(
+        "release",
+        help="Inspect release readiness without publishing or changing Git state.",
+    )
+    release_subparsers = release.add_subparsers(
+        dest="release_command", required=True
+    )
+    release_check = release_subparsers.add_parser(
+        "preflight",
+        help="Run read-only release metadata, Git, tool and delivery checks.",
+    )
+    release_check.add_argument("--remote", default="origin")
+    release_check.add_argument("--branch", default="main")
+    release_check.add_argument("--host", choices=sorted(binding.SUPPORTED_HOSTS))
+    release_check.add_argument("--gh-command", default="gh")
+    release_check.add_argument("--offline", action="store_true")
+    release_check.add_argument("--require-watcher", action="store_true")
     return parser
 
 
@@ -1300,6 +1374,20 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
             )
             print_json(output)
+        elif args.command == "delivery":
+            if len(roots) != 1:
+                raise core.OrchestratorError(
+                    "delivery commands require exactly one project root"
+                )
+            print_json(
+                delivery_preflight.history(
+                    roots[0],
+                    operation_kind=args.operation_kind,
+                    operation_id=args.operation_id,
+                    limit=args.limit,
+                    state_dir=args.state_dir,
+                )
+            )
         elif args.command == "checks":
             if len(roots) != 1:
                 raise core.OrchestratorError("checks requires exactly one project root")
@@ -1336,6 +1424,23 @@ def main(argv: list[str] | None = None) -> int:
                 raise core.OrchestratorError("ci requires exactly one project root")
             output = run_ci_command(args, roots[0])
             print_json(output)
+        elif args.command == "release":
+            if len(roots) != 1:
+                raise core.OrchestratorError(
+                    "release requires exactly one project root"
+                )
+            output = release_preflight.run_preflight(
+                roots[0],
+                state_dir=args.state_dir,
+                remote=args.remote,
+                branch=args.branch,
+                host=args.host,
+                gh_command=args.gh_command,
+                offline=args.offline,
+                require_watcher=args.require_watcher,
+            )
+            print_json(output)
+            return release_preflight.exit_code(output)
         elif args.command == "pr":
             if len(roots) != 1:
                 raise core.OrchestratorError("pr requires exactly one project root")
@@ -1574,6 +1679,7 @@ def run_workstream_command(args: argparse.Namespace, root: Path) -> object:
             next_action=args.next_action,
             waiting_on=args.waiting_on,
             ready=args.ready,
+            completion_delivery_mode=args.completion_delivery_mode,
             state_dir=args.state_dir,
         )
     if args.workstream_command == "resume":
@@ -1605,6 +1711,7 @@ def run_local_check_command(args: argparse.Namespace, root: Path) -> dict:
             state_dir=args.state_dir,
             execution=args.execution,
             wake_policy=args.wake_policy,
+            completion_delivery_mode=args.completion_delivery_mode,
             long_threshold_seconds=args.long_threshold_seconds,
             wake_target=(
                 core.load_object(args.wake_target_file)
@@ -1633,6 +1740,16 @@ def run_local_check_command(args: argparse.Namespace, root: Path) -> dict:
 
 def run_ci_command(args: argparse.Namespace, root: Path) -> object:
     if args.ci_command == "watch":
+        if args.expected_head_sha and args.expected_head_from_git:
+            raise github_actions.GitHubActionsError(
+                "--expected-head-sha and --expected-head-from-git are "
+                "mutually exclusive"
+            )
+        expected_head_sha = args.expected_head_sha
+        if args.expected_head_from_git:
+            expected_head_sha = github_actions.resolve_expected_head_from_git(
+                root, args.expected_head_from_git
+            )
         return github_actions.start_monitor(
             root,
             repository=args.repo,
@@ -1640,11 +1757,12 @@ def run_ci_command(args: argparse.Namespace, root: Path) -> object:
             state_dir=args.state_dir,
             hostname=args.hostname,
             attempt=args.attempt,
-            expected_head_sha=args.expected_head_sha,
+            expected_head_sha=expected_head_sha,
             workflow_name=args.workflow_name,
             gh_command=args.gh_command,
             timeout_seconds=args.timeout_seconds,
             wake_policy=args.wake_policy,
+            completion_delivery_mode=args.completion_delivery_mode,
         )
     if args.ci_command == "status":
         return github_actions.monitor_status(
@@ -1692,6 +1810,7 @@ def run_pr_command(args: argparse.Namespace, root: Path) -> object:
             interval_seconds=args.interval_seconds,
             timeout_seconds=args.timeout_seconds,
             wake_policy=args.wake_policy,
+            completion_delivery_mode=args.completion_delivery_mode,
             gh_command=args.gh_command,
         )
     if args.pr_command == "status":
@@ -1798,6 +1917,7 @@ def run_worker_cli_command(args: argparse.Namespace, root: Path) -> object:
             state_dir=args.state_dir,
             preflight_availability=args.preflight_availability,
             availability_mode=args.availability_mode,
+            completion_delivery_mode=args.completion_delivery_mode,
             wake_policy=args.wake_policy,
             intent_file=args.intent_file,
             allow_duplicate=args.allow_duplicate,
@@ -2086,7 +2206,8 @@ def run_report_command(args: argparse.Namespace, root: Path) -> str | None:
 
 def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object | None:
     restarting = (
-        args.watcher_command == "service" and args.service_command == "restart"
+        args.watcher_command == "service"
+        and args.service_command in {"restart", "ensure"}
     )
     action = args.action if restarting else (args.action or "notify")
     target_thread_id = watcher_target_thread_id(args, action=action)
@@ -2208,6 +2329,18 @@ def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object |
             roots,
             state_dir=args.state_dir,
             service_file=args.service_file,
+            host=args.host,
+        )
+    if args.service_command == "ensure":
+        return watcher.ensure_service(
+            roots,
+            state_dir=args.state_dir,
+            interval_seconds=args.interval_seconds,
+            state_path=args.state_file,
+            service_file=args.service_file,
+            action=action,
+            target_thread_id=target_thread_id,
+            codex=args.codex,
             host=args.host,
         )
     if args.service_command == "stop":

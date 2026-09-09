@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
 
-from orchestrator_engine import core, workers
+from orchestrator_engine import binding, core, watcher, workers
 
 
 class FakePopen:
@@ -99,6 +99,78 @@ class WorkerQueueTests(unittest.TestCase):
         self.assertEqual(tick["admitted_task_ids"], ["T-2"])
         self.assertEqual(second_stored["status"], "starting")
         self.assertEqual(third_stored["status"], "queued")
+
+    def test_queue_waits_for_required_delivery_then_admits_after_rearm(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            binding.write_binding(root, host="claude")
+            stream_state = watcher.default_stream_state_path(root, host="claude")
+            core.atomic_json(
+                stream_state,
+                {
+                    "schema_version": core.SCHEMA_VERSION,
+                    "seen_event_ids": [],
+                    "updated_at": core.utc_now(),
+                },
+            )
+            active = workers.run_worker(
+                root,
+                worker="slow",
+                task_id="T-DELIVERY-ACTIVE",
+                prompt_file=prompt(root, "delivery-active"),
+                completion_delivery_mode="require-ready",
+                popen_factory=FakePopen,
+            )
+            queued = workers.run_worker(
+                root,
+                worker="slow",
+                task_id="T-DELIVERY-QUEUED",
+                prompt_file=prompt(root, "delivery-queued"),
+                completion_delivery_mode="require-ready",
+                popen_factory=FakePopen,
+            )
+            active_descriptor = core.load_object(Path(active["descriptor_path"]))
+            active_descriptor["status"] = "completed"
+            core.atomic_json(Path(active["descriptor_path"]), active_descriptor)
+            stream_state.unlink()
+
+            blocked = workers.queue_tick(root, popen_factory=FakePopen)
+            still_queued = core.load_object(Path(queued["descriptor_path"]))
+            history_before = workers.delivery_preflight.history(
+                root,
+                operation_kind="worker",
+                operation_id="T-DELIVERY-QUEUED",
+            )
+            deferred = workers.queue_tick(
+                root,
+                popen_factory=FakePopen,
+                delivery_recheck_min_age_seconds=30,
+            )
+            history_after = workers.delivery_preflight.history(
+                root,
+                operation_kind="worker",
+                operation_id="T-DELIVERY-QUEUED",
+            )
+
+            core.atomic_json(
+                stream_state,
+                {
+                    "schema_version": core.SCHEMA_VERSION,
+                    "seen_event_ids": [],
+                    "updated_at": core.utc_now(),
+                },
+            )
+            admitted = workers.queue_tick(root, popen_factory=FakePopen)
+            started = core.load_object(Path(queued["descriptor_path"]))
+
+        self.assertEqual(blocked["delivery_blocked_count"], 1)
+        self.assertEqual(blocked["admitted_count"], 0)
+        self.assertEqual(still_queued["status"], "queued")
+        self.assertEqual(deferred["delivery_blocked_count"], 1)
+        self.assertEqual(history_after["total_count"], history_before["total_count"])
+        self.assertEqual(admitted["admitted_task_ids"], ["T-DELIVERY-QUEUED"])
+        self.assertEqual(started["status"], "starting")
 
     def test_profile_limit_is_validated(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

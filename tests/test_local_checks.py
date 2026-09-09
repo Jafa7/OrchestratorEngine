@@ -49,6 +49,26 @@ def write_config(
 
 
 class LocalCheckTests(unittest.TestCase):
+    def test_delivery_require_ready_rejects_before_check_descriptor(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            with self.assertRaisesRegex(local_checks.LocalCheckError, "no_binding"):
+                local_checks.start_check(
+                    root,
+                    check_id="CHECK-DELIVERY-REQUIRED",
+                    suite="gate",
+                    execution="detached",
+                    wake_policy="always",
+                    completion_delivery_mode="require-ready",
+                )
+
+            descriptor = local_checks.descriptor_path(
+                root, "CHECK-DELIVERY-REQUIRED", state_dir=core.DEFAULT_STATE_DIR
+            )
+
+        self.assertFalse(descriptor.exists())
+
     def test_check_uses_explicit_operation_wake_target(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

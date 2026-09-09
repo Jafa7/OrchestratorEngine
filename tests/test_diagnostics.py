@@ -164,6 +164,16 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(channel["status"], "warn")
         self.assertEqual(channel["data"]["stream_status"]["status"], "not_started")
 
+    def test_explicit_host_reports_when_it_differs_from_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            binding.write_binding(root, host="codex", target_thread_id="thread-1")
+            report = diagnostics.run_doctor(root, host="claude")
+
+        channel = check_by_name(report, "watcher_channel")
+        self.assertFalse(channel["data"]["binding_match"])
+        self.assertIn("differs", channel["hint"])
+
     def test_doctor_uses_host_scoped_status_for_vscode(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

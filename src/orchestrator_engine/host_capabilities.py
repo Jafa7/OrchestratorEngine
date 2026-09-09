@@ -16,19 +16,23 @@ DELIVERY_MODES = frozenset(
     }
 )
 LIVE_REFRESH_SUPPORT = frozenset({"supported", "best_effort", "unsupported"})
+CHANNEL_LIFECYCLES = frozenset({"session_bound", "detached_service"})
 
 _CAPABILITIES: dict[str, dict[str, Any]] = {
     "claude": {
         "delivery_mode": "session_stream",
         "live_refresh_support": "supported",
+        "channel_lifecycle": "session_bound",
     },
     "vscode": {
         "delivery_mode": "ui_injection",
         "live_refresh_support": "best_effort",
+        "channel_lifecycle": "detached_service",
     },
     "codex": {
         "delivery_mode": "session_queue",
         "live_refresh_support": "supported",
+        "channel_lifecycle": "detached_service",
         "requirement": "codex queue",
         "fallback_delivery_mode": "headless_app_server_turn",
         "fallback_live_refresh_support": "unsupported",
@@ -58,6 +62,7 @@ def receipt_fields(
     return {
         "delivery_mode": fallback_mode,
         "live_refresh_support": result["fallback_live_refresh_support"],
+        "channel_lifecycle": result["channel_lifecycle"],
     }
 
 

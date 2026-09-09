@@ -93,6 +93,25 @@ class DummyProcess:
 
 
 class GitHubPullRequestTests(unittest.TestCase):
+    def test_delivery_require_ready_rejects_before_monitor_descriptor(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            popen = mock.Mock(side_effect=AssertionError("must not spawn"))
+            with self.assertRaisesRegex(
+                github_pull_requests.GitHubPullRequestError, "no_binding"
+            ):
+                github_pull_requests.start_monitor(
+                    root,
+                    repository="Example/Project",
+                    pr_number=7,
+                    expected_head_sha=SHA,
+                    completion_delivery_mode="require-ready",
+                    popen_factory=popen,
+                )
+
+        popen.assert_not_called()
+
     def test_watch_fails_before_artifacts_when_detached_lifecycle_unsupported(
         self,
     ) -> None:

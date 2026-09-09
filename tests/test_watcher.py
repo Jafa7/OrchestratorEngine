@@ -1364,6 +1364,292 @@ class WatcherTests(unittest.TestCase):
         self.assertFalse(status["heartbeat_healthy"])
         self.assertEqual(status["heartbeat_status"], "not_alive")
 
+    def test_ensure_service_is_idempotent_when_running(self) -> None:
+        running = {"status": "running", "pid": 42}
+        with (
+            mock.patch.object(watcher, "service_status", return_value=running),
+            mock.patch.object(watcher, "start_service") as start,
+            mock.patch.object(watcher, "restart_service") as restart,
+        ):
+            result = watcher.ensure_service(
+                [Path.cwd()],
+                interval_seconds=None,
+                state_path=None,
+                service_file=None,
+                action=None,
+                target_thread_id=None,
+                codex="codex",
+                host="codex",
+            )
+
+        self.assertFalse(result["changed"])
+        start.assert_not_called()
+        restart.assert_not_called()
+
+    def test_ensure_service_recovers_crashed_service(self) -> None:
+        with (
+            mock.patch.object(
+                watcher, "service_status", return_value={"status": "crashed"}
+            ),
+            mock.patch.object(
+                watcher, "start_service", return_value={"status": "running"}
+            ) as start,
+        ):
+            result = watcher.ensure_service(
+                [Path.cwd()],
+                interval_seconds=None,
+                state_path=None,
+                service_file=None,
+                action=None,
+                target_thread_id=None,
+                codex="codex",
+                host="codex",
+            )
+
+        self.assertTrue(result["changed"])
+        self.assertEqual(result["previous_status"], "crashed")
+        start.assert_called_once()
+
+    def test_ensure_service_inherits_stopped_service_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            service_file = watcher.default_callback_service_path(
+                root, host="codex"
+            )
+            state_path = root / ".orchestrator" / "custom-state.json"
+            core.atomic_json(
+                service_file,
+                {
+                    "schema_version": 1,
+                    "kind": watcher.SERVICE_KIND,
+                    "status": "stopped",
+                    "interval_seconds": 9,
+                    "state_path": str(state_path),
+                    "action": "callback",
+                    "target_thread_id": "thread-stored",
+                },
+            )
+            with (
+                mock.patch.object(
+                    watcher, "service_status", return_value={"status": "stopped"}
+                ),
+                mock.patch.object(
+                    watcher, "start_service", return_value={"status": "running"}
+                ) as start,
+            ):
+                watcher.ensure_service(
+                    [root],
+                    interval_seconds=None,
+                    state_path=None,
+                    service_file=service_file,
+                    action=None,
+                    target_thread_id=None,
+                    codex="codex",
+                    host="codex",
+                )
+
+        self.assertEqual(start.call_args.kwargs["interval_seconds"], 9)
+        self.assertEqual(start.call_args.kwargs["state_path"], state_path)
+        self.assertEqual(start.call_args.kwargs["action"], "callback")
+        self.assertEqual(
+            start.call_args.kwargs["target_thread_id"], "thread-stored"
+        )
+
+    def test_ensure_service_treats_concurrent_start_as_success(self) -> None:
+        statuses = iter(({"status": "crashed"}, {"status": "running", "pid": 43}))
+        with (
+            mock.patch.object(watcher, "service_status", side_effect=statuses),
+            mock.patch.object(
+                watcher,
+                "start_service",
+                side_effect=watcher.WatcherError("already running"),
+            ),
+        ):
+            result = watcher.ensure_service(
+                [Path.cwd()],
+                interval_seconds=None,
+                state_path=None,
+                service_file=None,
+                action=None,
+                target_thread_id=None,
+                codex="codex",
+                host="codex",
+            )
+
+        self.assertFalse(result["changed"])
+        self.assertTrue(result["race_resolved"])
+
+    def test_ensure_service_refuses_live_degraded_service(self) -> None:
+        with (
+            mock.patch.object(
+                watcher, "service_status", return_value={"status": "degraded"}
+            ),
+            self.assertRaisesRegex(watcher.WatcherError, "degraded"),
+        ):
+            watcher.ensure_service(
+                [Path.cwd()],
+                interval_seconds=None,
+                state_path=None,
+                service_file=None,
+                action=None,
+                target_thread_id=None,
+                codex="codex",
+                host="codex",
+            )
+
+    def test_ensure_service_without_host_adopts_the_bound_callback_host(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            binding.write_binding(root, host="codex", target_thread_id="thread-1")
+            with (
+                mock.patch.object(
+                    watcher, "service_status", return_value={"status": "not_started"}
+                ) as status,
+                mock.patch.object(
+                    watcher, "start_service", return_value={"status": "running"}
+                ) as start,
+            ):
+                watcher.ensure_service(
+                    [root],
+                    interval_seconds=None,
+                    state_path=None,
+                    service_file=None,
+                    action=None,
+                    target_thread_id=None,
+                    codex="codex",
+                )
+
+        self.assertEqual(status.call_args.kwargs["host"], "codex")
+        self.assertEqual(start.call_args.kwargs["host"], "codex")
+        self.assertEqual(start.call_args.kwargs["action"], "callback")
+
+    def test_ensure_service_without_host_refuses_a_stream_only_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            binding.write_binding(root, host="claude")
+            with (
+                mock.patch.object(watcher, "start_service") as start,
+                self.assertRaisesRegex(watcher.WatcherError, "watcher stream"),
+            ):
+                watcher.ensure_service(
+                    [root],
+                    interval_seconds=None,
+                    state_path=None,
+                    service_file=None,
+                    action=None,
+                    target_thread_id=None,
+                    codex="codex",
+                )
+
+        start.assert_not_called()
+
+    def test_ensure_service_without_host_or_binding_refuses_notify_fallback(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with (
+                mock.patch.object(watcher, "start_service") as start,
+                self.assertRaisesRegex(watcher.WatcherError, "cannot infer"),
+            ):
+                watcher.ensure_service(
+                    [root],
+                    interval_seconds=None,
+                    state_path=None,
+                    service_file=None,
+                    action=None,
+                    target_thread_id=None,
+                    codex="codex",
+                )
+
+        start.assert_not_called()
+
+    def test_ensure_service_without_host_reports_unreadable_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with (
+                mock.patch.object(
+                    binding, "load_binding", side_effect=OSError("access denied")
+                ),
+                mock.patch.object(watcher, "start_service") as start,
+                self.assertRaisesRegex(
+                    watcher.WatcherError, "cannot resolve.*access denied"
+                ),
+            ):
+                watcher.ensure_service(
+                    [root],
+                    interval_seconds=None,
+                    state_path=None,
+                    service_file=None,
+                    action=None,
+                    target_thread_id=None,
+                    codex="codex",
+                )
+
+        start.assert_not_called()
+
+    def test_ensure_service_allows_explicit_notify_without_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with (
+                mock.patch.object(
+                    watcher, "service_status", return_value={"status": "not_started"}
+                ),
+                mock.patch.object(
+                    watcher, "start_service", return_value={"status": "running"}
+                ) as start,
+            ):
+                result = watcher.ensure_service(
+                    [root],
+                    interval_seconds=None,
+                    state_path=None,
+                    service_file=None,
+                    action="notify",
+                    target_thread_id=None,
+                    codex="codex",
+                )
+
+        self.assertTrue(result["changed"])
+        self.assertIsNone(start.call_args.kwargs["host"])
+        self.assertEqual(start.call_args.kwargs["action"], "notify")
+
+    def test_ensure_service_recovers_an_existing_unscoped_service(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            binding.write_binding(root, host="codex", target_thread_id="thread-1")
+            core.atomic_json(
+                watcher.default_callback_service_path(root, host=None),
+                {
+                    "schema_version": 1,
+                    "kind": watcher.SERVICE_KIND,
+                    "status": "stopped",
+                    "action": "notify",
+                    "interval_seconds": 7,
+                },
+            )
+            with (
+                mock.patch.object(
+                    watcher, "service_status", return_value={"status": "stopped"}
+                ) as status,
+                mock.patch.object(
+                    watcher, "start_service", return_value={"status": "running"}
+                ) as start,
+            ):
+                watcher.ensure_service(
+                    [root],
+                    interval_seconds=None,
+                    state_path=None,
+                    service_file=None,
+                    action=None,
+                    target_thread_id=None,
+                    codex="codex",
+                )
+
+        self.assertIsNone(status.call_args.kwargs["host"])
+        self.assertIsNone(start.call_args.kwargs["host"])
+        self.assertEqual(start.call_args.kwargs["action"], "notify")
+        self.assertEqual(start.call_args.kwargs["interval_seconds"], 7)
+
     def test_callback_without_binding_skips_unroutable_legacy_signal(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

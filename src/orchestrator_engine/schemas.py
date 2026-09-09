@@ -48,6 +48,7 @@ SCHEMA_NAMES = (
     "resource-queue",
     "local-check-evidence",
     "check-duration-history",
+    "delivery-preflight",
     "task-resolution",
     "artifact-resolution",
     "conformance-report",

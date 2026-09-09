@@ -45,6 +45,32 @@ class WorkstreamTests(unittest.TestCase):
         self.assertIn("not_before", signal)
         self.assertEqual(scan["new_count"], 0)
 
+    def test_continue_requires_an_armed_claude_stream_in_fail_closed_mode(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            binding.write_binding(root, host="claude")
+            workstreams.start_workstream(root, workstream_id="W", goal="Goal")
+
+            with self.assertRaisesRegex(
+                workstreams.WorkstreamError, "stream_not_started"
+            ):
+                workstreams.checkpoint_workstream(
+                    root,
+                    workstream_id="W",
+                    checkpoint_id="C1",
+                    decision="continue",
+                    summary="Ready.",
+                    next_action="Continue.",
+                    ready=True,
+                    completion_delivery_mode="require-ready",
+                )
+
+            checkpoint = workstreams.checkpoint_path(root, "W", "C1")
+
+        self.assertFalse(checkpoint.exists())
+
     def test_start_requires_a_bound_host_target(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

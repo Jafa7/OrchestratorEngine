@@ -22,7 +22,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import binding, core, platform_runtime, verification, worker_lease
+from . import (
+    binding,
+    core,
+    delivery_preflight,
+    platform_runtime,
+    verification,
+    worker_lease,
+)
 
 CHECK_KIND = "ORCHESTRATOR_LOCAL_CHECK"
 HISTORY_KIND = "ORCHESTRATOR_CHECK_DURATION_HISTORY"
@@ -112,7 +119,7 @@ def read_suite(
     if not path.is_file():
         raise LocalCheckError(f"local check config not found: {path}")
     try:
-        root = tomllib.loads(path.read_text(encoding="utf-8"))
+        root = tomllib.loads(core.read_config_text(path))
     except tomllib.TOMLDecodeError as error:
         raise LocalCheckError(f"invalid local check config: {path}: {error}") from error
     suites = root.get("suites")
@@ -681,8 +688,8 @@ def capture_wake_target(
 ) -> dict[str, Any] | None:
     if wake_policy == "never":
         return None
-    bound = binding.require_binding(project_root, state_dir=state_dir)
-    return binding.wake_target_from_binding(bound)
+    bound = binding.load_binding(project_root, state_dir=state_dir)
+    return binding.wake_target_from_binding(bound) if bound is not None else None
 
 
 def supervisor_command(
@@ -714,6 +721,7 @@ def start_check(
     state_dir: str = core.DEFAULT_STATE_DIR,
     execution: str = "auto",
     wake_policy: str = "auto",
+    completion_delivery_mode: str | None = None,
     long_threshold_seconds: float = DEFAULT_LONG_THRESHOLD_SECONDS,
     popen_factory=subprocess.Popen,
     wake_target: dict[str, Any] | None = None,
@@ -735,6 +743,7 @@ def start_check(
             state_dir=state_dir,
             long_threshold_seconds=long_threshold_seconds,
             wake_target=wake_target,
+            completion_delivery_mode=completion_delivery_mode,
         )
     plan = plan_check(
         project,
@@ -764,6 +773,19 @@ def start_check(
             state_dir=state_dir,
             wake_policy=selected_wake_policy,
         )
+    try:
+        completion_delivery = delivery_preflight.run(
+            project,
+            operation_kind="local_check",
+            operation_id=check_id,
+            wake_policy=selected_wake_policy,
+            wake_target=wake_target,
+            mode=completion_delivery_mode,
+            state_dir=state_dir,
+        )
+        delivery_preflight.enforce(completion_delivery)
+    except delivery_preflight.DeliveryPreflightError as error:
+        raise LocalCheckError(str(error)) from error
     directory = check_dir(project, check_id, state_dir=state_dir)
     path = directory / "check.json"
     try:
@@ -806,13 +828,19 @@ def start_check(
                 existing.get("wake_target"), wake_target
             )
         ):
-            return {**existing, "descriptor_path": str(path), "idempotent": True}
+            return delivery_preflight.attach(
+                {**existing, "descriptor_path": str(path), "idempotent": True},
+                completion_delivery,
+            )
         raise LocalCheckError(
             f"check already exists with different options: {check_id}"
         )
     if selected_execution == "foreground":
         result = supervise_check(project, check_id=check_id, state_dir=state_dir)
-        return {**result, "descriptor_path": str(path), "idempotent": False}
+        return delivery_preflight.attach(
+            {**result, "descriptor_path": str(path), "idempotent": False},
+            completion_delivery,
+        )
     supervisor_log = directory / "supervisor.log"
     try:
         with supervisor_log.open("ab") as log:
@@ -864,11 +892,14 @@ def start_check(
         args=(process,),
         daemon=True,
     ).start()
-    return {
-        **descriptor,
-        "descriptor_path": str(path),
-        "idempotent": False,
-    }
+    return delivery_preflight.attach(
+        {
+            **descriptor,
+            "descriptor_path": str(path),
+            "idempotent": False,
+        },
+        completion_delivery,
+    )
 
 
 def supervise_check(

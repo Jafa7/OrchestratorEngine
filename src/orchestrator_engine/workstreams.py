@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from . import binding, core, platform_runtime
+from . import binding, core, delivery_preflight, platform_runtime
 
 WORKSTREAM_KIND = "ORCHESTRATOR_WORKSTREAM"
 CHECKPOINT_KIND = "ORCHESTRATOR_WORKSTREAM_CHECKPOINT"
@@ -649,6 +649,7 @@ def checkpoint_workstream(
     next_action: str | None = None,
     waiting_on: str | None = None,
     ready: bool = False,
+    completion_delivery_mode: str | None = None,
     state_dir: str = core.DEFAULT_STATE_DIR,
 ) -> dict[str, Any]:
     project = project_root.expanduser().resolve()
@@ -716,10 +717,28 @@ def checkpoint_workstream(
                 and isinstance(signal_path, str)
                 and not Path(signal_path).is_file()
             ):
+                try:
+                    completion_delivery = delivery_preflight.run(
+                        project,
+                        operation_kind="workstream",
+                        operation_id=str(existing["operation_id"]),
+                        wake_policy="always",
+                        wake_target=(
+                            existing.get("wake_target")
+                            if isinstance(existing.get("wake_target"), dict)
+                            else None
+                        ),
+                        mode=completion_delivery_mode,
+                        state_dir=state_dir,
+                    )
+                    delivery_preflight.enforce(completion_delivery)
+                except delivery_preflight.DeliveryPreflightError as error:
+                    raise WorkstreamError(str(error)) from error
                 output["followup"] = _ensure_checkpoint_event(
                     project, existing, path=path, state_dir=state_dir
                 )
                 output["recovered_signal"] = True
+                output = delivery_preflight.attach(output, completion_delivery)
             return output
 
         descriptor = load_workstream(project, workstream_id, state_dir=state_dir)
@@ -785,6 +804,23 @@ def checkpoint_workstream(
                     project, checkpoint["event_id"], state_dir=state_dir
                 )
             )
+            try:
+                completion_delivery = delivery_preflight.run(
+                    project,
+                    operation_kind="workstream",
+                    operation_id=str(checkpoint["operation_id"]),
+                    wake_policy="always",
+                    wake_target=(
+                        checkpoint.get("wake_target")
+                        if isinstance(checkpoint.get("wake_target"), dict)
+                        else None
+                    ),
+                    mode=completion_delivery_mode,
+                    state_dir=state_dir,
+                )
+                delivery_preflight.enforce(completion_delivery)
+            except delivery_preflight.DeliveryPreflightError as error:
+                raise WorkstreamError(str(error)) from error
 
         core.atomic_json(path, checkpoint)
         _apply_checkpoint(
@@ -798,6 +834,7 @@ def checkpoint_workstream(
     output = {**checkpoint, "checkpoint_path": str(path), "idempotent": False}
     if event_result is not None:
         output["followup"] = event_result
+        output = delivery_preflight.attach(output, completion_delivery)
     return output
 
 

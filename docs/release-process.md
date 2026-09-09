@@ -13,11 +13,32 @@ Before creating a tag:
    `CHANGELOG.md`, the setup guide and the upgrade guide to the same version.
 2. Run the complete release-candidate gate once on the final source tree.
 3. Commit and push the release candidate to `main`.
-4. Require the repository `CI` workflow for that exact commit SHA to complete
-   successfully. `ci watch --expected-head-sha FULL_SHA --workflow-name CI`
-   can wait and wake the dispatching chat without model polling.
-5. Create an annotated `vX.Y.Z` stable tag or `vX.Y.ZrcN` release-candidate
+4. Run the read-only release preflight. It checks version markers, the clean
+   tree including untracked whitespace, `HEAD == origin/main`, local and remote
+   tag absence, GitHub CLI discovery and completion-channel health:
+
+   ```bash
+   orchestrator-engine --project-root /path/to/checkout release preflight \
+     --host codex --require-watcher
+   ```
+
+   The completion check uses the same delivery-channel check as `doctor`,
+   so it is host-symmetric: a callback host must have a running service and
+   a stream host must have a fresh armed stream. `--host claude`
+   with `watcher stream` armed passes `--require-watcher` the same way.
+
+5. Require the repository `CI` workflow for that exact commit SHA to complete
+   successfully. `ci watch --expected-head-from-git HEAD --workflow-name CI`
+   resolves the immutable SHA locally, then waits and wakes the dispatching
+   chat without model polling.
+6. Create an annotated `vX.Y.Z` stable tag or `vX.Y.ZrcN` release-candidate
    tag on that exact commit and push the tag.
+
+`release preflight` never commits, fetches, tags, pushes or publishes. Its
+remote tag check uses read-only `git ls-remote`; pass `--offline` only when the
+remote check is intentionally deferred. Warnings do not block readiness, but
+failed checks do. The report includes the resolved SHA and configured or
+suggested `gh` command so the next step does not need to reconstruct them.
 
 The tag is the explicit human/agent authorization boundary. Configure a GitHub
 ruleset that prevents deletion or force-update of `v*` tags. The workflow never

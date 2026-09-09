@@ -12,8 +12,10 @@ from unittest.mock import patch
 from orchestrator_engine import (
     binding,
     cli,
+    codex_app,
     conformance,
     core,
+    delivery_preflight,
     platform_runtime,
     watcher,
     workers,
@@ -21,6 +23,38 @@ from orchestrator_engine import (
 
 
 class CliTests(unittest.TestCase):
+    def test_delivery_preflight_history_is_available_through_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            delivery_preflight.run(
+                root,
+                operation_kind="worker",
+                operation_id="TASK-CLI",
+                wake_policy="always",
+                wake_target=None,
+                mode="warn",
+            )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "delivery",
+                        "preflight",
+                        "history",
+                        "--operation-kind",
+                        "worker",
+                        "--operation-id",
+                        "TASK-CLI",
+                    ]
+                )
+
+        self.assertEqual(code, 0)
+        report = json.loads(output.getvalue())
+        self.assertEqual(report["count"], 1)
+        self.assertEqual(report["entries"][0]["reason_code"], "no_binding")
+
     @patch("orchestrator_engine.cli.watcher.restart_service")
     def test_watcher_restart_leaves_stored_action_implicit(
         self, restart_service: object
@@ -61,6 +95,82 @@ class CliTests(unittest.TestCase):
         self.assertIsNone(start_monitor.call_args.kwargs["run_id"])
         self.assertEqual(start_monitor.call_args.kwargs["expected_head_sha"], sha)
         self.assertEqual(start_monitor.call_args.kwargs["workflow_name"], "CI")
+
+    @patch("orchestrator_engine.cli.release_preflight.run_preflight")
+    def test_release_preflight_returns_report_status(
+        self, run_preflight: object
+    ) -> None:
+        run_preflight.return_value = {
+            "kind": "ORCHESTRATOR_RELEASE_PREFLIGHT",
+            "status": "blocked",
+        }
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            code = cli.main(
+                [
+                    "release",
+                    "preflight",
+                    "--host",
+                    "codex",
+                    "--offline",
+                    "--require-watcher",
+                ]
+            )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(output.getvalue())["status"], "blocked")
+        self.assertTrue(run_preflight.call_args.kwargs["offline"])
+        self.assertTrue(run_preflight.call_args.kwargs["require_watcher"])
+
+    @patch("orchestrator_engine.cli.github_actions.start_monitor")
+    @patch("orchestrator_engine.cli.github_actions.resolve_expected_head_from_git")
+    def test_ci_watch_resolves_expected_head_from_git(
+        self, resolve_head: object, start_monitor: object
+    ) -> None:
+        sha = "b" * 40
+        resolve_head.return_value = sha
+        start_monitor.return_value = {"status": "starting"}
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            code = cli.main(
+                [
+                    "ci",
+                    "watch",
+                    "--repo",
+                    "Example/Project",
+                    "--expected-head-from-git",
+                    "HEAD",
+                    "--workflow-name",
+                    "CI",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        resolve_head.assert_called_once_with(Path.cwd().resolve(), "HEAD")
+        self.assertEqual(start_monitor.call_args.kwargs["expected_head_sha"], sha)
+
+    def test_ci_watch_rejects_two_expected_head_sources(self) -> None:
+        errors = io.StringIO()
+        with (
+            contextlib.redirect_stderr(errors),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            cli.main(
+                [
+                    "ci",
+                    "watch",
+                    "--repo",
+                    "Example/Project",
+                    "--expected-head-sha",
+                    "a" * 40,
+                    "--expected-head-from-git",
+                    "HEAD",
+                ]
+            )
+
+        self.assertEqual(raised.exception.code, 2)
 
     def test_conformance_cli_emits_report_and_exit_code(self) -> None:
         output = io.StringIO()
@@ -413,6 +523,43 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result["thread_id_source"], detected["source"])
         self.assertEqual(result["thread_id_evidence"], "legacy_rollout_heuristic")
         self.assertEqual(result["codex_command"], "/mnt/c/apps/codex.exe")
+
+    def test_windows_interop_probe_is_skipped_off_wsl(self) -> None:
+        with patch.object(codex_app.os, "name", "nt"):
+            self.assertIsNone(codex_app.windows_interop_users())
+
+    def test_windows_interop_probe_survives_a_denied_drive_root(self) -> None:
+        with patch.object(Path, "is_dir", side_effect=PermissionError(5, "denied")):
+            self.assertIsNone(codex_app.windows_interop_users())
+            self.assertEqual(codex_app.default_session_roots(), [])
+            self.assertIsNone(codex_app.default_windows_codex())
+
+    def test_bind_codex_survives_an_unreadable_interop_mount(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            output = io.StringIO()
+            with (
+                patch.object(
+                    Path, "is_dir", side_effect=PermissionError(5, "denied")
+                ),
+                contextlib.redirect_stdout(output),
+            ):
+                code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "bind",
+                        "--host",
+                        "codex",
+                        "--thread-id",
+                        "thread-native",
+                    ]
+                )
+
+        self.assertEqual(code, 0)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["target_thread_id"], "thread-native")
+        self.assertIsNone(result.get("codex_command"))
 
     def test_worker_list_reports_empty_registry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1549,6 +1696,33 @@ command = ["true"]
 
         self.assertEqual(code, 0)
         self.assertEqual(calls[0]["host"], "codex")
+
+    def test_callback_service_ensure_inherits_action(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            output = io.StringIO()
+            with (
+                patch(
+                    "orchestrator_engine.cli.watcher.ensure_service",
+                    return_value={"status": "running", "changed": False},
+                ) as ensure,
+                contextlib.redirect_stdout(output),
+            ):
+                code = cli.main(
+                    [
+                        "--project-root",
+                        str(root),
+                        "watcher",
+                        "--host",
+                        "codex",
+                        "service",
+                        "ensure",
+                    ]
+                )
+
+        self.assertEqual(code, 0)
+        self.assertIsNone(ensure.call_args.kwargs["action"])
+        self.assertEqual(ensure.call_args.kwargs["host"], "codex")
 
     def test_deferred_commands_resolve_host_scoped_state(self) -> None:
         from orchestrator_engine import watcher

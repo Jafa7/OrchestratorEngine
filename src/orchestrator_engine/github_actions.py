@@ -20,7 +20,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from . import binding, core, platform_runtime, verification, worker_lease
+from . import (
+    binding,
+    core,
+    delivery_preflight,
+    platform_runtime,
+    verification,
+    worker_lease,
+)
 
 CONFIG_NAME = "integrations.toml"
 SOURCE_KIND = "github_actions"
@@ -161,7 +168,7 @@ def load_config(
             f"GitHub Actions integration is not configured: {path}"
         )
     try:
-        root = tomllib.loads(path.read_text(encoding="utf-8"))
+        root = tomllib.loads(core.read_config_text(path))
     except tomllib.TOMLDecodeError as error:
         raise GitHubActionsError(
             f"invalid integrations config: {path}: {error}"
@@ -351,6 +358,17 @@ def bounded_reason(value: str, *, field: str) -> str:
     return reason
 
 
+def resolve_expected_head_from_git(project_root: Path, reference: str) -> str:
+    """Resolve a local Git ref to one immutable full commit ID."""
+
+    from . import release_preflight
+
+    try:
+        return release_preflight.resolve_git_commit(project_root, reference)
+    except release_preflight.ReleasePreflightError as error:
+        raise GitHubActionsError(str(error)) from error
+
+
 def start_monitor(
     project_root: Path,
     *,
@@ -364,6 +382,7 @@ def start_monitor(
     gh_command: str | None = None,
     timeout_seconds: float | None = None,
     wake_policy: str = "always",
+    completion_delivery_mode: str | None = None,
     monitor_id: str | None = None,
     retry_of: str | None = None,
     retry_reason: str | None = None,
@@ -483,6 +502,20 @@ def start_monitor(
     )
     directory = monitor_dir_for(project, resolved_monitor_id, state_dir=state_dir)
     descriptor_path = directory / "monitor.json"
+    wake_target = capture_wake_target(project, state_dir=state_dir)
+    try:
+        completion_delivery = delivery_preflight.run(
+            project,
+            operation_kind="github_actions",
+            operation_id=resolved_monitor_id,
+            wake_policy=wake_policy,
+            wake_target=wake_target,
+            mode=completion_delivery_mode,
+            state_dir=state_dir,
+        )
+        delivery_preflight.enforce(completion_delivery)
+    except delivery_preflight.DeliveryPreflightError as error:
+        raise GitHubActionsError(str(error)) from error
     descriptor = {
         "schema_version": core.SCHEMA_VERSION,
         "kind": MONITOR_KIND,
@@ -503,7 +536,6 @@ def start_monitor(
     if retry_of is not None:
         descriptor["retry_of"] = validate_monitor_id(retry_of)
         descriptor["retry_reason"] = normalized_retry_reason
-    wake_target = capture_wake_target(project, state_dir=state_dir)
     if wake_target is not None:
         descriptor["wake_target"] = wake_target
     with monitor_admission_lock(project, state_dir=state_dir):
@@ -545,11 +577,14 @@ def start_monitor(
                         "monitor already exists with different dispatch options: "
                         f"{resolved_monitor_id}"
                     )
-                return {
-                    **existing,
-                    "descriptor_path": str(existing_path),
-                    "idempotent": True,
-                }
+                return delivery_preflight.attach(
+                    {
+                        **existing,
+                        "descriptor_path": str(existing_path),
+                        "idempotent": True,
+                    },
+                    completion_delivery,
+                )
             if existing.get("status") in TERMINAL_MONITOR_STATUSES:
                 continue
             same_host_repo = existing.get("hostname") == run_identity[
@@ -638,13 +673,16 @@ def start_monitor(
     with contextlib.suppress(OSError):
         core.atomic_json(supervisor_launch_path(directory), launch)
         launch_recorded = True
-    return {
-        **descriptor,
-        "supervisor_pid": int(process.pid),
-        "supervisor_launch_recorded": launch_recorded,
-        "descriptor_path": str(descriptor_path),
-        "idempotent": False,
-    }
+    return delivery_preflight.attach(
+        {
+            **descriptor,
+            "supervisor_pid": int(process.pid),
+            "supervisor_launch_recorded": launch_recorded,
+            "descriptor_path": str(descriptor_path),
+            "idempotent": False,
+        },
+        completion_delivery,
+    )
 
 
 def redact_text(value: str) -> str:

@@ -19,6 +19,7 @@ from typing import Any
 from . import (
     binding,
     core,
+    delivery_preflight,
     github_actions,
     platform_runtime,
     verification,
@@ -192,6 +193,7 @@ def start_monitor(
     interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     wake_policy: str = "always",
+    completion_delivery_mode: str | None = None,
     gh_command: str | None = None,
     monitor_id: str | None = None,
     retry_of: str | None = None,
@@ -265,6 +267,21 @@ def start_monitor(
     )
     directory = monitor_dir_for(project, resolved_id, state_dir=state_dir)
     descriptor_path = directory / "monitor.json"
+    bound = binding.load_binding(project, state_dir=state_dir)
+    wake_target = binding.wake_target_from_binding(bound) if bound is not None else None
+    try:
+        completion_delivery = delivery_preflight.run(
+            project,
+            operation_kind="github_pull_request",
+            operation_id=resolved_id,
+            wake_policy=wake_policy,
+            wake_target=wake_target,
+            mode=completion_delivery_mode,
+            state_dir=state_dir,
+        )
+        delivery_preflight.enforce(completion_delivery)
+    except delivery_preflight.DeliveryPreflightError as error:
+        raise GitHubPullRequestError(str(error)) from error
     descriptor: dict[str, Any] = {
         "schema_version": core.SCHEMA_VERSION,
         "kind": MONITOR_KIND,
@@ -285,9 +302,8 @@ def start_monitor(
     if retry_of is not None:
         descriptor["retry_of"] = github_actions.validate_monitor_id(retry_of)
         descriptor["retry_reason"] = normalized_retry_reason
-    bound = binding.load_binding(project, state_dir=state_dir)
-    if bound is not None:
-        descriptor["wake_target"] = binding.wake_target_from_binding(bound)
+    if wake_target is not None:
+        descriptor["wake_target"] = wake_target
     with admission_lock(project, state_dir=state_dir):
         for path in sorted(
             monitor_root(project, state_dir=state_dir).glob("*/monitor.json")
@@ -320,7 +336,10 @@ def start_monitor(
                         "monitor already exists with different dispatch options: "
                         f"{resolved_id}"
                     )
-                return {**existing, "descriptor_path": str(path), "idempotent": True}
+                return delivery_preflight.attach(
+                    {**existing, "descriptor_path": str(path), "idempotent": True},
+                    completion_delivery,
+                )
             if existing.get("status") not in TERMINAL_STATUSES:
                 raise GitHubPullRequestError(
                     "an active monitor already owns this repository/PR: "
@@ -384,13 +403,16 @@ def start_monitor(
         launch["supervisor_identity"] = identity_token
     core.atomic_json(launch_path(directory), launch)
     threading.Thread(target=reap_process, args=(process,), daemon=True).start()
-    return {
-        **descriptor,
-        "supervisor_pid": int(process.pid),
-        "supervisor_launch_recorded": True,
-        "descriptor_path": str(descriptor_path),
-        "idempotent": False,
-    }
+    return delivery_preflight.attach(
+        {
+            **descriptor,
+            "supervisor_pid": int(process.pid),
+            "supervisor_launch_recorded": True,
+            "descriptor_path": str(descriptor_path),
+            "idempotent": False,
+        },
+        completion_delivery,
+    )
 
 
 def check_name(item: dict[str, Any]) -> str:

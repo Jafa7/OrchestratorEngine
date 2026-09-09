@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-engine://schemas/delivery-preflight",
+  "title": "Point-in-time completion-delivery preflight evidence",
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_DELIVERY_PREFLIGHT",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "kind",
+    "preflight_id",
+    "operation_kind",
+    "operation_id",
+    "mode",
+    "wake_policy",
+    "checked_at",
+    "point_in_time",
+    "status",
+    "reason_code",
+    "detail",
+    "binding_match",
+    "warnings"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "ORCHESTRATOR_DELIVERY_PREFLIGHT"},
+    "preflight_id": {"type": "string", "format": "uuid"},
+    "operation_kind": {
+      "enum": [
+        "github_actions",
+        "github_pull_request",
+        "local_check",
+        "worker",
+        "workstream"
+      ]
+    },
+    "operation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+    },
+    "mode": {"enum": ["warn", "require-ready"]},
+    "wake_policy": {"type": "string", "minLength": 1, "maxLength": 32},
+    "checked_at": {"type": "string", "format": "date-time"},
+    "point_in_time": {"const": true},
+    "status": {"enum": ["ready", "not_ready", "unknown"]},
+    "reason_code": {"type": "string", "minLength": 1, "maxLength": 128},
+    "detail": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "host": {"enum": ["claude", "codex", "vscode"]},
+    "channel_lifecycle": {"enum": ["session_bound", "detached_service"]},
+    "binding_match": {"type": ["boolean", "null"]},
+    "probe": {
+      "type": "object",
+      "properties": {
+        "channel_status": {"type": "string", "maxLength": 64},
+        "service_action": {"type": "string", "maxLength": 64},
+        "host_filter": {
+          "type": ["array", "null"],
+          "maxItems": 3,
+          "items": {"enum": ["claude", "codex", "vscode"]}
+        },
+        "age_seconds": {"type": ["number", "null"], "minimum": 0},
+        "max_age_seconds": {"type": ["number", "null"], "minimum": 0},
+        "heartbeat_status": {"type": ["string", "null"], "maxLength": 64},
+        "heartbeat_age_seconds": {"type": ["number", "null"], "minimum": 0},
+        "process_identity_status": {"type": ["string", "null"], "maxLength": 64}
+      },
+      "additionalProperties": false
+    },
+    "warnings": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {"type": "string", "maxLength": 1000}
+    }
+  },
+  "additionalProperties": false
+}

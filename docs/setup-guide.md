@@ -46,7 +46,7 @@ command -v codex
 command -v copilot
 ```
 
-Constraints: Python >= 3.11 on the machine where workers run. Version 1.7.0
+Constraints: Python >= 3.11 on the machine where workers run. Version 1.8.0
 supports the complete detached runtime on Linux, WSL, native Windows and macOS.
 Configured commands and external tools must support the selected OS. See the
 [platform support matrix](platform-support.md) and
@@ -59,7 +59,7 @@ For a reproducible adopter install, use an immutable release tag:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.7.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.8.0"
 ```
 
 GitHub Release archives and wheel/sdist assets are published with the tag;
@@ -90,7 +90,7 @@ Before continuing with detached workers or a watcher service, expect
 `"detached_lifecycle": "supported"`. An unsupported result is not repaired by
 installing a provider CLI.
 
-The installed v1.7.0 package includes `orchestrator-engine conformance run`.
+The installed v1.8.0 package includes `orchestrator-engine conformance run`.
 Run it here without a provider CLI or credentials. Its default `auto` mode
 runs the full detached synthetic-worker path when that lifecycle is supported
 and otherwise verifies the portable event, signal, notification and
@@ -101,10 +101,10 @@ Full mode additionally checks six concurrent
 synthetic workers, aggregate waits, host-scoped signal routing and deterministic
 reaping of an abandoned unclaimed task descriptor. Continue only when its JSON
 report says `"status": "passed"`; a failed fixture is retained at the reported
-path for diagnosis. This is a required check for the v1.7.0 installation;
+path for diagnosis. This is a required check for the v1.8.0 installation;
 older pinned releases that lack the command need their own upgrade procedure.
 
-The v1.7.0 CI runs native lifecycle, resource coordination, full conformance and
+The v1.8.0 CI runs native lifecycle, resource coordination, full conformance and
 bounded acceptance soaks from the candidate wheel on macOS Intel/ARM and
 Windows, including native Python 3.12 coverage, plus portable-core checks. The
 Linux wheel smoke also runs full conformance without `PYTHONPATH`, covering the
@@ -564,7 +564,7 @@ the detached process discovers the matching run when GitHub registers it:
 ```bash
 orchestrator-engine --project-root /path/to/project ci watch \
   --repo EXAMPLE/PROJECT \
-  --expected-head-sha 0123456789abcdef0123456789abcdef01234567 \
+  --expected-head-from-git HEAD \
   --workflow-name CI --wake-policy always
 ```
 
@@ -572,6 +572,9 @@ If the exact GitHub run database ID is already known, pass `--run-id 123456`
 instead; abbreviated SHA values are accepted only with that explicit run ID.
 Use `--workflow-name` in discovery mode when the commit starts more than one
 workflow.
+The Git ref is resolved once to a full immutable SHA before the detached
+monitor starts. Use `--expected-head-sha FULL_SHA` instead when the target is
+not the current local checkout; the two options are mutually exclusive.
 
 End the host turn after the descriptor is returned. Local `gh` polling uses no
 model tokens. The monitor snapshots the current binding, writes bounded
@@ -688,10 +691,31 @@ waiting for this delivery: the Goal can retain the current turn and prevent
 the queued message from becoming the next turn. Use a durable workstream and
 end the turn instead.
 
+For scripts that only need to guarantee a usable callback service, replace
+the separate start/status branching with the idempotent form:
+
+```bash
+orchestrator-engine --project-root /path/to/project watcher \
+  --host codex service ensure
+```
+
+It starts a missing, stopped or crashed service and leaves a healthy one
+unchanged. A live degraded service is not replaced automatically; inspect its
+heartbeat and restart it explicitly only after confirming the recorded owner.
+Omitting `--host` arms whichever callback host the binding names; a
+stream-only binding is refused instead of silently starting an unreachable
+service. When neither a prior service nor a binding exists, `ensure` stops
+with setup guidance instead of silently creating a legacy notification-only
+service. Pass `--action notify` only when that non-chat behavior is intended.
+
 ### Host claude — stream watch, no service
 
 Do **not** start a callback service. Instead, from the orchestrating Claude
 chat, arm a persistent background watch (Monitor) on:
+
+Configure the host watch as session-length (`persistent: true`); a default
+bounded Monitor may stop after its timeout even though the engine stream state
+still exists.
 
 ```bash
 orchestrator-engine --project-root /path/to/project watcher stream
@@ -701,6 +725,8 @@ Each new signal is printed as one JSON line, which wakes the chat.
 The stream consumes only `claude` wake targets and uses its own state file
 (`watcher-claude-stream-state.json`), so it can coexist with a callback
 service delivering VS Code signals from the same inbox.
+The Monitor is session-bound and must be armed again at the beginning of each
+Claude session and after cancellation or host restart.
 
 **Check:**
 

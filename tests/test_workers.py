@@ -11,7 +11,14 @@ from pathlib import Path
 from typing import Any, ClassVar
 from unittest import mock
 
-from orchestrator_engine import binding, core, platform_runtime, worker_policy, workers
+from orchestrator_engine import (
+    binding,
+    core,
+    delivery_preflight,
+    platform_runtime,
+    worker_policy,
+    workers,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHECK_RUNNER = REPO_ROOT / "examples" / "check_runner.py"
@@ -499,6 +506,22 @@ expect_long_running = "yes"
                 workers.task_dir_for(root, "../escape")
 
 
+    def test_registry_reads_configuration_written_with_a_utf8_bom(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = workers.workers_config_path(root)
+            config.parent.mkdir(parents=True, exist_ok=True)
+            config.write_text(
+                '[workers.smoke]\nenabled = true\ncommand = ["true"]\n',
+                encoding="utf-8-sig",
+            )
+            registry = workers.load_registry(root)
+            dispatch = workers.load_dispatch_config(root)
+
+        self.assertIn("smoke", registry)
+        self.assertIsNone(dispatch["max_concurrent"])
+
+
 class WorkerRunTests(unittest.TestCase):
     def test_worker_wake_policy_matches_terminal_outcome(self) -> None:
         self.assertTrue(workers.should_emit_worker_signal("always", "completed"))
@@ -546,6 +569,81 @@ class WorkerRunTests(unittest.TestCase):
         self.assertEqual(descriptor["supervisor_pid"], 5150)
         self.assertIn("supervise", FakePopen.command)
         self.assertTrue(FakePopen.kwargs["start_new_session"])
+
+    def test_delivery_warn_reports_no_binding_but_allows_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            prompt = write_prompt(root)
+            result = workers.run_worker(
+                root,
+                worker="echo",
+                task_id="T-DELIVERY-WARN",
+                prompt_file=prompt,
+                completion_delivery_mode="warn",
+                popen_factory=FakePopen,
+            )
+
+        self.assertEqual(result["completion_delivery"]["status"], "not_ready")
+        self.assertEqual(result["completion_delivery"]["reason_code"], "no_binding")
+        self.assertTrue(result["warnings"])
+
+    def test_delivery_require_ready_rejects_before_worker_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            prompt = write_prompt(root)
+            popen = mock.Mock(side_effect=AssertionError("must not spawn"))
+            with self.assertRaisesRegex(workers.WorkerError, "no_binding"):
+                workers.run_worker(
+                    root,
+                    worker="echo",
+                    task_id="T-DELIVERY-REQUIRED",
+                    prompt_file=prompt,
+                    completion_delivery_mode="require-ready",
+                    popen_factory=popen,
+                )
+
+            task_path = workers.task_dir_for(root, "T-DELIVERY-REQUIRED")
+
+        popen.assert_not_called()
+        self.assertFalse(task_path.exists())
+
+    def test_invalid_task_id_does_not_write_delivery_preflight(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            prompt = write_prompt(root)
+
+            with self.assertRaisesRegex(workers.WorkerError, "invalid task id"):
+                workers.run_worker(
+                    root,
+                    worker="echo",
+                    task_id="../TASK-INVALID",
+                    prompt_file=prompt,
+                    completion_delivery_mode="warn",
+                    popen_factory=FakePopen,
+                )
+
+            self.assertFalse(delivery_preflight.artifact_root(root).exists())
+
+    def test_unarmed_claude_stream_is_rejected_when_delivery_is_required(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            prompt = write_prompt(root)
+            binding.write_binding(root, host="claude")
+            with self.assertRaisesRegex(workers.WorkerError, "stream_not_started"):
+                workers.run_worker(
+                    root,
+                    worker="echo",
+                    task_id="T-CLAUDE-NOT-ARMED",
+                    prompt_file=prompt,
+                    completion_delivery_mode="require-ready",
+                    popen_factory=FakePopen,
+                )
 
     def test_run_worker_leaves_task_identity_to_the_supervisor(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -26,6 +26,7 @@ from typing import Any
 from . import (
     binding,
     core,
+    delivery_preflight,
     platform_runtime,
     task_resolution,
     telemetry_adapters,
@@ -71,6 +72,7 @@ WORKER_TERMINATION_GRACE_SECONDS = 10.0
 WORKER_TERMINATION_TIMEOUT_SECONDS = 10.0
 WORKER_TERMINATION_POLL_SECONDS = 0.1
 CONTROL_POLL_SECONDS = 1.0
+WATCHER_DELIVERY_RECHECK_SECONDS = 30.0
 MAX_DECLARED_OUTPUT_FILES = 64
 MAX_DECLARED_OUTPUT_FILE_BYTES = 4 * 1024 * 1024
 MAX_DECLARED_OUTPUT_TOTAL_BYTES = 16 * 1024 * 1024
@@ -268,7 +270,7 @@ def load_registry(
     if not path.is_file():
         return {}
     try:
-        value = tomllib.loads(path.read_text(encoding="utf-8"))
+        value = tomllib.loads(core.read_config_text(path))
     except tomllib.TOMLDecodeError as error:
         raise WorkerError(f"invalid workers config: {path}: {error}") from error
     workers = value.get("workers")
@@ -331,9 +333,10 @@ def load_dispatch_config(
             "enforce_intent": False,
             "intent_enforcement": "off",
             "availability_mode": "off",
+            "completion_delivery_mode": delivery_preflight.DEFAULT_MODE,
         }
     try:
-        value = tomllib.loads(path.read_text(encoding="utf-8"))
+        value = tomllib.loads(core.read_config_text(path))
     except tomllib.TOMLDecodeError as error:
         raise WorkerError(f"invalid workers config: {path}: {error}") from error
     dispatch = value.get("dispatch", {})
@@ -365,11 +368,16 @@ def load_dispatch_config(
             "dispatch availability_mode must be one of: "
             + ", ".join(sorted(AVAILABILITY_MODES))
         )
+    try:
+        completion_delivery_mode = delivery_preflight.mode_from_dispatch(dispatch)
+    except delivery_preflight.DeliveryPreflightError as error:
+        raise WorkerError(str(error)) from error
     return {
         "max_concurrent": limit,
         "enforce_intent": intent_enforcement != "off",
         "intent_enforcement": intent_enforcement,
         "availability_mode": availability_mode,
+        "completion_delivery_mode": completion_delivery_mode,
     }
 
 
@@ -1264,17 +1272,50 @@ def task_not_before_pending(descriptor: dict[str, Any]) -> bool:
     return datetime.now(UTC) < not_before.astimezone(UTC)
 
 
+def delivery_recheck_deferred(
+    previous: dict[str, Any] | None,
+    *,
+    minimum_age_seconds: float,
+) -> bool:
+    if minimum_age_seconds <= 0 or previous is None:
+        return False
+    if previous.get("mode") != "require-ready" or previous.get("status") == "ready":
+        return False
+    checked_at = previous.get("checked_at")
+    if not isinstance(checked_at, str):
+        return False
+    try:
+        checked = datetime.fromisoformat(checked_at)
+    except ValueError:
+        return False
+    if checked.tzinfo is None:
+        checked = checked.replace(tzinfo=UTC)
+    age = (datetime.now(UTC) - checked.astimezone(UTC)).total_seconds()
+    return age < minimum_age_seconds
+
+
 def queue_tick(
     project_root: Path,
     *,
     state_dir: str = core.DEFAULT_STATE_DIR,
     popen_factory=subprocess.Popen,
+    delivery_recheck_min_age_seconds: float = 0.0,
 ) -> dict[str, Any]:
     platform_runtime.require_detached_lifecycle("worker queue tick")
+    if (
+        not isinstance(delivery_recheck_min_age_seconds, (int, float))
+        or isinstance(delivery_recheck_min_age_seconds, bool)
+        or not math.isfinite(delivery_recheck_min_age_seconds)
+        or delivery_recheck_min_age_seconds < 0
+    ):
+        raise WorkerError("delivery recheck minimum age must be finite and nonnegative")
     project = project_root.expanduser().resolve()
     with contextlib.suppress(OSError, core.OrchestratorError, WorkerError):
         reap_worker_tasks(project, state_dir=state_dir)
     admitted: list[str] = []
+    delivery_blocked: list[dict[str, Any]] = []
+    delivery_warnings: list[dict[str, Any]] = []
+    delivery_probe_cache: dict[str, dict[str, Any]] = {}
     with admission_lock(project, state_dir=state_dir):
         pending = queue_root(project, state_dir=state_dir) / "pending"
         entries: list[tuple[str, str, Path, dict[str, Any]]] = []
@@ -1311,6 +1352,61 @@ def queue_tick(
                 state_dir=state_dir,
             ):
                 continue
+            previous_delivery = delivery_preflight.latest(
+                project,
+                operation_kind="worker",
+                operation_id=task_id,
+                state_dir=state_dir,
+            )
+            if delivery_recheck_deferred(
+                previous_delivery,
+                minimum_age_seconds=float(delivery_recheck_min_age_seconds),
+            ):
+                delivery_blocked.append(
+                    {
+                        "task_id": task_id,
+                        "reason": "completion delivery recheck deferred",
+                        "completion_delivery": previous_delivery,
+                    }
+                )
+                continue
+            queue_delivery_mode = (
+                str(previous_delivery["mode"])
+                if previous_delivery is not None
+                else "off"
+            )
+            completion_delivery = delivery_preflight.run(
+                project,
+                operation_kind="worker",
+                operation_id=task_id,
+                wake_policy=str(descriptor.get("wake_policy", "never")),
+                wake_target=(
+                    descriptor.get("wake_target")
+                    if isinstance(descriptor.get("wake_target"), dict)
+                    else None
+                ),
+                mode=queue_delivery_mode,
+                state_dir=state_dir,
+                probe_cache=delivery_probe_cache,
+            )
+            try:
+                delivery_preflight.enforce(completion_delivery)
+            except delivery_preflight.DeliveryPreflightError as error:
+                delivery_blocked.append(
+                    {
+                        "task_id": task_id,
+                        "reason": str(error),
+                        "completion_delivery": completion_delivery,
+                    }
+                )
+                continue
+            if completion_delivery.get("status") in {"not_ready", "unknown"}:
+                delivery_warnings.append(
+                    {
+                        "task_id": task_id,
+                        "completion_delivery": completion_delivery,
+                    }
+                )
             claimed = queue_root(project, state_dir=state_dir) / "admitted" / path.name
             claimed.parent.mkdir(parents=True, exist_ok=True)
             try:
@@ -1347,6 +1443,10 @@ def queue_tick(
         "kind": "WORKER_QUEUE_TICK",
         "admitted_count": len(admitted),
         "admitted_task_ids": admitted,
+        "delivery_blocked_count": len(delivery_blocked),
+        "delivery_blocked": delivery_blocked,
+        "delivery_warning_count": len(delivery_warnings),
+        "delivery_warnings": delivery_warnings,
     }
 
 
@@ -1360,6 +1460,7 @@ def run_worker(
     popen_factory=subprocess.Popen,
     preflight_availability: bool = False,
     availability_mode: str | None = None,
+    completion_delivery_mode: str | None = None,
     wake_policy: str = "always",
     intent_file: Path | None = None,
     allow_duplicate: bool = False,
@@ -1388,6 +1489,7 @@ def run_worker(
             raise WorkerError(str(error)) from error
         wake_target = json.loads(json.dumps(wake_target))
     project = project_root.expanduser().resolve()
+    task_dir = task_dir_for(project, task_id, state_dir=state_dir)
     config = require_worker(project, worker, state_dir=state_dir)
     if preflight_availability and availability_mode is not None:
         raise WorkerError(
@@ -1428,7 +1530,24 @@ def run_worker(
                 f"worker {worker} availability preflight {status} "
                 f"under mode {effective_availability_mode}"
             )
-    task_dir = task_dir_for(project, task_id, state_dir=state_dir)
+    if wake_target is None and wake_policy != "never":
+        wake_target = capture_wake_target(project, state_dir=state_dir)
+    effective_delivery_mode = (
+        completion_delivery_mode or dispatch["completion_delivery_mode"]
+    )
+    try:
+        completion_delivery = delivery_preflight.run(
+            project,
+            operation_kind="worker",
+            operation_id=task_id,
+            wake_policy=wake_policy,
+            wake_target=wake_target,
+            mode=effective_delivery_mode,
+            state_dir=state_dir,
+        )
+        delivery_preflight.enforce(completion_delivery)
+    except delivery_preflight.DeliveryPreflightError as error:
+        raise WorkerError(str(error)) from error
     descriptor_path = task_dir / "task.json"
     task_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -1503,8 +1622,6 @@ def run_worker(
     # Snapshot the dispatching chat BEFORE spawning: the supervisor reads
     # wake_target from task.json, so it must be durable before the child can
     # possibly look for it.
-    if wake_target is None and wake_policy != "never":
-        wake_target = capture_wake_target(project, state_dir=state_dir)
     descriptor = {
         "schema_version": core.SCHEMA_VERSION,
         "kind": TASK_KIND,
@@ -1566,7 +1683,10 @@ def run_worker(
                 state_dir=state_dir,
             ):
                 queued = enqueue_task(project, descriptor, state_dir=state_dir)
-                return {**queued, "descriptor_path": str(descriptor_path)}
+                return delivery_preflight.attach(
+                    {**queued, "descriptor_path": str(descriptor_path)},
+                    completion_delivery,
+                )
             descriptor["status"] = "starting"
             core.atomic_json(descriptor_path, descriptor)
             process = spawn_supervisor(
@@ -1584,11 +1704,14 @@ def run_worker(
     # The task stays `starting` on disk until the supervisor claims it and
     # records its own pid: the dispatcher must not write the descriptor again.
     # The spawned pid is still reported to the dispatching chat.
-    return {
-        **descriptor,
-        "supervisor_pid": int(process.pid),
-        "descriptor_path": str(descriptor_path),
-    }
+    return delivery_preflight.attach(
+        {
+            **descriptor,
+            "supervisor_pid": int(process.pid),
+            "descriptor_path": str(descriptor_path),
+        },
+        completion_delivery,
+    )
 
 
 def capture_wake_target(

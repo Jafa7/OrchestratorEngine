@@ -53,7 +53,7 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release is `1.7.0` and the durable JSON contract schema version is
+The current release is `1.8.0` and the durable JSON contract schema version is
 `1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
@@ -61,7 +61,7 @@ PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.7.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.8.0"
 ```
 
 ## Version 1.5.0 optional metrics
@@ -329,6 +329,20 @@ To require a positive adopter-owned availability probe, configure
 of `WORKER_TASK_INTENT`, configure `intent_enforcement = "strict"` and add a
 `[workers.NAME.admission]` block. Do not set `enforce_intent` and
 `intent_enforcement` together.
+
+## Completion-delivery admission after v1.7.0
+
+The new `[dispatch].completion_delivery_mode` accepts `off`, `warn` and
+`require-ready`; its default is `warn`. Existing wake-enabled commands continue
+to dispatch, but now return a bounded warning and sidecar preflight artifact
+when their channel is not ready. `off` restores the previous unchecked behavior.
+
+Use `require-ready` before an autonomous operation whose host turn will end.
+Upgrade and restart callback watchers before enabling it. Claude sessions must
+arm `watcher stream` with a persistent host Monitor before dispatch; the stream
+is session-bound and must be re-armed for each new session. No operation
+descriptor migration is required because preflight evidence uses a separate
+artifact contract.
 
 ## Codex live session queue after v0.5.1
 

@@ -93,6 +93,14 @@ a blocking wait unless the user explicitly wants a second queued notification.
 In a multi-stage pipeline, intermediate stages use no wakeup; only the terminal
 stage that actually hands control back to the chat may emit one.
 
+Before a wake-enabled dispatch that will end the current turn, require a ready
+completion channel with `--completion-delivery-mode require-ready`. If admission
+reports `not_ready` or `unknown`, keep the turn active, repair or re-arm the
+documented channel, and retry the dispatch. `ready` is only point-in-time
+evidence, not a future-delivery guarantee. Use `warn` only while an agent or
+operator remains present to act on the warning; use `off` only when another
+explicit completion route owns continuation.
+
 If a final full gate fails, inspect the failed check, fix with focused tests,
 and run the full gate again only when a new final candidate is ready. Do not
 run the complete suite after every intermediate edit.

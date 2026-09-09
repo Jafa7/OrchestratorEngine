@@ -112,7 +112,7 @@ canonical procedure. It contains host-specific branches, checks after each
 step, strict-admission examples and troubleshooting. The shorter sequence
 below is only a human-readable preview.
 
-Version 1.7.0 supports the complete detached runtime on Linux, WSL, native
+Version 1.8.0 supports the complete detached runtime on Linux, WSL, native
 Windows and macOS. Configured commands and external tools must support the
 selected OS. See the [platform support matrix](docs/platform-support.md) and
 [Native runtime packages](docs/native-runtime-packages.md) for containment
@@ -127,14 +127,14 @@ Install an immutable release, scaffold the project and bind the host chat:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.7.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.8.0"
 orchestrator-engine runtime-capabilities
 orchestrator-engine --project-root /path/to/project adopt --host HOST
 orchestrator-engine --project-root /path/to/project bind --host HOST
 ```
 
 Replace `HOST` with `codex`, `claude` or `vscode` and run `bind` from the chat
-that should own completions. The installed v1.7.0 package includes provider-free
+that should own completions. The installed v1.8.0 package includes provider-free
 `orchestrator-engine conformance run`, which verifies a new temporary fixture.
 Its default `auto` mode selects full detached verification when the runtime
 supports it, including native Windows/macOS as well as Linux/WSL. Explicit
@@ -148,7 +148,7 @@ project. Full mode additionally runs six concurrent synthetic workers, checks
 aggregate `wait any/all`, proves that snapshotted Codex and VS Code targets are
 consumed only by their host-scoped watcher state, and verifies deterministic
 reaping of an abandoned unclaimed task descriptor. Run it as part of the
-v1.7.0 installation check and require a `passed` report.
+v1.8.0 installation check and require a `passed` report.
 
 Edit the generated `.orchestrator/workers.toml`, enabling only profiles whose
 CLI, model and non-interactive permission strategy have been verified. The
@@ -185,6 +185,10 @@ Start the host-specific delivery channel described in
 [docs/hosts.md](docs/hosts.md). Claude uses `watcher stream`; VS Code and Codex
 Desktop use host-scoped callback services. Codex requires a CLI whose help
 exposes `codex queue`; older versions use the documented durable fallback.
+Before ending a turn that depends on a future wakeup, dispatch with
+`--completion-delivery-mode require-ready`. A rejected dispatch leaves the
+agent active to repair or re-arm the channel; a successful check is
+point-in-time evidence, not a future-delivery guarantee.
 Finish with:
 
 ```bash
@@ -233,6 +237,8 @@ status is compact; `ci reap` safely finalizes a monitor only when its recorded
 supervisor identity is proven gone.
 For a confirmed failing conclusion, one bounded metadata query records only
 the problem jobs and steps; full GitHub logs remain an explicit drill-down.
+Use `--expected-head-from-git HEAD` to resolve the current checkout to a full
+immutable SHA and avoid manual transcription errors.
 
 `pr watch` provides the corresponding pull-request readiness boundary. It
 requires the exact PR number and full expected head SHA, optionally requires an
@@ -286,6 +292,8 @@ target project:
     <task_id>.json
   artifact-resolutions/
     <path-and-content-identity>.json
+  delivery-preflights/
+    <operation-kind>/<sha256-kind-and-id>/<preflight-id>.json
   events/
     <event_id>.json
   tasks/
@@ -365,6 +373,8 @@ explicit:
 
 ```bash
 orchestrator-engine --project-root /path/to/project worker queue tick
+orchestrator-engine --project-root /path/to/project delivery preflight history \
+  --operation-kind worker --operation-id TASK-001
 orchestrator-engine --project-root /path/to/project worker cancel \
   --task-id TASK-001 --mode graceful --reason "superseded"
 orchestrator-engine --project-root /path/to/project worker retry \
@@ -386,6 +396,8 @@ orchestrator-engine --project-root /path/to/project doctor
 orchestrator-engine --project-root /path/to/project worker tasks --severity warning
 orchestrator-engine --project-root /path/to/project watcher \
   --host vscode service status
+orchestrator-engine --project-root /path/to/project watcher \
+  --host vscode service ensure
 orchestrator-engine --project-root /path/to/project inbox
 orchestrator-engine --project-root /path/to/project watcher \
   --host vscode service stop
@@ -394,6 +406,14 @@ orchestrator-engine --project-root /path/to/project watcher \
 Use `status` first for a compact operator report. It summarizes `doctor`,
 the active delivery channel, worker task diagnostics and verification checks,
 then lists only issues and problem tasks/checks that need follow-up.
+`service ensure` is idempotent for a healthy watcher and starts a missing,
+stopped or crashed service. It refuses to replace a live degraded process;
+inspect that state and use an explicit restart after deciding it is safe.
+Without `--host` it arms the callback host named by the binding, and refuses
+a stream-only binding rather than starting a service that cannot wake it. If
+neither an existing service nor a binding is available, it fails with setup
+guidance; use `--action notify` only when a non-chat legacy notification is
+explicitly intended.
 
 If a failed historical worker task has been handled manually or superseded by a
 successful rerun, keep the task artifacts and add an operator resolution:
@@ -495,11 +515,13 @@ orchestrator-engine --project-root /path/to/project cleanup
 ```
 
 `cleanup` only removes ephemeral watcher output (notifications,
-thread-wakeup receipts, non-current log files) older than
+thread-wakeup receipts, non-current log files) and old delivery-preflight
+attempts older than
 `--retention-days` (default 30) and compacts `watcher-service.log` once it
-exceeds `--log-max-bytes`. Terminal events and inbox signals are never
-removed by `cleanup`; they are the durable audit trail and are the
-responsibility of the adopting project to retire.
+exceeds `--log-max-bytes`. The newest preflight for each operation key is
+retained. Terminal events and inbox signals are never removed by `cleanup`;
+they are the durable audit trail and are the responsibility of the adopting
+project to retire.
 
 ## Follow-up message contract
 

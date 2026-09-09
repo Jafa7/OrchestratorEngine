@@ -85,6 +85,21 @@ per-process timeouts and operation identity protections are retained. This
 composition requires a functioning host wake adapter and configured probe; the
 engine does not discover provider accounts or subscription reset times itself.
 
+## Completion-delivery admission
+
+An autonomous continuation must not dispatch and then end its turn unless the
+selected completion channel is ready at dispatch time. Use
+`--completion-delivery-mode require-ready` for workstreams, release pipelines
+and any operation whose wakeup is the only continuation route. A rejected
+dispatch leaves the agent active so it can repair a callback service or re-arm
+a session-bound stream before retrying.
+
+Use `warn` only for interactive operation where an agent or user remains
+available to act on the returned warning. Use `off` for compatibility or when
+another explicit completion route owns continuation. Admission is a
+point-in-time observation, not a promise that a host process, session or quota
+will remain available until the operation finishes.
+
 ## Package verification boundary
 
 An integration package includes every dependent slice needed for one finished

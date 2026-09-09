@@ -104,9 +104,11 @@ values, path layout or terminal status names require a schema/version bump.
 
 `host-capabilities` emits a bounded, versioned provider-neutral report with
 `schema_version`, `kind`, `host_count` and a stable `hosts` array. Every host
-item has `host`, `delivery_mode` and `live_refresh_support`. Current values
-are `session_stream` / `supported` for Claude, `ui_injection` /
-`best_effort` for VS Code, and `session_queue` / `supported` for Codex Desktop.
+item has `host`, `delivery_mode`, `live_refresh_support` and
+`channel_lifecycle`. Claude reports `session_bound`; VS Code and Codex Desktop
+report `detached_service`. Current delivery values are `session_stream` /
+`supported` for Claude, `ui_injection` / `best_effort` for VS Code, and
+`session_queue` / `supported` for Codex Desktop.
 Codex declares `requirement: "codex queue"` plus a
 `headless_app_server_turn` / `unsupported` fallback. A queue receipt uses
 `status: "queued"` and records the CLI acknowledgement as `queue_message_id`;
@@ -520,6 +522,62 @@ explicit target because the two contracts would conflict. Bounded worker
 retries inherit the original operation target instead of consulting a later
 project binding.
 
+## Completion-delivery preflight
+
+Wake-enabled `worker run`, `check run`, `ci watch`, `pr watch` and
+`workstream checkpoint --decision continue` accept
+`--completion-delivery-mode off|warn|require-ready`. The CLI value overrides
+`[dispatch].completion_delivery_mode`; the default is `warn`.
+
+- `off` preserves unchecked compatibility behavior and writes no preflight.
+- `warn` dispatches after a `not_ready` or `unknown` result and returns a
+  bounded warning while the caller remains responsible for continuation.
+- `require-ready` writes evidence and rejects before operation launch unless
+  the result is `ready`.
+
+`wake_policy = "never"` always skips the probe and writes no artifact. An
+`on-failure` operation is checked because its eventual outcome is not known at
+dispatch time. `ready` is evidence about one instant; it does not guarantee
+future host liveness, provider quota or eventual delivery. A missing binding is
+the known negative result `not_ready` / `no_binding`; an unreadable or failed
+probe is `unknown` / `probe_error`.
+For callback hosts, a live process is insufficient: readiness also requires a
+callback-capable service action, a host filter that routes the selected host,
+a healthy heartbeat and no actionable service warning. A legacy `notify`
+service therefore cannot satisfy `require-ready`.
+
+Each executed check writes a bounded, schema-versioned sidecar without raw
+channel output:
+
+```text
+.orchestrator/delivery-preflights/
+  <operation-kind>/
+    <sha256(operation-kind NUL operation-id)>/
+      <preflight-id>.json
+```
+
+`operation-kind` is one of `worker`, `local_check`, `github_actions`,
+`github_pull_request` or `workstream`. The original operation ID is validated
+and stored inside the JSON but is never used as a path segment. Every actual
+attempt gets a new UUID-named artifact; operation descriptor schemas remain
+unchanged. Queue admission repeats the point-in-time check and reuses one
+probe snapshot within a single `worker queue tick` batch. Watcher-driven queue
+ticks defer an unchanged failed recheck for 30 seconds to avoid generating an
+artifact every scan; an explicit `worker queue tick` still probes immediately.
+
+Inspect history without discovering the hashed directory manually:
+
+```bash
+orchestrator-engine --project-root /path/to/project delivery preflight history \
+  --operation-kind worker --operation-id TASK-001 --limit 20
+```
+
+`cleanup` treats these samples as prunable point-in-time diagnostics. It
+removes attempts older than the retention window but always retains the newest
+sample for each operation key, including long-running operations. Retention
+does not cap the number of distinct operation keys; adopting projects remain
+responsible for their overall local-state lifecycle.
+
 ## Channel routing
 
 Each delivery channel only consumes signals for hosts it can handle:
@@ -572,6 +630,7 @@ Optional dispatch admission defaults:
 [dispatch]
 availability_mode = "off"       # off | block-unavailable | require-available
 intent_enforcement = "off"      # off | permissions | strict
+completion_delivery_mode = "warn" # off | warn | require-ready
 ```
 
 `availability_probe` is an adopting project's or adapter's non-AI local
@@ -1084,6 +1143,12 @@ orchestrator-engine --project-root /path/to/project ci watch \
   --expected-head-sha 0123456789abcdef0123456789abcdef01234567 \
   --workflow-name CI --wake-policy always
 ```
+
+The equivalent `--expected-head-from-git HEAD` form resolves the named local
+Git ref through `rev-parse --verify REF^{commit}` before monitor admission and
+stores only the resulting full SHA. It is mutually exclusive with
+`--expected-head-sha`. This removes manual SHA transcription from release
+flows without trusting a mutable ref after dispatch.
 
 Without `--run-id`, `--expected-head-sha` must be a full 40- or 64-character
 hexadecimal commit ID. The detached monitor queries bounded run metadata,
@@ -1923,6 +1988,22 @@ asks for.
 - `degraded` when the process is alive but heartbeat is unhealthy.
 - `stopped` after an intentional stop.
 - `crashed` when the service file was left behind by a dead process.
+
+`watcher service ensure` is an idempotent lifecycle operation. It returns an
+already healthy service unchanged and starts a `not_started`, `stopped` or
+`crashed` service while inheriting stored settings where available. It refuses
+to replace `degraded` because that state can still represent a live process;
+the operator must inspect it and request `service restart` explicitly. A
+concurrent successful ensure is accepted by readback instead of creating a
+second service.
+
+Without an explicit `--host` or `--service-file`, `ensure` recovers an
+existing unscoped service exactly as recorded. When no such service exists
+it resolves the host from the binding: a callback host gets its host-scoped
+service, and a stream-only host is refused, because a callback service can
+never wake it. A missing or unreadable binding is also refused instead of
+falling back to an unscoped `notify` service. Operators that intentionally
+want that legacy behavior must request `--action notify` explicitly.
 
 `watcher stream status` reports:
 

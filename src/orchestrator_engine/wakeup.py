@@ -23,6 +23,8 @@ def build_wakeup_message(
     )
     followup_rules = [
         "Read the event/evidence. Verify state and decide the next safe action.",
+        "Before another wake-enabled dispatch, verify its completion channel "
+        "is ready and re-arm a session-bound stream when required.",
         "If review is required, inspect the real diff and checks before accepting.",
         "Do not commit or push unless the user explicitly requested it.",
     ]

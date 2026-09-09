@@ -979,14 +979,38 @@ DETECT_SESSION_SCAN_LIMIT = 100
 DETECT_SKIP_ORIGINATORS = {"codex_exec"}
 
 
+def windows_interop_users() -> Path | None:
+    """Return the WSL interop mount for Windows user profiles, if reachable.
+
+    Native Windows has no `/mnt/c`, and probing it there can raise (a denied
+    drive root) instead of answering False, so the mount is never inspected
+    on Windows and a filesystem error never propagates.
+    """
+
+    if os.name == "nt":
+        return None
+    users = Path("/mnt/c/Users")
+    try:
+        return users if users.is_dir() else None
+    except OSError:
+        return None
+
+
 def default_session_roots() -> list[Path]:
     roots = [Path.home() / ".codex" / "sessions"]
     # Codex Desktop on Windows stores its chat sessions on the Windows side;
-    # under WSL those are reachable through /mnt/c.
-    users = Path("/mnt/c/Users")
-    if users.is_dir():
-        roots.extend(users.glob("*/.codex/sessions"))
-    return [root for root in roots if root.is_dir()]
+    # under WSL those are reachable through /mnt/c. Running natively on
+    # Windows, the same store is already under the local home directory.
+    users = windows_interop_users()
+    if users is not None:
+        with contextlib.suppress(OSError):
+            roots.extend(users.glob("*/.codex/sessions"))
+    keep: list[Path] = []
+    for root in roots:
+        with contextlib.suppress(OSError):
+            if root.is_dir():
+                keep.append(root)
+    return keep
 
 
 def detect_thread_id(
@@ -1040,7 +1064,9 @@ def locate_thread_rollout(
     """Find the session rollout for a thread id across all session stores."""
     roots = default_session_roots() if session_roots is None else session_roots
     for root in roots:
-        matches = list(root.glob(f"*/*/*/rollout-*{thread_id}.jsonl"))
+        matches: list[Path] = []
+        with contextlib.suppress(OSError):
+            matches = list(root.glob(f"*/*/*/rollout-*{thread_id}.jsonl"))
         if matches:
             return matches[0]
     return None
@@ -1082,14 +1108,17 @@ def default_windows_codex() -> str | None:
     cannot read them (and sqlite over /mnt/c fails), so wakeups for those
     threads must go through codex.exe via WSL interop.
     """
-    users = Path("/mnt/c/Users")
-    if not users.is_dir():
+    users = windows_interop_users()
+    if users is None:
         return None
-    candidates = sorted(
-        users.glob("*/AppData/Local/OpenAI/Codex/bin/*/codex.exe"),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
+    try:
+        candidates = sorted(
+            users.glob("*/AppData/Local/OpenAI/Codex/bin/*/codex.exe"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return None
     return str(candidates[0]) if candidates else None
 
 
