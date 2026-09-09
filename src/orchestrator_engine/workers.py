@@ -3062,12 +3062,6 @@ def supervise_worker(
         terminal_updates["output_collection_error"] = output_collection_error
     write_descriptor(terminal_updates)
     release_dispatch_claim(project, descriptor_snapshot, state_dir=state_dir)
-    worker_lease.release_lease(
-        lease,
-        task_dir,
-        released_by="supervisor",
-        terminal_status=terminal_status,
-    )
     lineage = descriptor_snapshot.get("retry_lineage")
     if terminal_status == "completed" and isinstance(lineage, dict):
         parent_task_id = lineage.get("parent_task_id")
@@ -3087,6 +3081,15 @@ def supervise_worker(
                 )
     with contextlib.suppress(OSError, core.OrchestratorError, WorkerError):
         queue_tick(project, state_dir=state_dir)
+    # Releasing the lease is the supervisor's final durable action. Consumers
+    # use this transition to know that no later supervisor write can race with
+    # cleanup or ownership transfer.
+    worker_lease.release_lease(
+        lease,
+        task_dir,
+        released_by="supervisor",
+        terminal_status=terminal_status,
+    )
     return {**descriptor_snapshot, "descriptor_path": str(descriptor_path)}
 
 

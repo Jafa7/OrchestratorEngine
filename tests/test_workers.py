@@ -16,6 +16,7 @@ from orchestrator_engine import (
     core,
     delivery_preflight,
     platform_runtime,
+    worker_lease,
     worker_policy,
     workers,
 )
@@ -995,6 +996,37 @@ prompt_via = "stdin"
 
 
 class WorkerSuperviseTests(unittest.TestCase):
+    def test_supervisor_releases_lease_after_final_queue_tick(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root)
+            prompt = write_prompt(root)
+            task_dir = workers.task_dir_for(root, "T-LEASE-ORDER")
+
+            def assert_lease_owned(
+                *args: object, **kwargs: object
+            ) -> dict[str, object]:
+                lease = worker_lease.load_lease(worker_lease.lease_path(task_dir))
+                self.assertIsNotNone(lease)
+                self.assertEqual(lease["status"], "held")
+                return {"started": [], "blocked": [], "queued": []}
+
+            with mock.patch.object(
+                workers, "queue_tick", side_effect=assert_lease_owned
+            ) as tick:
+                workers.supervise_worker(
+                    root,
+                    worker="echo",
+                    task_id="T-LEASE-ORDER",
+                    prompt_file=prompt,
+                )
+
+            released = worker_lease.load_lease(worker_lease.lease_path(task_dir))
+
+        tick.assert_called_once()
+        self.assertIsNotNone(released)
+        self.assertEqual(released["status"], "released")
+
     def test_supervise_uses_task_snapshot_without_source_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

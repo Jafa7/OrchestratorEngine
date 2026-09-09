@@ -36,6 +36,8 @@ All notable changes to OrchestratorEngine are documented here.
   as a syntax error at line 1, column 1.
 - The WSL `/mnt/c` interop probes are skipped on native Windows and never
   propagate a filesystem error, so `bind --host codex` works off WSL.
+- Worker supervisors now release their ownership lease only after final queue
+  promotion, so cleanup and takeover cannot race with a late supervisor write.
 
 ## [1.7.0] - 2026-09-09
 
