@@ -18,6 +18,7 @@ import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from socketserver import TCPServer
 
 from . import core, platform_runtime, worker_lease
 from .resource_queue import (
@@ -536,6 +537,14 @@ class Authority:
                     del self.children[stage_id]
 
 
+class LoopbackHTTPServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer's reverse DNS lookup can stall offline/macOS startup.
+        # The authenticated API binds an explicit numeric loopback address.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 def serve(directory, *, port=0, stop=None, ready=None):
     platform_runtime.require_detached_lifecycle("resource authority")
     directory = local_directory(directory)
@@ -587,7 +596,7 @@ def serve(directory, *, port=0, stop=None, ready=None):
         previous_endpoint = directory / "endpoint.json"
         if port == 0 and previous_endpoint.exists():
             port = int(core.load_object(previous_endpoint)["url"].rsplit(":", 1)[1])
-        server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        server = LoopbackHTTPServer(("127.0.0.1", port), Handler)
         server.daemon_threads = True
         server.timeout = 0.1
         endpoint = {

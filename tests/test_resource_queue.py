@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import faulthandler
 import json
 import os
 import sys
@@ -518,7 +519,10 @@ class ResourceNativeTests(unittest.TestCase):
         thread = threading.Thread(target=run, daemon=True)
         thread.start()
         try:
-            self.assertTrue(ready.wait(5), "service startup deadline")
+            started = ready.wait(5)
+            if not started:
+                faulthandler.dump_traceback()
+            self.assertTrue(started, "service startup deadline")
             self.assertEqual(errors, [])
             connect(self.directory, "sample", self.project)
             yield core.load_object(self.project / ".orchestrator" / "resources.json")
@@ -555,6 +559,13 @@ class ResourceNativeTests(unittest.TestCase):
             self.assertRaisesRegex(ResourceError, "shared/foreign"),
         ):
             local_directory(link / "ledger")
+
+    def test_loopback_service_startup_does_not_resolve_host_names(self):
+        with (
+            mock.patch("socket.getfqdn", side_effect=AssertionError("DNS unavailable")),
+            self.service() as connection,
+        ):
+            self.assertEqual(client(connection, "status", {})["stages"], [])
 
     def test_http_registered_recipe_and_authority_restart(self):
         with self.service() as connection:

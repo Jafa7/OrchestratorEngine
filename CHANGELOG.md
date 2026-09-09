@@ -6,6 +6,9 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [1.6.0] - 2026-09-09
 
+- Removed reverse DNS from numeric-loopback authority startup so unavailable
+  host-name resolution cannot stall the local resource service.
+
 - Excluded local private drafts and configuration from distributions and added
   archive-content validation before CI acceptance and release publication.
 
