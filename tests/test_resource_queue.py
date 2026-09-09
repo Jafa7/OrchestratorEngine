@@ -6,6 +6,7 @@ import contextlib
 import faulthandler
 import json
 import os
+import stat
 import sys
 import tempfile
 import threading
@@ -22,6 +23,7 @@ from orchestrator_engine import (
     resource_checks,
     resource_queue,
     resource_runner,
+    resource_service,
 )
 from orchestrator_engine.resource_queue import (
     OWNING,
@@ -560,6 +562,52 @@ class ResourceNativeTests(unittest.TestCase):
         ):
             local_directory(link / "ledger")
 
+    def test_client_rejects_stale_identity_before_building_transport(self):
+        connection = {
+            "url": "http://127.0.0.1:12345",
+            "authority": "test-authority",
+            "project": "sample",
+            "token": "private-token",
+            "identity": {"pid": 123, "start_ticks": 456},
+        }
+        with (
+            mock.patch.object(
+                resource_service.worker_lease,
+                "identity_state",
+                return_value={"state": "gone", "identity_verified": False},
+            ),
+            mock.patch.object(
+                resource_service.urllib.request, "build_opener"
+            ) as build_opener,
+            self.assertRaisesRegex(ResourceError, "identity.*stale"),
+        ):
+            client(connection, "status", {})
+        build_opener.assert_not_called()
+
+    def test_service_refuses_to_publish_without_process_identity(self):
+        with (
+            mock.patch.object(
+                resource_service.worker_lease,
+                "process_identity",
+                return_value=None,
+            ),
+            self.assertRaisesRegex(ResourceError, "process identity is unavailable"),
+        ):
+            serve(self.directory)
+
+    @unittest.skipIf(os.name == "nt", "POSIX permission contract")
+    def test_authority_requires_private_directory_and_ledger(self):
+        self.assertEqual(stat.S_IMODE(self.directory.stat().st_mode), 0o700)
+        self.assertEqual(
+            stat.S_IMODE((self.directory / "resources.sqlite3").stat().st_mode),
+            0o600,
+        )
+        insecure = Path(self.temp.name) / "insecure-authority"
+        insecure.mkdir(mode=0o755)
+        insecure.chmod(0o755)
+        with self.assertRaisesRegex(ResourceError, "mode 0700"):
+            initialize(insecure, self.config)
+
     def test_loopback_service_startup_does_not_resolve_host_names(self):
         with (
             mock.patch("socket.getfqdn", side_effect=AssertionError("DNS unavailable")),
@@ -569,15 +617,25 @@ class ResourceNativeTests(unittest.TestCase):
 
     def test_http_registered_recipe_and_authority_restart(self):
         with self.service() as connection:
+            if os.name != "nt":
+                self.assertEqual(
+                    stat.S_IMODE(
+                        (
+                            self.project / ".orchestrator" / "resources.json"
+                        ).stat().st_mode
+                    ),
+                    0o600,
+                )
             result = client(connection, "submit", self.payload())
             report = self.await_terminal(connection, result["request"])
             self.assertEqual(report["stages"][0]["state"], "passed")
             old_url = connection["url"]
             with self.assertRaises(ResourceError):
                 client({**connection, "token": "bad"}, "status", {})
+            saved_connection = connection
         with self.service() as connection:
             self.assertEqual(connection["url"], old_url)
-            replay = client(connection, "submit", self.payload())
+            replay = client(saved_connection, "submit", self.payload())
             self.assertEqual(replay["request"], result["request"])
 
     def test_first_class_check_routes_to_resource_authority(self):
@@ -865,6 +923,151 @@ class ResourceNativeTests(unittest.TestCase):
             authority.submit("sample", {**payload, "id": "other"})
         with self.assertRaises(ResourceError):
             authority.submit("sample", self.payload())
+
+    def test_replay_adds_new_subscriber_and_rejects_changed_destination(self):
+        authority = Authority(self.directory)
+        payload = self.payload()
+        request = authority.submit("sample", payload)["request"]
+        with contextlib.closing(Ledger(self.directory)) as ledger:
+            events_before = ledger.db.execute("SELECT count(*) FROM events").fetchone()[
+                0
+            ]
+        self.assertTrue(authority.submit("sample", payload)["idempotent"])
+        with contextlib.closing(Ledger(self.directory)) as ledger:
+            self.assertEqual(
+                ledger.db.execute("SELECT count(*) FROM events").fetchone()[0],
+                events_before,
+            )
+            stage = ledger.schedule()[0]
+            ledger.finish(stage["id"], stage["epoch"], "passed", ["db"], {})
+            self.assertEqual(
+                ledger.db.execute("SELECT count(*) FROM outbox").fetchone()[0], 1
+            )
+        second = {**payload, "subscriber": {"id": "second", "wake": True}}
+        replay = authority.submit("sample", second)
+        self.assertTrue(replay["idempotent"])
+        with contextlib.closing(Ledger(self.directory)) as ledger:
+            self.assertEqual(
+                ledger.request(request)["subscribers"],
+                [payload["subscriber"], second["subscriber"]],
+            )
+            self.assertEqual(
+                ledger.db.execute("SELECT count(*) FROM outbox").fetchone()[0], 2
+            )
+        conflicting = {**payload, "subscriber": {"id": "second", "wake": False}}
+        with self.assertRaisesRegex(ResourceError, "pinned destination"):
+            authority.submit("sample", conflicting)
+
+    def test_concurrent_replay_removes_unreferenced_snapshot(self):
+        authority = Authority(self.directory)
+        payload = self.payload()
+        barrier = threading.Barrier(2)
+        original_capture = resource_service.capture
+        results = []
+        errors = []
+
+        def synchronized_capture(*args):
+            original_capture(*args)
+            barrier.wait(timeout=5)
+
+        def submit():
+            try:
+                results.append(authority.submit("sample", payload))
+            except Exception as error:
+                errors.append(error)
+
+        with mock.patch.object(
+            resource_service, "capture", side_effect=synchronized_capture
+        ):
+            threads = [threading.Thread(target=submit) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(10)
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 2)
+        self.assertEqual(
+            {result["request"] for result in results}, {results[0]["request"]}
+        )
+        self.assertEqual(len(list((self.directory / "snapshots").iterdir())), 1)
+
+    def test_committed_snapshot_survives_ledger_close_failure(self):
+        authority = Authority(self.directory)
+        payload = self.payload()
+        submitted = False
+        original_submit = Ledger.submit
+        original_close = Ledger.close
+
+        def submit(ledger, *args, **kwargs):
+            nonlocal submitted
+            request = original_submit(ledger, *args, **kwargs)
+            submitted = True
+            return request
+
+        def close(ledger):
+            original_close(ledger)
+            if submitted:
+                raise OSError("synthetic close failure")
+
+        with (
+            mock.patch.object(Ledger, "submit", submit),
+            mock.patch.object(Ledger, "close", close),
+            self.assertRaisesRegex(OSError, "synthetic close failure"),
+        ):
+            authority.submit("sample", payload)
+        with contextlib.closing(Ledger(self.directory)) as ledger:
+            row = ledger.db.execute(
+                "SELECT id FROM requests WHERE project=? AND external=?",
+                ("sample", payload["id"]),
+            ).fetchone()
+            workspace = Path(ledger.request(row[0])["plan"]["workspace"])
+        self.assertTrue(workspace.is_dir())
+
+    def test_commit_uncertainty_preserves_referenced_snapshot(self):
+        authority = Authority(self.directory)
+        payload = self.payload()
+        original_submit = Ledger.submit
+
+        def uncertain_submit(ledger, *args, **kwargs):
+            original_submit(ledger, *args, **kwargs)
+            raise OSError("synthetic uncertain commit")
+
+        with (
+            mock.patch.object(Ledger, "submit", uncertain_submit),
+            self.assertRaisesRegex(OSError, "synthetic uncertain commit"),
+        ):
+            authority.submit("sample", payload)
+        with contextlib.closing(Ledger(self.directory)) as ledger:
+            row = ledger.db.execute(
+                "SELECT id FROM requests WHERE project=? AND external=?",
+                ("sample", payload["id"]),
+            ).fetchone()
+            workspace = Path(ledger.request(row[0])["plan"]["workspace"])
+        self.assertTrue(workspace.is_dir())
+
+    def test_generic_result_is_shared_without_subscriber_destination(self):
+        authority = Authority(self.directory)
+        payload = self.payload()
+        request = authority.submit("sample", payload)["request"]
+        authority.submit(
+            "sample",
+            {**payload, "subscriber": {"id": "second", "wake": False}},
+        )
+        with contextlib.closing(Ledger(self.directory)) as ledger:
+            stage = ledger.schedule()[0]
+            ledger.finish(stage["id"], stage["epoch"], "passed", ["db"], {})
+            authority.deliver(ledger)
+            self.assertEqual(
+                ledger.db.execute(
+                    "SELECT count(*) FROM outbox WHERE delivered=1"
+                ).fetchone()[0],
+                2,
+            )
+        result = core.load_object(
+            self.project / ".orchestrator" / "resources" / request / "result.json"
+        )
+        self.assertNotIn("subscriber", result)
 
     def test_unknown_supervisor_quarantines_without_relaunch(self):
         authority = Authority(self.directory)

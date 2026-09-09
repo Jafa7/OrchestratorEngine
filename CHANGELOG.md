@@ -4,6 +4,15 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-09-09
+
+- Hardened local resource transport by creating credential files atomically with
+  private permissions, validating the recorded authority process identity before
+  sending project credentials, and refusing unusable endpoints.
+- Enforced private POSIX authority and ledger permissions, made replay subscriber
+  attachment deterministic, removed concurrent snapshot leaks, and kept shared
+  generic results subscriber-neutral.
+
 ## [1.6.0] - 2026-09-09
 
 - Removed reverse DNS from numeric-loopback authority startup so unavailable

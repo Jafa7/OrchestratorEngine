@@ -9,6 +9,7 @@ import json
 import os
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -55,7 +56,53 @@ def local_directory(path):
             raise ResourceError(
                 "authority ledger cannot reside on a shared/foreign mount"
             )
+    if path.exists():
+        _require_private_directory(path)
     return path.resolve()
+
+
+def _require_private_directory(path):
+    if not path.is_dir():
+        raise ResourceError("authority storage must be a directory")
+    if os.name == "nt":
+        return
+    metadata = path.stat()
+    if hasattr(os, "geteuid") and metadata.st_uid != os.geteuid():
+        raise ResourceError("authority directory must be owned by the current user")
+    if stat.S_IMODE(metadata.st_mode) != 0o700:
+        raise ResourceError(
+            "authority directory must use mode 0700"
+        )
+
+
+def _private_atomic_json(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            0o600,
+        )
+        try:
+            if os.name != "nt":
+                os.fchmod(descriptor, 0o600)
+        except BaseException:
+            os.close(descriptor)
+            raise
+        try:
+            handle = os.fdopen(descriptor, "w", encoding="utf-8")
+        except BaseException:
+            os.close(descriptor)
+            raise
+        with handle:
+            handle.write(core.json_text(value))
+        core.atomic_replace(temporary, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            temporary.unlink()
+        raise
 
 
 def command_contract(command):
@@ -113,6 +160,7 @@ def initialize(directory, config):
             "authority already exists; refusing to replace identity or ownership"
         )
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _require_private_directory(directory)
     with contextlib.closing(Ledger(directory, create=True)) as ledger:
         ledger.configure(config["resources"])
         config = json.loads(canonical(config))
@@ -120,9 +168,7 @@ def initialize(directory, config):
         for project in config["projects"].values():
             project["token"] = secrets.token_urlsafe(32)
             project["root"] = str(Path(project["root"]).resolve())
-        core.atomic_json(directory / "config.json", config)
-    with contextlib.suppress(OSError):
-        (directory / "config.json").chmod(0o600)
+        _private_atomic_json(directory / "config.json", config)
     return {"authority": config["authority"], "directory": str(directory)}
 
 
@@ -262,16 +308,13 @@ class Authority:
                 (project, external),
             ).fetchone()
             if row:
-                plan = ledger.request(row[0])["plan"]
-                if plan["contract_digest"] != fingerprint:
-                    raise ResourceError(
-                        "request ID already has different immutable inputs"
-                    )
-                return {
-                    "request": row[0],
-                    "contract_digest": digest(plan),
-                    "idempotent": True,
-                }
+                return self._replay_submission(
+                    ledger,
+                    row[0],
+                    fingerprint,
+                    subscriber,
+                    conflict="request ID already has different immutable inputs",
+                )
         actual = input_manifest(registered["root"], recipe["inputs"])
         if actual != payload["inputs"]:
             raise ResourceError(
@@ -287,27 +330,76 @@ class Authority:
             "recipe_digest": digest(recipe),
             "lineage": payload.get("lineage"),
         }
-        with self.lock, contextlib.closing(Ledger(self.directory)) as ledger:
-            # Concurrent replay may have won while this snapshot was captured.
-            row = ledger.db.execute(
-                "SELECT id FROM requests WHERE project=? AND external=?",
-                (project, external),
-            ).fetchone()
-            if row:
-                existing = ledger.request(row[0])["plan"]
-                if existing["contract_digest"] != fingerprint:
-                    raise ResourceError("concurrent request ID conflict")
-                return {
-                    "request": row[0],
-                    "contract_digest": digest(existing),
-                    "idempotent": True,
-                }
-            request = ledger.submit(project, external, plan, subscriber)
+        workspace_referenced = False
+        try:
+            with self.lock, contextlib.closing(Ledger(self.directory)) as ledger:
+                # Concurrent replay may have won while this snapshot was captured.
+                row = ledger.db.execute(
+                    "SELECT id FROM requests WHERE project=? AND external=?",
+                    (project, external),
+                ).fetchone()
+                if row:
+                    replay = self._replay_submission(
+                        ledger,
+                        row[0],
+                        fingerprint,
+                        subscriber,
+                        conflict="concurrent request ID conflict",
+                    )
+                else:
+                    request = ledger.submit(project, external, plan, subscriber)
+                    workspace_referenced = True
+                    replay = None
+        except BaseException:
+            if not workspace_referenced and not self._snapshot_is_referenced(
+                project, external, workspace
+            ):
+                with contextlib.suppress(OSError):
+                    shutil.rmtree(workspace)
+            raise
+        if replay is not None:
+            try:
+                shutil.rmtree(workspace)
+            except OSError as error:
+                raise ResourceError(
+                    "could not remove an unreferenced input snapshot"
+                ) from error
+            return replay
         return {
             "request": request,
             "contract_digest": digest(plan),
             "idempotent": False,
         }
+
+    @staticmethod
+    def _replay_submission(ledger, request, fingerprint, subscriber, *, conflict):
+        saved = ledger.request(request)
+        plan = saved["plan"]
+        if plan["contract_digest"] != fingerprint:
+            raise ResourceError(conflict)
+        contract_digest = digest(plan)
+        if subscriber is not None and subscriber not in saved["subscribers"]:
+            ledger.subscribe(request, contract_digest, subscriber)
+        return {
+            "request": request,
+            "contract_digest": contract_digest,
+            "idempotent": True,
+        }
+
+    def _snapshot_is_referenced(self, project, external, workspace):
+        try:
+            with self.lock, contextlib.closing(Ledger(self.directory)) as ledger:
+                row = ledger.db.execute(
+                    "SELECT id FROM requests WHERE project=? AND external=?",
+                    (project, external),
+                ).fetchone()
+                if row is None:
+                    return False
+                saved = ledger.request(row[0])["plan"].get("workspace")
+                return Path(saved).resolve() == workspace.resolve()
+        except Exception:
+            # An unreadable ledger cannot prove that the snapshot is disposable.
+            return True
 
     def reconcile(self, ledger):
         for stage in ledger.stages(active=True):
@@ -415,10 +507,15 @@ class Authority:
                 )
                 # Retries must not rewrite evidence already delivered.
                 if not result.exists():
+                    public_value = {
+                        key: item
+                        for key, item in value.items()
+                        if key != "subscriber"
+                    }
                     core.atomic_json(
                         result,
                         {
-                            **value,
+                            **public_value,
                             "plan": request["plan"],
                             "stages": stages,
                         },
@@ -593,6 +690,9 @@ def serve(directory, *, port=0, stop=None, ready=None):
                 with contextlib.suppress(OSError):
                     self.wfile.write(data)
 
+        identity = worker_lease.process_identity(os.getpid())
+        if identity is None:
+            raise ResourceError("resource authority process identity is unavailable")
         previous_endpoint = directory / "endpoint.json"
         if port == 0 and previous_endpoint.exists():
             port = int(core.load_object(previous_endpoint)["url"].rsplit(":", 1)[1])
@@ -602,7 +702,7 @@ def serve(directory, *, port=0, stop=None, ready=None):
         endpoint = {
             "url": f"http://127.0.0.1:{server.server_port}",
             "authority": authority.config["authority"],
-            "identity": worker_lease.process_identity(os.getpid()),
+            "identity": identity,
         }
         core.atomic_json(directory / "endpoint.json", endpoint)
         stop = stop or threading.Event()
@@ -639,13 +739,28 @@ def serve(directory, *, port=0, stop=None, ready=None):
 
 
 def client(connection, action, payload):
-    url = connection["url"]
+    endpoint = connection
+    authority_directory = connection.get("authority_directory")
+    if authority_directory is not None:
+        if not isinstance(authority_directory, str) or not authority_directory:
+            raise ResourceError("resource authority directory is invalid")
+        endpoint = core.load_object(
+            local_directory(authority_directory) / "endpoint.json"
+        )
+        if endpoint.get("authority") != connection["authority"]:
+            raise ResourceError("authority mismatch")
+    url = endpoint["url"]
     if (
         not url.startswith("http://127.0.0.1:")
         or "/" in url[len("http://127.0.0.1:") :]
     ):
         raise ResourceError(
             "resource transport supports native loopback endpoints only"
+        )
+    identity = worker_lease.identity_state(endpoint.get("identity"))
+    if identity.get("state") != "alive" or not identity.get("identity_verified"):
+        raise ResourceError(
+            "resource authority process identity is unavailable or stale"
         )
     request = urllib.request.Request(
         url + "/" + action,
@@ -690,12 +805,15 @@ def connect(directory, project, root):
     if not registered or Path(registered["root"]) != Path(root).resolve():
         raise ResourceError("connection must target the registered project root")
     endpoint = core.load_object(authority.directory / "endpoint.json")
-    connection = {**endpoint, "project": project, "token": registered["token"]}
+    connection = {
+        **endpoint,
+        "project": project,
+        "token": registered["token"],
+        "authority_directory": str(authority.directory),
+    }
     path = Path(root) / core.DEFAULT_STATE_DIR / "resources.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    core.atomic_json(path, connection)
-    with contextlib.suppress(OSError):
-        path.chmod(0o600)
+    _private_atomic_json(path, connection)
     return {"connection": str(path), "authority": connection["authority"]}
 
 

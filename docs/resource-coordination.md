@@ -22,7 +22,9 @@ container platform or AI process is required by the coordinator.
 
 Store the ledger on the authority's native local filesystem, outside disposable
 worktrees and managed resources. UNC and known Linux foreign/network mounts are
-rejected. The administrator remains responsible for avoiding network-backed,
+rejected. On POSIX hosts, a pre-existing authority directory must be owned by
+the current user with mode `0700`; initialization creates the SQLite ledger with
+mode `0600`. The administrator remains responsible for avoiding network-backed,
 synchronized or externally restored storage on every OS. Never open the ledger
 simultaneously through Windows and WSL paths. Only native execution is supported:
 Windows/WSL command bridges, escaped process groups, container processes and
@@ -104,12 +106,19 @@ orchestrator-engine --project-root PROJECT resource submit --recipe verify --id 
 `serve` runs until stopped; a local service manager may supervise it. It binds
 only `127.0.0.1`, reuses its previous port after restart and refuses a second
 service instance. `connect` creates private `.orchestrator/resources.json` in
-the registered project. Do not commit that file or authority configuration.
+the registered project. New connection files resolve the current endpoint from
+the private authority directory, so an ordinary service restart does not require
+another `connect`; reconnect once after upgrading an older connection file. Do
+not commit that file or authority configuration.
 Each project has a distinct bearer credential. Browser-origin requests and
 environment-configured HTTP proxies are excluded. Clients can request only
 registered recipes and inspect their own project; registration is a local
-administrator action. This is cooperative same-user coordination, not a sandbox
-against privileged users or arbitrary direct database access.
+administrator action. Before sending that credential, a client verifies that
+the process identity recorded for the endpoint still names the live authority
+process. This protects stale endpoint files after a normal authority exit; it
+does not turn loopback HTTP into a hostile same-user security boundary. This is
+cooperative same-user coordination, not a sandbox against privileged users,
+same-user state tampering or arbitrary direct database access.
 
 The return value includes a `request` UUID. Use that UUID for:
 
@@ -193,7 +202,9 @@ freeze/export a coherent source set when that guarantee is needed. External
 tools, services and undeclared files are not captured automatically.
 
 Request IDs are project-namespaced and immutable. Exact replay returns the
-existing attempt; changed inputs conflict. New retries use new IDs and may name
+existing attempt; an identical subscriber is a no-op, a new subscriber ID is
+attached, and reusing a subscriber ID with a different pinned destination is
+rejected. Changed inputs conflict. New retries use new IDs and may name
 `--lineage PREVIOUS_REQUEST`. Explicit `subscribe` requires the returned complete
 `contract_digest` and a subscriber JSON file with a unique `id` and pinned wake
 destination. `unsubscribe` removes that subscription without cancelling the
@@ -241,12 +252,14 @@ and event identity; it does not finalize a first-class check as failed. Successf
 commands awaiting quiescence keep dependent stages waiting. Confirmed recovery
 can unblock those stages and produce a distinct final result. An undelivered
 advisory is superseded once its incident is resolved. Retries retain the captured
-outcome snapshot rather than substituting later stage state. Subscriber fields
-are validated at admission, and a malformed check projection cannot stop other
-subscribers' delivery. Delivery retries use deterministic non-AI backoff. Failed
-delivery cannot rerun commands or hold already released capacity. Keep authority
-snapshots, run evidence and ledger together; disposable test-output cleanup must
-not erase that evidence. Retention/compaction is not automatic.
+outcome snapshot rather than substituting later stage state. The shared generic
+result is subscriber-neutral; subscriber-specific wake destinations remain only
+in each durable outbox/event projection. Subscriber fields are validated at
+admission, and a malformed check projection cannot stop other subscribers'
+delivery. Delivery retries use deterministic non-AI backoff. Failed delivery
+cannot rerun commands or hold already released capacity. Keep authority snapshots,
+run evidence and ledger together; disposable test-output cleanup must not erase
+that evidence. Retention/compaction is not automatic.
 
 ## Measurements and validation boundaries
 

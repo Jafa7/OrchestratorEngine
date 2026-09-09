@@ -10,6 +10,7 @@ import contextlib
 import hashlib
 import itertools
 import json
+import os
 import secrets
 import sqlite3
 import time
@@ -248,6 +249,14 @@ class Ledger:
         if create:
             self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.db = sqlite3.connect(path, timeout=10, isolation_level=None)
+        if create and os.name != "nt":
+            try:
+                path.chmod(0o600)
+            except OSError as error:
+                self.db.close()
+                raise ResourceError(
+                    "resource ledger permissions could not be restricted"
+                ) from error
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.execute("PRAGMA synchronous=FULL")
