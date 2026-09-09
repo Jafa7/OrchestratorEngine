@@ -111,6 +111,27 @@ orchestrator-engine --project-root PROJECT resource connect --directory AUTHORIT
 orchestrator-engine --project-root PROJECT resource submit --recipe verify --id attempt-001 --wake-policy never
 ```
 
+For a delayed launcher, retain the exact input contract before its process can
+outlive the lock or transaction that selected those bytes:
+
+```text
+orchestrator-engine --project-root PROJECT resource create-input-contract --recipe verify --id attempt-002 --lineage attempt-001 --output RETAINED_INPUT_CONTRACT.json
+orchestrator-engine --project-root PROJECT resource submit --input-contract RETAINED_INPUT_CONTRACT.json --wake-policy never
+```
+
+`resource-input-contract` schema version 1 binds the external request ID,
+recipe digest, lineage and SHA-256 manifest. The file is not an authority token
+and does not bypass a registered recipe. For a new request, the authority still
+requires the registered root to contain exactly those bytes and captures them
+again. If the live slot changed before an orphaned or delayed submit, admission
+fails instead of recapturing the replacement under the retained request ID.
+Once the same immutable request was accepted, replay is checked before live
+inputs are read, so the same contract returns the existing request even if the
+slot later changed or disappeared. A changed contract under the same request ID
+is always a conflict. Create each retained file at a unique path; the command
+refuses to overwrite an existing contract.
+Store the file outside every path declared as a recipe input.
+
 `init` returns configuration revision `1`. To add projects, change registered
 recipes or change a drained resource registry, stop the service, ensure
 `resource status` reports no active, waiting or recovery stages, and run:
@@ -230,6 +251,12 @@ claim that an arbitrary concurrently edited tree is one coherent Git revision.
 The adopter must declare all relevant source/tool/configuration inputs and
 freeze/export a coherent source set when that guarantee is needed. External
 tools, services and undeclared files are not captured automatically.
+
+The normal `resource submit --recipe ... --id ...` path intentionally hashes the
+live root immediately before submission. Use `--input-contract` only when a
+launcher has already retained the selected immutable manifest and may submit
+later. Do not edit the contract: its digest detects accidental changes, while
+the authority remains the final validator of recipe identity and source bytes.
 
 Request IDs are project-namespaced and immutable. Exact replay returns the
 existing attempt; an identical subscriber is a no-op, a new subscriber ID is

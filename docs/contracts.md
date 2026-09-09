@@ -20,7 +20,8 @@ Stable names are `worker-task`, `worker-result`, `worker-evidence`,
 `github-pr-cancel-request`, `workstream`, `workstream-checkpoint`,
 `workstream-result`, `workstream-evidence`, `local-check`,
 `local-check-evidence`, `check-duration-history`, `resource-queue`,
-`task-resolution`, and `artifact-resolution`. They are included in wheels and
+`resource-input-contract`, `task-resolution`, and `artifact-resolution`. They
+are included in wheels and
 source distributions and require no runtime dependency.
 `orchestrator-engine schemas` lists names; pass one name to print its schema.
 Catalog and schema output include `schema_version` and `kind`.
@@ -1105,6 +1106,9 @@ after recovery, with separate immutable advisory and final-result artifacts.
 The owner contract for complete-set admission, resource selectors, captured
 inputs, dependency readiness, cancellation, recovery evidence, subscriber
 delivery and metrics is [Shared local resources](resource-coordination.md).
+The `resource-input-contract` sidecar is the public handoff for a previously
+retained request ID, recipe digest, lineage and input hash map. It never grants
+authority and cannot substitute different live bytes for an unaccepted request.
 Resource capacities constrain declared resources; they introduce no default
 global worker count, daily-slice quota or model token budget.
 

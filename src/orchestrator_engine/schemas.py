@@ -46,6 +46,7 @@ SCHEMA_NAMES = (
     "workstream-evidence",
     "local-check",
     "resource-queue",
+    "resource-input-contract",
     "local-check-evidence",
     "check-duration-history",
     "delivery-preflight",

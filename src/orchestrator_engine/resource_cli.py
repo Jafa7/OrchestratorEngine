@@ -30,11 +30,17 @@ def add_parser(subparsers):
     attach.add_argument("--directory", type=Path, required=True)
     attach.add_argument("--project", required=True)
     submit = commands.add_parser("submit")
-    submit.add_argument("--recipe", required=True)
-    submit.add_argument("--id", required=True)
+    submit.add_argument("--recipe")
+    submit.add_argument("--id")
     submit.add_argument("--lineage")
+    submit.add_argument("--input-contract", type=Path)
     submit.add_argument("--wake-policy", choices=["never", "always"], default="never")
     submit.add_argument("--target-thread")
+    prepare = commands.add_parser("create-input-contract")
+    prepare.add_argument("--recipe", required=True)
+    prepare.add_argument("--id", required=True)
+    prepare.add_argument("--lineage")
+    prepare.add_argument("--output", type=Path, required=True)
     for name in ("status", "cancel", "wait"):
         command = commands.add_parser(name)
         command.add_argument("--request", required=name != "status")
@@ -61,9 +67,12 @@ def run(args, root):
         client,
         connect,
         initialize,
+        prepare_input_contract,
         serve,
+        submit_input_contract,
         submit_recipe,
         update_configuration,
+        validate_input_contract,
     )
 
     command = args.resource_command
@@ -96,10 +105,44 @@ def run(args, root):
                 },
             )
         return {"stage": args.stage, "released": args.release}
+    if command == "create-input-contract":
+        if args.output.exists():
+            raise ResourceError("refusing to replace an existing input contract")
+        contract = prepare_input_contract(
+            root,
+            recipe=args.recipe,
+            request_id=args.id,
+            lineage=args.lineage,
+        )
+        core.atomic_json(args.output, contract)
+        return {
+            "input_contract": str(args.output.resolve()),
+            "input_contract_digest": contract["input_contract_digest"],
+            "request_id": contract["request_id"],
+            "recipe": contract["recipe"],
+        }
     if command == "submit":
         if args.wake_policy == "always" and not args.target_thread:
             raise ResourceError("wake delivery requires an explicit target thread")
-        subscriber = {"id": args.id, "wake": args.wake_policy == "always"}
+        if args.input_contract is None:
+            if not args.recipe or not args.id:
+                raise ResourceError(
+                    "resource submit requires --recipe and --id or --input-contract"
+                )
+        elif args.recipe or args.id or args.lineage:
+            raise ResourceError(
+                "--input-contract cannot be combined with --recipe, --id or --lineage"
+            )
+        retained = (
+            validate_input_contract(core.load_object(args.input_contract))
+            if args.input_contract
+            else None
+        )
+        subscriber_id = retained.get("request_id") if retained else args.id
+        subscriber = {
+            "id": subscriber_id,
+            "wake": args.wake_policy == "always",
+        }
         if args.target_thread:
             # Use the existing wake-target contract, never infer another chat's binding.
             from .local_checks import capture_wake_target
@@ -112,6 +155,12 @@ def run(args, root):
                     "target thread must match the project's configured binding"
                 )
             subscriber["wake_target"] = target
+        if retained is not None:
+            return submit_input_contract(
+                root,
+                input_contract=retained,
+                subscriber=subscriber,
+            )
         return submit_recipe(
             root,
             recipe=args.recipe,

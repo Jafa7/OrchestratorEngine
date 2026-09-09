@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_RESOURCE_INPUT_CONTRACT",
+  "request_id": "attempt-001",
+  "recipe": "verify",
+  "recipe_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "lineage": null,
+  "inputs": {
+    "input.txt": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "input_contract_digest": "38a62f5d872e40dc2027bab8333f202a42a991ff7161fe1bedf9115f88586e58"
+}

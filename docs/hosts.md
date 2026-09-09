@@ -11,7 +11,7 @@ live wakeup:
 - **Live wakeup** means the already-open host chat receives the message and
   the active agent continues in that same visible session.
 
-Everything engine-side runs where the CLI workers run. Version 1.8.1 supports
+Everything engine-side runs where the CLI workers run. Version 1.9.0 supports
 the complete detached runtime on Linux, WSL, native Windows and macOS. Check
 `orchestrator-engine runtime-capabilities` and the
 [platform support matrix](platform-support.md) before setup. In WSL,

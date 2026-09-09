@@ -7,7 +7,7 @@ shell. The adopter owns installation, updates, authentication and local
 policy for those tools.
 
 Platform support is independent from external-tool availability. Run
-`orchestrator-engine runtime-capabilities` first. Version 1.8.1 supports detached
+`orchestrator-engine runtime-capabilities` first. Version 1.9.0 supports detached
 features on Linux, WSL, native Windows and macOS; each configured tool must also
 run on the chosen host. Cross-OS command bridges require separate validation.
 See the [platform support matrix](platform-support.md).

@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from socketserver import TCPServer
 
 from . import core, platform_runtime, worker_lease
@@ -32,6 +32,19 @@ from .resource_queue import (
     normalize_registry,
     validate_subscriber,
 )
+
+RESOURCE_INPUT_CONTRACT_KIND = "ORCHESTRATOR_RESOURCE_INPUT_CONTRACT"
+RESOURCE_INPUT_CONTRACT_SCHEMA_VERSION = 1
+_RESOURCE_INPUT_CONTRACT_FIELDS = {
+    "schema_version",
+    "kind",
+    "request_id",
+    "recipe",
+    "recipe_digest",
+    "lineage",
+    "inputs",
+    "input_contract_digest",
+}
 
 
 def local_directory(path):
@@ -279,6 +292,100 @@ def input_manifest(root, inputs):
     return files
 
 
+def validate_input_manifest(value):
+    """Validate one retained manifest without reading its source files."""
+
+    if not isinstance(value, dict) or not value:
+        raise ResourceError("input contract requires a nonempty input manifest")
+    normalized = {}
+    for relative, sha256 in value.items():
+        if not isinstance(relative, str) or not relative or len(relative) > 4096:
+            raise ResourceError("input manifest paths must be nonempty strings")
+        path = PurePosixPath(relative)
+        if (
+            path.is_absolute()
+            or path.as_posix() != relative
+            or "\\" in relative
+            or any(part in {"", ".", ".."} for part in path.parts)
+            or ".orchestrator" in path.parts
+        ):
+            raise ResourceError("input manifest path must stay inside project inputs")
+        if (
+            not isinstance(sha256, str)
+            or len(sha256) != 64
+            or any(character not in "0123456789abcdef" for character in sha256)
+        ):
+            raise ResourceError(
+                "input manifest values must be lowercase SHA-256 hashes"
+            )
+        normalized[relative] = sha256
+    return normalized
+
+
+def _input_contract_body(*, recipe, recipe_digest, request_id, lineage, inputs):
+    identifier(recipe)
+    identifier(request_id)
+    if lineage is not None:
+        identifier(lineage)
+    if (
+        not isinstance(recipe_digest, str)
+        or len(recipe_digest) != 64
+        or any(character not in "0123456789abcdef" for character in recipe_digest)
+    ):
+        raise ResourceError("recipe digest must be a lowercase SHA-256 hash")
+    return {
+        "request_id": request_id,
+        "recipe": recipe,
+        "recipe_digest": recipe_digest,
+        "lineage": lineage,
+        "inputs": validate_input_manifest(inputs),
+    }
+
+
+def build_input_contract(*, recipe, recipe_digest, request_id, lineage=None, inputs):
+    """Build a portable immutable contract for a later resource submission."""
+
+    body = _input_contract_body(
+        recipe=recipe,
+        recipe_digest=recipe_digest,
+        request_id=request_id,
+        lineage=lineage,
+        inputs=inputs,
+    )
+    return {
+        "schema_version": RESOURCE_INPUT_CONTRACT_SCHEMA_VERSION,
+        "kind": RESOURCE_INPUT_CONTRACT_KIND,
+        **body,
+        "input_contract_digest": digest(body),
+    }
+
+
+def validate_input_contract(value):
+    """Return a normalized retained contract or reject unsupported/tampered data."""
+
+    if not isinstance(value, dict) or set(value) != _RESOURCE_INPUT_CONTRACT_FIELDS:
+        raise ResourceError("unsupported resource input contract fields")
+    if value.get("schema_version") != RESOURCE_INPUT_CONTRACT_SCHEMA_VERSION:
+        raise ResourceError("unsupported resource input contract schema version")
+    if value.get("kind") != RESOURCE_INPUT_CONTRACT_KIND:
+        raise ResourceError("unsupported resource input contract kind")
+    body = _input_contract_body(
+        recipe=value.get("recipe"),
+        recipe_digest=value.get("recipe_digest"),
+        request_id=value.get("request_id"),
+        lineage=value.get("lineage"),
+        inputs=value.get("inputs"),
+    )
+    if value.get("input_contract_digest") != digest(body):
+        raise ResourceError("resource input contract digest does not match its content")
+    return {
+        "schema_version": RESOURCE_INPUT_CONTRACT_SCHEMA_VERSION,
+        "kind": RESOURCE_INPUT_CONTRACT_KIND,
+        **body,
+        "input_contract_digest": digest(body),
+    }
+
+
 def capture(root, destination, expected):
     destination.mkdir(parents=True)
     try:
@@ -395,14 +502,18 @@ class Authority:
         if recipe is None or digest(recipe) != payload["recipe_digest"]:
             raise ResourceError("recipe changed or is not registered")
         external = identifier(payload["id"])
+        declared_inputs = validate_input_manifest(payload["inputs"])
+        lineage = payload.get("lineage")
+        if lineage is not None:
+            identifier(lineage)
         subscriber = payload.get("subscriber")
         if subscriber is not None:
             validate_subscriber(subscriber)
         # Compare replay before inspecting live inputs: accepted inputs are immutable.
         contract = {
             "recipe": recipe,
-            "inputs": payload["inputs"],
-            "lineage": payload.get("lineage"),
+            "inputs": declared_inputs,
+            "lineage": lineage,
         }
         fingerprint = digest(contract)
         with self.lock, contextlib.closing(Ledger(self.directory)) as ledger:
@@ -419,7 +530,7 @@ class Authority:
                     conflict="request ID already has different immutable inputs",
                 )
         actual = input_manifest(registered["root"], recipe["inputs"])
-        if actual != payload["inputs"]:
+        if actual != declared_inputs:
             raise ResourceError(
                 "declared input snapshot differs from registered project"
             )
@@ -431,7 +542,7 @@ class Authority:
             "input_manifest": actual,
             "workspace": str(workspace),
             "recipe_digest": digest(recipe),
-            "lineage": payload.get("lineage"),
+            "lineage": lineage,
         }
         workspace_referenced = False
         try:
@@ -935,5 +1046,45 @@ def submit_recipe(root, *, recipe, request_id, subscriber=None, lineage=None):
             "inputs": input_manifest(root, contract["inputs"]),
             "subscriber": subscriber,
             "lineage": lineage,
+        },
+    )
+
+
+def prepare_input_contract(root, *, recipe, request_id, lineage=None):
+    """Capture expected input hashes for an explicitly delayed submission."""
+
+    connection = core.load_object(
+        Path(root) / core.DEFAULT_STATE_DIR / "resources.json"
+    )
+    registered = client(connection, "recipe", {"recipe": recipe})
+    return build_input_contract(
+        recipe=recipe,
+        recipe_digest=registered["recipe_digest"],
+        request_id=request_id,
+        lineage=lineage,
+        inputs=input_manifest(root, registered["inputs"]),
+    )
+
+
+def submit_input_contract(root, *, input_contract, subscriber=None):
+    """Submit exact retained hashes while preserving authority-side verification."""
+
+    retained = validate_input_contract(input_contract)
+    connection = core.load_object(
+        Path(root) / core.DEFAULT_STATE_DIR / "resources.json"
+    )
+    registered = client(connection, "recipe", {"recipe": retained["recipe"]})
+    if registered["recipe_digest"] != retained["recipe_digest"]:
+        raise ResourceError("recipe changed since the input contract was prepared")
+    return client(
+        connection,
+        "submit",
+        {
+            "id": retained["request_id"],
+            "recipe": retained["recipe"],
+            "recipe_digest": retained["recipe_digest"],
+            "inputs": retained["inputs"],
+            "subscriber": subscriber,
+            "lineage": retained["lineage"],
         },
     )

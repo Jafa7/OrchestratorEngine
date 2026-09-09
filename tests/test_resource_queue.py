@@ -16,11 +16,13 @@ from pathlib import Path
 from unittest import mock
 
 from orchestrator_engine import (
+    cli,
     core,
     local_checks,
     operation_wait,
     platform_runtime,
     resource_checks,
+    resource_cli,
     resource_queue,
     resource_runner,
     resource_service,
@@ -37,13 +39,17 @@ from orchestrator_engine.resource_queue import (
 )
 from orchestrator_engine.resource_service import (
     Authority,
+    build_input_contract,
     client,
     connect,
     initialize,
     input_manifest,
     local_directory,
+    prepare_input_contract,
     serve,
+    submit_input_contract,
     update_configuration,
+    validate_input_contract,
 )
 
 
@@ -83,6 +89,35 @@ class QueueTests(unittest.TestCase):
             list(stage["allocation"]) if released is None else released,
             {"quiescent": True},
         )
+
+    def test_retained_input_contract_rejects_tampering_and_unsafe_paths(self):
+        contract = build_input_contract(
+            recipe="verify",
+            recipe_digest="a" * 64,
+            request_id="attempt-001",
+            lineage=None,
+            inputs={"input.txt": "b" * 64},
+        )
+        self.assertEqual(validate_input_contract(contract), contract)
+        with self.assertRaisesRegex(ResourceError, "digest does not match"):
+            validate_input_contract({**contract, "request_id": "changed"})
+        for relative in (
+            "../outside",
+            "/absolute",
+            "a//b",
+            "..\\outside",
+            ".orchestrator/x",
+        ):
+            with (
+                self.subTest(relative=relative),
+                self.assertRaisesRegex(ResourceError, "stay inside"),
+            ):
+                build_input_contract(
+                    recipe="verify",
+                    recipe_digest="a" * 64,
+                    request_id="attempt-001",
+                    inputs={relative: "b" * 64},
+                )
 
     def test_rejected_token_cannot_release_another_supervisor(self):
         self.submit([need("A")])
@@ -1105,6 +1140,107 @@ class ResourceNativeTests(unittest.TestCase):
             authority.submit("sample", {**payload, "id": "other"})
         with self.assertRaises(ResourceError):
             authority.submit("sample", self.payload())
+
+    def test_delayed_retained_contract_rejects_replacement_and_replays_offline(self):
+        with self.service() as connection:
+            retained = prepare_input_contract(
+                self.project,
+                recipe="verify",
+                request_id="delayed-attempt",
+                lineage="prior-attempt",
+            )
+            (self.project / "input.txt").write_text("replacement")
+            replacement = prepare_input_contract(
+                self.project,
+                recipe="verify",
+                request_id="delayed-attempt",
+                lineage="prior-attempt",
+            )
+            with self.assertRaisesRegex(ResourceError, "declared input snapshot"):
+                submit_input_contract(
+                    self.project,
+                    input_contract=retained,
+                    subscriber={"id": "delayed-attempt", "wake": False},
+                )
+
+            (self.project / "input.txt").write_text("pinned")
+            first = submit_input_contract(
+                self.project,
+                input_contract=retained,
+                subscriber={"id": "delayed-attempt", "wake": False},
+            )
+            (self.project / "input.txt").unlink()
+            replay = submit_input_contract(
+                self.project,
+                input_contract=retained,
+                subscriber={"id": "delayed-attempt", "wake": False},
+            )
+            self.assertEqual(replay["request"], first["request"])
+            self.assertTrue(replay["idempotent"])
+
+            (self.project / "input.txt").write_text("replacement")
+            with self.assertRaisesRegex(ResourceError, "different immutable inputs"):
+                submit_input_contract(
+                    self.project,
+                    input_contract=replacement,
+                    subscriber={"id": "delayed-attempt", "wake": False},
+                )
+            with contextlib.closing(
+                Ledger(connection["authority_directory"])
+            ) as ledger:
+                self.assertEqual(
+                    ledger.db.execute("SELECT count(*) FROM requests").fetchone()[0],
+                    1,
+                )
+
+    def test_resource_cli_creates_and_submits_retained_input_contract(self):
+        output = self.project / "retained-inputs.json"
+        with self.service():
+            create_args = cli.build_parser().parse_args(
+                [
+                    "--project-root",
+                    str(self.project),
+                    "resource",
+                    "create-input-contract",
+                    "--recipe",
+                    "verify",
+                    "--id",
+                    "cli-attempt",
+                    "--output",
+                    str(output),
+                ]
+            )
+            created = resource_cli.run(create_args, self.project)
+            self.assertEqual(created["input_contract"], str(output.resolve()))
+            with self.assertRaisesRegex(ResourceError, "refusing to replace"):
+                resource_cli.run(create_args, self.project)
+
+            submit_args = cli.build_parser().parse_args(
+                [
+                    "--project-root",
+                    str(self.project),
+                    "resource",
+                    "submit",
+                    "--input-contract",
+                    str(output),
+                ]
+            )
+            submitted = resource_cli.run(submit_args, self.project)
+            self.assertFalse(submitted["idempotent"])
+            conflicting_args = cli.build_parser().parse_args(
+                [
+                    "--project-root",
+                    str(self.project),
+                    "resource",
+                    "submit",
+                    "--input-contract",
+                    str(output),
+                    "--id",
+                    "different",
+                ]
+            )
+            with self.assertRaisesRegex(ResourceError, "cannot be combined"):
+                resource_cli.run(conflicting_args, self.project)
 
     def test_replay_adds_new_subscriber_and_rejects_changed_destination(self):
         authority = Authority(self.directory)

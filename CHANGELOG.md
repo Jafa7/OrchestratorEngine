@@ -4,6 +4,13 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-09-09
+
+- Added a public retained resource input contract and CLI flow for delayed or
+  orphan-prone launchers. Exact replay remains idempotent, changed contracts
+  conflict, and first admission still verifies and captures the registered
+  live root.
+
 ## [1.8.1] - 2026-09-09
 
 - Native Windows watcher health now accepts a heartbeat from a process proven

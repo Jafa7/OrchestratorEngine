@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-engine://schemas/resource-input-contract",
+  "title": "Retained resource recipe input contract",
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_RESOURCE_INPUT_CONTRACT",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "kind",
+    "request_id",
+    "recipe",
+    "recipe_digest",
+    "lineage",
+    "inputs",
+    "input_contract_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "ORCHESTRATOR_RESOURCE_INPUT_CONTRACT"},
+    "request_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "recipe": {"type": "string", "minLength": 1, "maxLength": 160},
+    "recipe_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "lineage": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "inputs": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096,
+        "pattern": "^(?!/)(?!.*\\\\).+$"
+      },
+      "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    },
+    "input_contract_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}
