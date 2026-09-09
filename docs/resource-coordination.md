@@ -1,0 +1,273 @@
+# Shared local resources
+
+This is an unreleased, opt-in resource coordinator. It serializes conflicting
+resource scopes across registered local projects while running independent
+commands concurrently. It does not impose a worker, agent, daily-slice or model
+token quota. An operation with no resource needs can run concurrently as well.
+
+## Authority and enrollment
+
+Choose one native host and one durable directory for each coordination domain.
+Every path touching the same physical resource must use that authority. A
+second database file with the same resource names is a different authority and
+provides no mutual exclusion with the first. Do not share entire project state
+directories to coordinate resources.
+
+The authority uses standard-library SQLite with short `BEGIN IMMEDIATE`
+transactions, synchronous durability and a service-instance file lock. Commands
+execute in detached supervisors outside those transactions. The HTTP transport,
+scheduler and result dispatcher have separate execution paths; slow delivery
+does not hold resource ownership or prevent new grants. No managed project DB,
+container platform or AI process is required by the coordinator.
+
+Store the ledger on the authority's native local filesystem, outside disposable
+worktrees and managed resources. UNC and known Linux foreign/network mounts are
+rejected. The administrator remains responsible for avoiding network-backed,
+synchronized or externally restored storage on every OS. Never open the ledger
+simultaneously through Windows and WSL paths. Only native execution is supported:
+Windows/WSL command bridges, escaped process groups, container processes and
+remote executors require separately validated containment/quiescence adapters.
+
+`resource init` accepts a private JSON configuration. Replace the example root
+with a local absolute path, and use actual project-owned scripts:
+
+```json
+{
+  "resources": {
+    "database-a": {
+      "physical_id": "local-test-instance-a",
+      "incarnation": "1",
+      "capacity": 1,
+      "release": "probe",
+      "probe": {
+        "argv": ["{python}", "tools/assert_quiescent.py"],
+        "timeout_seconds": 10
+      }
+    },
+    "database-b": {
+      "physical_id": "local-test-instance-b",
+      "incarnation": "1",
+      "release": "process"
+    },
+    "test-database": {
+      "kind": "pool",
+      "members": ["database-a", "database-b"]
+    }
+  },
+  "projects": {
+    "sample": {
+      "root": "/absolute/path/to/sample",
+      "recipes": {
+        "verify": {
+          "inputs": ["tools", "src", "tests"],
+          "stages": [
+            {
+              "id": "build",
+              "needs": [],
+              "commands": [{"argv": ["{python}", "tools/build.py"]}]
+            },
+            {
+              "id": "database-tests",
+              "after": ["build"],
+              "needs": [{"resource": "test-database", "mode": "exclusive"}],
+              "commands": [
+                {"argv": ["{python}", "tools/prepare.py"]},
+                {"argv": ["{python}", "tools/test_database.py"]}
+              ],
+              "cleanup": [{"argv": ["{python}", "tools/cleanup.py"]}]
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+`release: process` is an explicit assertion that ending all contained processes
+establishes quiescence for that resource. Use it for synchronous local resources;
+it is not a default assumption for asynchronous DB activity. `release: probe`
+requires a registered, bounded, project-owned command that exits zero only when
+old activity cannot interfere. A healthy or empty database is not necessarily a
+quiescent database. A dirty but quiescent resource can be granted to a preparation
+recipe; the coordinator does not mandate resets or expensive health gates.
+
+Initialize and run the service in the selected native environment:
+
+```text
+orchestrator-engine resource init --directory AUTHORITY_DIR --config CONFIG.json
+orchestrator-engine resource serve --directory AUTHORITY_DIR
+orchestrator-engine --project-root PROJECT resource connect --directory AUTHORITY_DIR --project sample
+orchestrator-engine --project-root PROJECT resource submit --recipe verify --id attempt-001 --wake-policy never
+```
+
+`serve` runs until stopped; a local service manager may supervise it. It binds
+only `127.0.0.1`, reuses its previous port after restart and refuses a second
+service instance. `connect` creates private `.orchestrator/resources.json` in
+the registered project. Do not commit that file or authority configuration.
+Each project has a distinct bearer credential. Browser-origin requests and
+environment-configured HTTP proxies are excluded. Clients can request only
+registered recipes and inspect their own project; registration is a local
+administrator action. This is cooperative same-user coordination, not a sandbox
+against privileged users or arbitrary direct database access.
+
+The return value includes a `request` UUID. Use that UUID for:
+
+```text
+orchestrator-engine --project-root PROJECT resource status --request REQUEST
+orchestrator-engine --project-root PROJECT resource wait --request REQUEST --timeout-seconds 30
+orchestrator-engine --project-root PROJECT resource cancel --request REQUEST
+orchestrator-engine --project-root PROJECT resource metrics
+```
+
+Choose one completion route. `never` supports a bounded in-turn wait. `always`
+requires `--target-thread` matching the project's captured host binding, emits
+one terminal follow-up through the existing watcher, and lets the chat end its
+turn. Do not keep an app Goal active while relying on watcher continuation.
+
+## First-class checks
+
+A check suite can delegate its entire lifecycle to a registered recipe:
+
+```toml
+[suites.database]
+verification = "focused"
+resource_recipe = "verify"
+```
+
+Run normal `check plan`, `check run --suite database --check-id CHECK`,
+`check status` and `operation wait --target check:CHECK`. Resource-managed checks
+use detached execution and the default `.orchestrator` state directory. Explicit
+foreground execution is rejected. A suite must select either `resource_recipe`
+or local `commands`; there is no implicit wrapping of existing commands.
+Checks retain their existing verification-result contract and operation owner.
+The check reaper and supervisor refuse to take ownership away from the resource
+authority. Cancel through `resource cancel` using its request UUID.
+
+Manual launchers and check suites should submit the same registered recipe.
+Do not enqueue a resource-dependent public launcher from inside a scope that
+already holds that resource. Internal commands receive
+`ORCHESTRATOR_RESOURCE_CONTEXT`, containing the exact request, stage, epoch and
+selected members. The authenticated `/context` endpoint validates that token
+against current running ownership; the environment value alone grants nothing.
+Explicitly map concrete members to project resource connections in the adapter.
+
+## Scheduling and input contract
+
+Stages form an acyclic dependency graph. Declare the complete set for each
+continuous scope. Preparation, tests and cleanup sharing mutable state belong
+in the same stage. Resource-free preparation can run earlier. Parallel stages
+share the captured workspace, so recipes must declare conflicting output paths
+as resources or order those stages explicitly.
+
+Leaves represent physical capacity. Aliases resolve to existing selectors;
+pools choose one member; bundles require every component. Shared claims require
+an explicit `compatibility` class and positive `units`; only matching shared
+classes within capacity coexist. Exclusive access consumes the entire leaf.
+No in-place upgrades or incremental acquisition while holding a partial set
+are supported. Duplicate physical declarations, selector cycles, infeasible
+claims and unknown dependencies fail before commands execute.
+
+The scheduler orders eligible scopes by durable ready sequence and ID, searches
+complete assignments lazily and passes blocked requests. Incompatible partial
+assignments are pruned before expanding unrelated pool choices; the scheduler
+does not materialize the Cartesian product of stage requirements. Explicit
+search frames avoid imposing Python's recursion depth on the number of claims. An older A+B request waiting
+for A initially permits useful B work. After a contested release, a still-ready
+older scope can protect one concrete assignment while conflicting owners drain.
+Younger reservations cannot conflict with it or transitively reserve unrelated
+resources. Compatible work and unused capacity remain eligible. Protection is
+removed on cancellation, lost readiness or recovery blocking. This intentionally
+trades some temporary idle capacity for progress under repeated contention; no
+runtime estimate or timeout is treated as a guaranteed backfill release.
+
+Inputs are explicit relative files/directories. Symlinks and orchestration state
+are excluded. Submission captures and verifies their SHA-256 manifest before
+queue admission. Commands run in a unique captured workspace; `{python}` selects
+the native interpreter and `{workspace}` selects that workspace. Source input
+hashes are checked at each stage boundary. Generated outputs must use separate
+paths. The manifest identifies actual bytes, including dirty files; it does not
+claim that an arbitrary concurrently edited tree is one coherent Git revision.
+The adopter must declare all relevant source/tool/configuration inputs and
+freeze/export a coherent source set when that guarantee is needed. External
+tools, services and undeclared files are not captured automatically.
+
+Request IDs are project-namespaced and immutable. Exact replay returns the
+existing attempt; changed inputs conflict. New retries use new IDs and may name
+`--lineage PREVIOUS_REQUEST`. Explicit `subscribe` requires the returned complete
+`contract_digest` and a subscriber JSON file with a unique `id` and pinned wake
+destination. `unsubscribe` removes that subscription without cancelling the
+execution. Executor cancellation is a separate project-authorized operation.
+There is no automatic reuse of old green results or implicit cross-project join.
+
+## Release, crash recovery and evidence
+
+An atomic grant records all members and a single-use launch token. A native
+supervisor waits behind a pipe barrier; its identity is recorded before admission
+allows user commands. Rejected tokens cannot release another supervisor's grant.
+An unadmitted release checks the exact epoch, launching state and token or
+attached identity atomically with release. Service restart reconciles existing ownership and never
+blindly repeats a launch. A live supervisor continues an admitted scope; new
+stages wait for the service. Missing identity, uncertain launch or failed
+quiescence quarantines the affected allocation. Neither heartbeat age nor
+process disappearance alone releases it.
+
+Cleanup runs after command failure/cancellation when containment is proven.
+Native process groups or Windows Job Objects are swept at command boundaries.
+Successful per-resource evidence allows partial release; equal `recovery_group`
+labels couple release within the scope. Unknown resources remain unavailable
+while unrelated resources can be reused. Resources deliberately shared across
+independent scopes must have an adapter contract that makes those scopes safe.
+
+An administrator can record recovery for an exact quarantined stage and epoch:
+
+```text
+orchestrator-engine resource recover --directory AUTHORITY_DIR --stage STAGE --epoch EPOCH --release RESOURCE --evidence EVIDENCE.json
+```
+
+The evidence must explicitly contain `quiescent: true` and a reason. This command
+records a prior quiescence assessment; it is not an automatic DB repair. Never
+clear ownership just because a timeout expired. Take backups only after stopping
+submissions, draining all allocations and stopping the service. Restoring a
+live/older ledger or transplanting it to another machine requires independent
+resource reconciliation; automatic backup-rollback detection is not provided.
+Do not delete an uncertain ledger and initialize another authority over live work.
+
+Runner evidence is written before the release transaction. The same transaction
+commits outcome, allocation release and terminal outbox eligibility. Delivery
+then projects project artifacts and existing terminal/wake contracts using stable
+subscriber event IDs. Each recovery incident has a separate immutable advisory
+and event identity; it does not finalize a first-class check as failed. Successful
+commands awaiting quiescence keep dependent stages waiting. Confirmed recovery
+can unblock those stages and produce a distinct final result. An undelivered
+advisory is superseded once its incident is resolved. Retries retain the captured
+outcome snapshot rather than substituting later stage state. Subscriber fields
+are validated at admission, and a malformed check projection cannot stop other
+subscribers' delivery. Delivery retries use deterministic non-AI backoff. Failed
+delivery cannot rerun commands or hold already released capacity. Keep authority
+snapshots, run evidence and ledger together; disposable test-output cleanup must
+not erase that evidence. Retention/compaction is not automatic.
+
+## Measurements and validation boundaries
+
+`resource metrics` reports sample counts, ready-to-grant and grant-to-launch
+delay, waits by reason, bypass count, oldest ready wait, recovery/protection
+counts, resource ownership wall time, capacity-unit seconds and observed
+release-to-next-grant delay. Shared owners' wall intervals are merged; their
+capacity-unit costs are summed. Ownership includes quarantine and is not useful
+CPU work. Per-project reports exclude other projects' private timelines.
+
+Missing durations, model activity and unsupported idle attribution remain
+`null`. Continuous executor-availability evidence is needed to distinguish
+avoidable idle time from downtime or protection costs; this report does not
+invent that evidence. Assignment search is exact and combinatorial: benchmark
+large overlapping selector registries before adoption. No fixed project-worker
+ceiling is used to conceal scheduling cost.
+
+`tests/test_resource_queue.py` exercises deterministic scheduling, SQLite
+concurrent writers, native admission, HTTP authorization, restart, first-class
+checks, partial release, probe failure and delivery retry with synthetic resources.
+The suite runs locally on Linux and Windows and is included in the native macOS
+and Windows CI jobs. A configured CI job is not evidence of an executed macOS
+queue test. Project DB/bridge integrations and real sleep/reboot recovery remain
+separate adopter acceptance work.

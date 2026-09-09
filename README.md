@@ -37,6 +37,11 @@ breakdowns and deterministic P50/P80 effort ranges without inventing a
 calendar deadline. See
 [productivity metrics and process advisor](docs/metrics.md).
 
+An unreleased opt-in [resource coordinator](docs/resource-coordination.md)
+queues conflicting checks across local projects, atomically acquires complete
+resource sets and lets independent work continue. Registered recipes keep
+database- and project-specific preparation outside the core.
+
 The core loop is small: snapshot the dispatching chat, start a detached
 operation, write a terminal event on completion, and let a host adapter deliver
 a bounded pointer to the durable artifacts. Any supported host can coordinate
@@ -106,14 +111,11 @@ canonical procedure. It contains host-specific branches, checks after each
 step, strict-admission examples and troubleshooting. The shorter sequence
 below is only a human-readable preview.
 
-In released v1.5.0, the complete detached runtime requires Linux or WSL. Native Windows
-and macOS support the portable core and compatible foreground checks, while
-detached commands fail before creating runtime artifacts. See the
-[platform support matrix](docs/platform-support.md).
-
-The source checkout adds native macOS and Windows runtime packages. Their
-contracts and separate native CI gates are described in
-[Native runtime packages](docs/native-runtime-packages.md).
+Version 1.6.0 supports the complete detached runtime on Linux, WSL, native
+Windows and macOS. Configured commands and external tools must support the
+selected OS. See the [platform support matrix](docs/platform-support.md) and
+[Native runtime packages](docs/native-runtime-packages.md) for containment
+boundaries and native CI acceptance.
 
 ### Manual preview
 
@@ -121,7 +123,7 @@ Install an immutable release, scaffold the project and bind the host chat:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.5.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.6.0"
 orchestrator-engine runtime-capabilities
 orchestrator-engine --project-root /path/to/project adopt --host HOST
 orchestrator-engine --project-root /path/to/project bind --host HOST

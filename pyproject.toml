@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "orchestrator-engine"
-version = "1.5.0"
+version = "1.6.0"
 description = "Local event-driven coordination for AI chats, CLI workers, checks and CI."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -46,6 +46,20 @@ test = ["jsonschema>=4.18,<5"]
 
 [project.scripts]
 orchestrator-engine = "orchestrator_engine.cli:main"
+
+[tool.hatch.build]
+exclude = [
+    "docs/agent-forum-draft.md",
+    "**/*.local.*",
+    "**/.docsystem*",
+    "**/.env",
+    "**/.env.*",
+    ".agents/**",
+    ".codex/**",
+    ".claude/**",
+    ".orchestrator/**",
+    ".paradigmarium/**",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/orchestrator_engine"]

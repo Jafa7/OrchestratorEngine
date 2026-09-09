@@ -8,12 +8,12 @@ import hashlib
 import json
 import re
 import sys
+import tarfile
 import tomllib
-from pathlib import Path
+import zipfile
+from pathlib import Path, PurePosixPath
 
-RELEASE_VERSION_PATTERN = re.compile(
-    r"^[0-9]+\.[0-9]+\.[0-9]+(?:rc[1-9][0-9]*)?$"
-)
+RELEASE_VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:rc[1-9][0-9]*)?$")
 
 
 class ReleaseBundleError(RuntimeError):
@@ -47,11 +47,7 @@ def changelog_section(root: Path, version: str) -> str:
         raise ReleaseBundleError(f"cannot read CHANGELOG.md: {error}") from error
     marker = re.compile(rf"^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}$")
     start = next(
-        (
-            index + 1
-            for index, line in enumerate(lines)
-            if marker.fullmatch(line)
-        ),
+        (index + 1 for index, line in enumerate(lines) if marker.fullmatch(line)),
         None,
     )
     if start is None:
@@ -88,6 +84,43 @@ def distribution_paths(dist_dir: Path, version: str) -> list[Path]:
     return [dist_dir / name for name in sorted(expected)]
 
 
+def verify_distribution_contents(path: Path) -> None:
+    """Reject private local state and unsafe member names before publication."""
+    try:
+        if path.suffix == ".whl":
+            with zipfile.ZipFile(path) as archive:
+                names = archive.namelist()
+        else:
+            with tarfile.open(path, "r:gz") as archive:
+                names = archive.getnames()
+    except (tarfile.TarError, zipfile.BadZipFile) as error:
+        raise ReleaseBundleError(
+            f"invalid distribution archive: {path.name}"
+        ) from error
+    private = {
+        ".git",
+        ".agents",
+        ".codex",
+        ".claude",
+        ".orchestrator",
+        ".paradigmarium",
+    }
+    for name in names:
+        member = PurePosixPath(name)
+        if member.is_absolute() or ".." in member.parts or "\\" in name:
+            raise ReleaseBundleError(f"unsafe distribution member: {name}")
+        if any(
+            part in private
+            or part == "agent-forum-draft.md"
+            or part.startswith(".docsystem")
+            or ".local." in part
+            or part == ".env"
+            or part.startswith(".env.")
+            for part in member.parts
+        ):
+            raise ReleaseBundleError(f"private local content in distribution: {name}")
+
+
 def expected_assets(
     paths: list[Path], checksums_path: Path
 ) -> dict[str, dict[str, object]]:
@@ -111,9 +144,7 @@ def verify_remote_assets(path: Path, expected: dict[str, dict[str, object]]) -> 
     ):
         raise ReleaseBundleError("remote release assets must be an array of objects")
     remote = {
-        item.get("name"): item
-        for item in assets
-        if isinstance(item.get("name"), str)
+        item.get("name"): item for item in assets if isinstance(item.get("name"), str)
     }
     if len(remote) != len(assets):
         raise ReleaseBundleError("remote release assets contain invalid names")
@@ -145,6 +176,8 @@ def prepare_bundle(
     if not dist_dir.is_dir():
         raise ReleaseBundleError(f"distribution directory does not exist: {dist_dir}")
     paths = distribution_paths(dist_dir, version)
+    for path in paths:
+        verify_distribution_contents(path)
     output_dir.mkdir(parents=True, exist_ok=True)
     notes_path = output_dir / "release-notes.md"
     notes_path.write_text(
@@ -173,8 +206,7 @@ def prepare_bundle(
         "notes_path": str(notes_path),
         "checksums_path": str(checksums_path),
         "assets": [
-            {"name": name, **metadata}
-            for name, metadata in sorted(expected.items())
+            {"name": name, **metadata} for name, metadata in sorted(expected.items())
         ],
         "remote_assets_verified": verify_assets_path is not None,
     }

@@ -4,6 +4,29 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-09
+
+- Excluded local private drafts and configuration from distributions and added
+  archive-content validation before CI acceptance and release publication.
+
+- Added native macOS and Windows detached workers, checks, monitors and watcher
+  lifecycle support, with native process identity and conservative recovery.
+- Added Windows Job Object containment, gated launch and crash cleanup, plus
+  macOS process identity and POSIX group cleanup on Intel and Apple Silicon.
+- Added native lifecycle and resource CI coverage on macOS Intel/ARM and Windows,
+  with Python 3.11 and 3.13, alongside the existing Linux and upgrade gates.
+
+- Added opt-in local resource coordination: transactional multi-resource grants,
+  shared capacity, aliases/pools/bundles, release-triggered fairness, registered
+  recipe execution, pinned input capture, cancellation and conservative recovery.
+- Added resource-managed first-class checks, loopback project credentials,
+  durable subscriber delivery and resource ownership/wait metrics.
+- Added synthetic scheduler and native resource lifecycle acceptance tests.
+- Fenced unadmitted release atomically, separated recovery advisories from final
+  check results, and preserved dependent work through successful recovery.
+- Pruned incompatible resource assignments during lazy search, validated
+  subscriber contracts, and isolated malformed result projections in delivery.
+
 ## [1.5.0] - 2026-09-08
 
 ### Accepted-plan execution

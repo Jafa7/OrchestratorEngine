@@ -1,7 +1,7 @@
 # Native runtime implementation packages
 
-These two integration packages extend the source checkout beyond the Linux/WSL
-runtime shipped in v1.5.0. They do not change the v1.5.0 release assets.
+Version 1.6.0 adds these two integration packages to the Linux/WSL runtime
+shipped in v1.5.0. Earlier release assets remain unchanged.
 macOS acceptance requires the native GitHub Actions jobs to pass for the exact
 candidate; a Linux mock result is not macOS acceptance evidence.
 

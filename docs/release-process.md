@@ -35,7 +35,8 @@ unless all of these conditions hold:
 - the tagged commit is reachable from `origin/main`;
 - the latest matching `CI` push run for the exact SHA, workflow and branch is
   `completed` with conclusion `success`;
-- wheel and sdist names match the version;
+- wheel and sdist names match the version, and their member paths exclude known
+  private local state, configuration and drafts;
 - an installed-wheel version check and full clean-fixture conformance pass;
 - uploaded asset names, sizes and GitHub SHA-256 digests match the local build.
 

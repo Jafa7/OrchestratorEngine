@@ -46,15 +46,12 @@ command -v codex
 command -v copilot
 ```
 
-Constraints: Python >= 3.11 on the machine where workers run. The complete
-detached runtime in released v1.5.0 requires Linux or WSL; native Windows and macOS
-support the portable core and compatible foreground checks only. See the
-[platform support matrix](platform-support.md). If the host is Codex Desktop
-on Windows in WSL mode, everything below runs inside WSL.
-
-The development source adds [native runtime packages](native-runtime-packages.md)
-for macOS and Windows. Those packages have separate native CI acceptance gates;
-installing the v1.5.0 tag below does not install these unreleased additions.
+Constraints: Python >= 3.11 on the machine where workers run. Version 1.6.0
+supports the complete detached runtime on Linux, WSL, native Windows and macOS.
+Configured commands and external tools must support the selected OS. See the
+[platform support matrix](platform-support.md) and
+[native runtime contracts](native-runtime-packages.md). If the host is Codex
+Desktop on Windows in WSL mode, everything below runs inside WSL.
 
 ## Step 1 — Install the engine
 
@@ -62,7 +59,7 @@ For a reproducible adopter install, use an immutable release tag:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.5.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.6.0"
 ```
 
 GitHub Release archives and wheel/sdist assets are published with the tag;

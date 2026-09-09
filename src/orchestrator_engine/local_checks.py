@@ -132,6 +132,23 @@ def read_suite(
     ):
         raise LocalCheckError("expected_duration_seconds must be non-negative")
     raw_commands = raw.get("commands")
+    if "resource_recipe" in raw:
+        from .resource_queue import digest, identifier
+
+        recipe = identifier(raw["resource_recipe"])
+        if raw_commands:
+            raise LocalCheckError(
+                "resource_recipe and local commands are mutually exclusive"
+            )
+        return {
+            "suite": suite,
+            "verification": verification_level,
+            "resource_recipe": recipe,
+            "commands": [],
+            "expected_duration_seconds": expected,
+            "fingerprint": digest(raw),
+            "config_path": str(path),
+        }
     if not isinstance(raw_commands, list) or not raw_commands:
         raise LocalCheckError(f"suite {suite!r} must define commands")
     if len(raw_commands) > MAX_COMMANDS:
@@ -150,9 +167,7 @@ def read_suite(
             or not all(isinstance(arg, str) and arg for arg in argv)
             or any(len(arg) > MAX_ARG_LENGTH for arg in argv)
         ):
-            raise LocalCheckError(
-                f"suite {suite!r} command {index} has invalid argv"
-            )
+            raise LocalCheckError(f"suite {suite!r} command {index} has invalid argv")
         argv_bytes += sum(len(arg.encode("utf-8")) for arg in argv)
         if argv_bytes > MAX_SUITE_ARGV_BYTES:
             raise LocalCheckError(
@@ -219,9 +234,9 @@ def read_suite(
         ],
     }
     fingerprint = hashlib.sha256(
-        json.dumps(
-            fingerprint_value, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
+        json.dumps(fingerprint_value, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
     ).hexdigest()
     return {
         "suite": suite,
@@ -297,6 +312,8 @@ def plan_check(
     else:
         execution = "foreground"
         reason = "unknown_non_full_duration"
+    if spec.get("resource_recipe"):
+        execution, reason = "detached", "resource_authority_owns_execution"
     return {
         "schema_version": core.SCHEMA_VERSION,
         "kind": "ORCHESTRATOR_LOCAL_CHECK_PLAN",
@@ -705,6 +722,18 @@ def start_check(
     project = project_root.expanduser().resolve()
     check_id = validate_id(check_id, field="check id")
     spec = read_suite(project, suite=suite, state_dir=state_dir)
+    if spec.get("resource_recipe"):
+        from . import resource_checks
+
+        return resource_checks.start(
+            project,
+            check_id=check_id,
+            spec=spec,
+            execution=execution,
+            wake_policy=wake_policy,
+            state_dir=state_dir,
+            long_threshold_seconds=long_threshold_seconds,
+        )
     plan = plan_check(
         project,
         suite=suite,
@@ -846,6 +875,10 @@ def supervise_check(
     lock = path.with_suffix(".lock")
     with file_lock(lock):
         descriptor = load_check_descriptor(path)
+        if descriptor.get("resource_managed"):
+            raise LocalCheckError(
+                "resource authority owns this check; use resource status/cancel"
+            )
         if descriptor.get("status") in TERMINAL_STATUSES:
             return descriptor
         if descriptor.get("status") == "running":
@@ -1051,9 +1084,7 @@ def finalize_launch_failure(
         signal_path=event["signal_path"],
     )
     core.atomic_json(
-        descriptor_path(
-            project, str(descriptor["check_id"]), state_dir=state_dir
-        ),
+        descriptor_path(project, str(descriptor["check_id"]), state_dir=state_dir),
         descriptor,
     )
     return descriptor
@@ -1085,9 +1116,7 @@ def recover_completed_check(
     evidence_path = directory / "evidence.json"
     summary_path = directory / "summary.txt"
     if not (
-        result_path.is_file()
-        and evidence_path.is_file()
-        and summary_path.is_file()
+        result_path.is_file() and evidence_path.is_file() and summary_path.is_file()
     ):
         return None
     try:
@@ -1135,9 +1164,7 @@ def recover_completed_check(
         recovered_at=core.utc_now(),
     )
     core.atomic_json(
-        descriptor_path(
-            project, str(descriptor["check_id"]), state_dir=state_dir
-        ),
+        descriptor_path(project, str(descriptor["check_id"]), state_dir=state_dir),
         descriptor,
     )
     return descriptor
@@ -1172,6 +1199,14 @@ def reap_checks(
                         "check_id": path.parent.name,
                         "status": "invalid",
                         "reason": str(error)[:1000],
+                    }
+                )
+                continue
+            if descriptor.get("resource_managed"):
+                outcomes.append(
+                    {
+                        "check_id": descriptor["check_id"],
+                        "status": "resource_authority_owns_recovery",
                     }
                 )
                 continue
@@ -1331,18 +1366,19 @@ def check_status(
         except (OSError, RuntimeError, ValueError) as error:
             invalid.append({"path": str(path), "error": str(error)})
             continue
+        if descriptor.get("resource_managed"):
+            from . import resource_checks
+
+            checks.append(resource_checks.status(project, descriptor))
+            continue
         effective_status = descriptor.get("status")
         process = None
         if effective_status == "running":
-            process = worker_lease.identity_state(
-                descriptor.get("supervisor_identity")
-            )
+            process = worker_lease.identity_state(descriptor.get("supervisor_identity"))
             if process["state"] == "gone":
                 effective_status = "crashed"
         elif effective_status == "starting":
-            process = worker_lease.identity_state(
-                descriptor.get("supervisor_identity")
-            )
+            process = worker_lease.identity_state(descriptor.get("supervisor_identity"))
             age = timestamp_age(descriptor.get("created_at"))
             if process["state"] == "gone":
                 effective_status = "crashed"

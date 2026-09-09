@@ -58,6 +58,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--state-dir", default=core.DEFAULT_STATE_DIR)
     subparsers = parser.add_subparsers(dest="command", required=True)
+    from . import resource_cli
+
+    resource_cli.add_parser(subparsers)
 
     emit = subparsers.add_parser(
         "emit",
@@ -1192,7 +1195,15 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     roots = project_roots(args)
     try:
-        if args.command == "emit":
+        if args.command == "resource":
+            from . import resource_cli
+
+            if len(roots) != 1:
+                raise core.OrchestratorError(
+                    "resource commands require one project root"
+                )
+            print_json(resource_cli.run(args, roots[0]))
+        elif args.command == "emit":
             if len(roots) != 1:
                 raise core.OrchestratorError("emit requires exactly one project root")
             output = core.write_terminal_event(

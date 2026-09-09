@@ -1,10 +1,8 @@
 # Platform support
 
-The table below describes released v1.5.0. The source checkout additionally
-implements native macOS and Windows lifecycle backends; see
-[Native runtime packages](native-runtime-packages.md) for the implementation
-scope and the separate native CI acceptance gates. Until those gates pass on
-the candidate, source implementation is not release certification.
+The table below describes v1.6.0. Native macOS and Windows lifecycle backends
+join Linux/WSL support. See [Native runtime packages](native-runtime-packages.md)
+for process containment boundaries and the exact-candidate CI acceptance gates.
 
 OrchestratorEngine separates its portable data/CLI core from the process
 lifecycle guarantees required by detached workers, monitors and watcher
@@ -22,8 +20,8 @@ commands reject the request before creating task or service artifacts.
 | --- | --- | --- | --- |
 | Linux | Supported | Supported | Supported |
 | Windows with WSL | Supported inside WSL | Supported inside WSL | Supported inside WSL |
-| Native Windows | Supported | Supported for portable configured commands | Not currently supported; use WSL or Linux |
-| macOS | Supported | Supported for portable configured commands | Not currently supported; use Linux |
+| Native Windows | Supported | Supported for portable configured commands | Supported with native Job Objects |
+| macOS | Supported | Supported for portable configured commands | Supported with native POSIX groups |
 
 The portable core includes package import, schemas, immutable JSON contracts,
 read-only capability reports, bounded status inspection and cross-process
@@ -31,16 +29,12 @@ advisory locks. Native Windows is exercised directly during development and
 Windows and macOS portable-core imports and locking are checked in CI. Windows
 lock acquisition follows the standard-library `msvcrt` bounded wait; failure
 to acquire the lock is reported instead of proceeding without exclusivity.
-Process inspection on Windows opens a query handle and never uses POSIX-style
-signal zero. Reaper commands remain unavailable outside Linux because an
-unreadable Linux process identity is `unknown`, not evidence that a supervisor
-has exited.
-
-Released v1.5.0 detached lifecycle support requires Linux `/proc` process identity
-and POSIX process-group behavior. The engine does not silently substitute a
-weaker process model on another operating system because doing so could report
-a recycled process as the original supervisor or leave descendants running.
-This is an implementation boundary, not provider-specific policy.
+Process inspection uses native kernel creation identities: Linux process-stat
+ticks and boot ID, macOS BSD process start time and boot-session UUID, and
+Windows creation FILETIME and machine identity. Unavailable identity is unknown,
+not evidence of exit. Native Windows termination uses Job Objects; Linux and
+macOS use POSIX groups. Deliberately escaped POSIX groups and cross-OS process
+bridges require separate adopter containment contracts.
 
 Host delivery may cross that boundary through platform interop. For example,
 an engine running in WSL can invoke the Windows Codex or VS Code CLI while

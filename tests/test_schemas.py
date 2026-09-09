@@ -85,6 +85,19 @@ class SchemaContractTests(unittest.TestCase):
                     list(self.validators["worker-lease"].iter_errors(value))
                 )
 
+    def test_local_check_native_paths_and_resource_token_exclusion(self):
+        root = Path(__file__).parent / "fixtures/schemas/valid"
+        fixture = json.loads((root / "local-check.json").read_text())
+        for path in (
+            "C:\\Projects\\sample\\.orchestrator\\checks\\check-1",
+            "/tmp/check-1",
+        ):
+            fixture["check_dir"] = path
+            self.validators["local-check"].validate(fixture)
+        snapshot = json.loads((root / "resource-queue.json").read_text())
+        snapshot["stages"][0]["launch_token"] = "must-not-leak"
+        self.assertTrue(list(self.validators["resource-queue"].iter_errors(snapshot)))
+
     def test_guidance_fixture_matches_operation_only_semantics(self) -> None:
         path = (
             Path(__file__).parent
@@ -227,9 +240,7 @@ class SchemaContractTests(unittest.TestCase):
                     [],
                 )
                 artifact["worker_policy"]["files"][0]["sha256"] = "invalid"
-                self.assertTrue(
-                    list(self.validators[name].iter_errors(artifact))
-                )
+                self.assertTrue(list(self.validators[name].iter_errors(artifact)))
 
     def test_worker_execution_snapshot_ref_uses_packaged_registry(self) -> None:
         root = Path(__file__).parent / "fixtures" / "schemas" / "valid"
@@ -256,9 +267,7 @@ class SchemaContractTests(unittest.TestCase):
         failed_without_reason = {**copy.deepcopy(report), "status": "failed"}
         self.assertTrue(
             list(
-                self.validators["conformance-report"].iter_errors(
-                    failed_without_reason
-                )
+                self.validators["conformance-report"].iter_errors(failed_without_reason)
             )
         )
 
@@ -270,9 +279,7 @@ class SchemaContractTests(unittest.TestCase):
         }
         self.assertTrue(
             list(
-                self.validators["conformance-report"].iter_errors(
-                    retained_without_path
-                )
+                self.validators["conformance-report"].iter_errors(retained_without_path)
             )
         )
 
@@ -352,11 +359,7 @@ class SchemaContractTests(unittest.TestCase):
             "event_id": "different-event-id",
         }
         self.assertTrue(
-            list(
-                self.validators["conformance-report"].iter_errors(
-                    repeated_recovery
-                )
-            )
+            list(self.validators["conformance-report"].iter_errors(repeated_recovery))
         )
 
         wrong_host_partition = copy.deepcopy(full)
@@ -366,9 +369,7 @@ class SchemaContractTests(unittest.TestCase):
         }
         self.assertTrue(
             list(
-                self.validators["conformance-report"].iter_errors(
-                    wrong_host_partition
-                )
+                self.validators["conformance-report"].iter_errors(wrong_host_partition)
             )
         )
 
@@ -430,9 +431,7 @@ class SchemaContractTests(unittest.TestCase):
         missing_discovery_evidence.pop("discovery")
         self.assertTrue(
             list(
-                self.validators["github-actions-monitor"].iter_errors(
-                    short_sha_monitor
-                )
+                self.validators["github-actions-monitor"].iter_errors(short_sha_monitor)
             )
         )
         self.assertTrue(

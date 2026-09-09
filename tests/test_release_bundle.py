@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -28,10 +31,17 @@ class ReleaseBundleTests(unittest.TestCase):
         )
         dist = root / "dist"
         dist.mkdir()
-        (dist / f"orchestrator_engine-{version}-py3-none-any.whl").write_bytes(
-            b"wheel"
-        )
-        (dist / f"orchestrator_engine-{version}.tar.gz").write_bytes(b"sdist")
+        with zipfile.ZipFile(
+            dist / f"orchestrator_engine-{version}-py3-none-any.whl", "w"
+        ) as archive:
+            archive.writestr("orchestrator_engine/__init__.py", "# public package")
+        with tarfile.open(
+            dist / f"orchestrator_engine-{version}.tar.gz", "w:gz"
+        ) as archive:
+            content = b"# Public source"
+            item = tarfile.TarInfo(f"orchestrator_engine-{version}/README.md")
+            item.size = len(content)
+            archive.addfile(item, io.BytesIO(content))
         output = root / "release"
         return dist, output
 
@@ -73,14 +83,47 @@ class ReleaseBundleTests(unittest.TestCase):
             report = json.loads(completed.stdout)
             notes = (output / "release-notes.md").read_text(encoding="utf-8")
             checksums = (output / "SHA256SUMS").read_text(encoding="utf-8")
+            expected_digests = [
+                hashlib.sha256(p.read_bytes()).hexdigest() for p in dist.iterdir()
+            ]
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(report["tag"], "v1.2.3")
         self.assertFalse(report["prerelease"])
         self.assertIn("Release automation.", notes)
         self.assertNotIn("Older change.", notes)
-        self.assertIn(hashlib.sha256(b"wheel").hexdigest(), checksums)
-        self.assertIn(hashlib.sha256(b"sdist").hexdigest(), checksums)
+        for expected in expected_digests:
+            self.assertIn(expected, checksums)
+
+    def test_private_or_unsafe_archive_member_blocks_publication(self):
+        for member in (
+            "docs/agent-forum-draft.md",
+            ".agents/local/policy.md",
+            ".env",
+            "config.local.toml",
+            "../outside",
+        ):
+            for extension in ("whl", "tar.gz"):
+                with (
+                    self.subTest(member=member, extension=extension),
+                    tempfile.TemporaryDirectory() as temporary,
+                ):
+                    root = Path(temporary)
+                    dist, output = self.create_fixture(root)
+                    archive_path = next(dist.glob(f"*.{extension}"))
+                    if extension == "whl":
+                        with zipfile.ZipFile(archive_path, "a") as archive:
+                            archive.writestr(member, "synthetic private content")
+                    else:
+                        with tarfile.open(archive_path, "w:gz") as archive:
+                            item = tarfile.TarInfo(
+                                "orchestrator_engine-1.2.3/" + member
+                            )
+                            archive.addfile(item, io.BytesIO(b""))
+                    result = self.run_preparer(root, dist, output)
+                    self.assertEqual(result.returncode, 1, result.stdout)
+                    self.assertIn("distribution", result.stderr)
+                    self.assertFalse(output.exists())
 
     def test_tag_must_match_project_version(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

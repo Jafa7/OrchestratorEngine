@@ -45,6 +45,7 @@ SCHEMA_NAMES = (
     "workstream-result",
     "workstream-evidence",
     "local-check",
+    "resource-queue",
     "local-check-evidence",
     "check-duration-history",
     "task-resolution",

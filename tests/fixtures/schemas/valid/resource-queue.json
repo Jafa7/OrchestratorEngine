@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_RESOURCE_QUEUE",
+  "authority": "synthetic-authority",
+  "terminal": false,
+  "action_required": false,
+  "stages": [{
+    "id": "synthetic-stage",
+    "request": "synthetic-request",
+    "project": "sample",
+    "name": "verify",
+    "state": "waiting",
+    "epoch": 0,
+    "allocation": {}
+  }]
+}

@@ -3,6 +3,22 @@
 This guide covers OrchestratorEngine runtime state upgrades. It is separate
 from project-specific legacy bridge work, which belongs in adopting projects.
 
+## Version 1.6.0 native runtimes and resource coordination
+
+Native macOS and Windows now support detached lifecycle operations. Upgrade all
+CLI, supervisor and watcher readers together before creating native runtime
+state; older Linux-only versions cannot manage it. Drain native services with
+the version that created them before a downgrade. Existing Linux JSON contracts
+remain schema version 1; no automatic project configuration migration occurs.
+
+Resource coordination is opt-in. Register an authority on a native local
+filesystem, explicit projects and recipes, and project-owned quiescence probes
+where required. Existing checks continue unchanged unless their suite selects
+`resource_recipe`. Docker and any particular database are not required. Do not
+share a live authority ledger between operating systems or restore an older
+ledger over live owners. See [resource coordination](resource-coordination.md)
+and [native runtime packages](native-runtime-packages.md).
+
 ## Version 1.5.0 continuation limits
 
 New workstreams are unlimited by default; existing numeric descriptors retain
@@ -21,7 +37,7 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release is `1.5.0` and the durable JSON contract schema version is
+The current release is `1.6.0` and the durable JSON contract schema version is
 `1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
@@ -29,7 +45,7 @@ PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.5.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.6.0"
 ```
 
 ## Version 1.5.0 optional metrics
