@@ -1011,6 +1011,12 @@ def client(connection, action, payload):
         raise ResourceError(
             "resource authority unavailable; ownership has not been cleared"
         ) from error
+    except OSError as error:
+        # Windows can surface an aborted loopback socket directly instead of
+        # wrapping it in URLError. Keep transport failures inside the public API.
+        raise ResourceError(
+            "resource authority unavailable; ownership has not been cleared"
+        ) from error
 
 
 def connect(directory, project, root):

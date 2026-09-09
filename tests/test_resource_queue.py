@@ -119,6 +119,30 @@ class QueueTests(unittest.TestCase):
                     inputs={relative: "b" * 64},
                 )
 
+    def test_client_normalizes_direct_socket_abort(self):
+        opener = mock.Mock()
+        opener.open.side_effect = ConnectionAbortedError("loopback aborted")
+        connection = {
+            "url": "http://127.0.0.1:12345",
+            "authority": "synthetic-authority",
+            "project": "sample",
+            "token": "secret",
+        }
+        with (
+            mock.patch.object(
+                worker_lease,
+                "identity_state",
+                return_value={"state": "alive", "identity_verified": True},
+            ),
+            mock.patch.object(
+                resource_service.urllib.request,
+                "build_opener",
+                return_value=opener,
+            ),
+            self.assertRaisesRegex(ResourceError, "authority unavailable"),
+        ):
+            client(connection, "status", {"request": "synthetic"})
+
     def test_rejected_token_cannot_release_another_supervisor(self):
         self.submit([need("A")])
         stage = self.ledger.schedule()[0]

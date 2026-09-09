@@ -10,6 +10,8 @@ All notable changes to OrchestratorEngine are documented here.
   orphan-prone launchers. Exact replay remains idempotent, changed contracts
   conflict, and first admission still verifies and captures the registered
   live root.
+- Native loopback socket aborts are normalized as public `ResourceError`
+  failures instead of leaking platform-specific `OSError` subclasses.
 
 ## [1.8.1] - 2026-09-09
 
