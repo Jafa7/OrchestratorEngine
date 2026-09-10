@@ -982,8 +982,13 @@ class ResourceNativeTests(unittest.TestCase):
     def test_missing_runner_evidence_blocks_delivery_but_not_capacity(self):
         authority = Authority(self.directory)
         request = authority.submit("sample", self.payload())["request"]
-        authority.tick()
-        next(iter(authority.children.values())).wait(timeout=15)
+        with contextlib.closing(Ledger(self.directory)) as ledger:
+            stage = ledger.schedule()[0]
+            ledger.attach(stage["id"], stage["epoch"], {"pid": os.getpid()})
+        with mock.patch.object(resource_service.Authority, "deliver_pending"):
+            resource_runner.execute(
+                self.directory, stage["id"], stage["launch_token"]
+            )
         with contextlib.closing(Ledger(self.directory)) as ledger:
             path = Path(ledger.stages(request)[0]["evidence"]["path"])
             path.unlink()
@@ -1136,21 +1141,54 @@ class ResourceNativeTests(unittest.TestCase):
 
     def test_native_execution_and_durable_delivery(self):
         authority = Authority(self.directory)
-        request = authority.submit("sample", self.payload())["request"]
+        payload = self.payload()
+        payload["subscriber"]["wake"] = True
+        request = authority.submit("sample", payload)["request"]
         authority.tick()
         with contextlib.closing(Ledger(self.directory)) as ledger:
             stage = ledger.stages(request)[0]
         process = authority.children[stage["id"]]
         self.assertEqual(process.wait(timeout=15), 0)
-        authority.tick()
         with contextlib.closing(Ledger(self.directory)) as ledger:
             result = ledger.snapshot("sample", request)
             self.assertEqual(result["stages"][0]["state"], "passed", result)
-            self.assertEqual(
-                ledger.db.execute("SELECT delivered FROM outbox").fetchone()[0], 1
-            )
+            outbox = ledger.db.execute("SELECT id,delivered FROM outbox").fetchone()
+            self.assertEqual(outbox["delivered"], 1)
         output = self.project / ".orchestrator" / "resources" / request / "result.json"
         self.assertTrue(output.exists())
+        self.assertTrue(core.event_path_for(self.project, outbox["id"]).exists())
+        self.assertTrue(core.signal_path_for(self.project, outbox["id"]).exists())
+
+    def test_runner_delivery_failure_keeps_terminal_outbox_retriable(self):
+        authority = Authority(self.directory)
+        request = authority.submit("sample", self.payload())["request"]
+        with contextlib.closing(Ledger(self.directory)) as ledger:
+            stage = ledger.schedule()[0]
+            ledger.attach(stage["id"], stage["epoch"], {"pid": os.getpid()})
+        with mock.patch.object(
+            resource_service.Authority,
+            "deliver_pending",
+            side_effect=OSError("projection unavailable"),
+        ):
+            resource_runner.execute(
+                self.directory, stage["id"], stage["launch_token"]
+            )
+        with contextlib.closing(Ledger(self.directory)) as ledger:
+            self.assertEqual(ledger.stage(stage["id"])["state"], "passed")
+            outbox = ledger.db.execute(
+                "SELECT delivered,attempts FROM outbox"
+            ).fetchone()
+            self.assertEqual(tuple(outbox), (0, 0))
+        authority.deliver_pending()
+        self.assertTrue(
+            (
+                self.project
+                / ".orchestrator"
+                / "resources"
+                / request
+                / "result.json"
+            ).exists()
+        )
 
     def test_snapshot_replay_and_drift_rejection(self):
         authority = Authority(self.directory)
@@ -1452,9 +1490,13 @@ class ResourceNativeTests(unittest.TestCase):
     def test_delivery_failure_does_not_retain_resource(self):
         authority = Authority(self.directory)
         request = authority.submit("sample", self.payload())["request"]
-        authority.tick()
-        process = next(iter(authority.children.values()))
-        process.wait(timeout=15)
+        with contextlib.closing(Ledger(self.directory)) as ledger:
+            stage = ledger.schedule()[0]
+            ledger.attach(stage["id"], stage["epoch"], {"pid": os.getpid()})
+        with mock.patch.object(resource_service.Authority, "deliver_pending"):
+            resource_runner.execute(
+                self.directory, stage["id"], stage["launch_token"]
+            )
         with mock.patch(
             "orchestrator_engine.core.write_followup_event",
             side_effect=OSError("offline"),

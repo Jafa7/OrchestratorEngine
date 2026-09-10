@@ -819,6 +819,15 @@ class Authority:
                     ),
                 )
 
+    def deliver_pending(self, *, timeout_seconds=5):
+        """Serialize terminal projection across the service and runner fallback."""
+
+        with self.lock, platform_runtime.exclusive_file_lock(
+            self.directory / "delivery.lock",
+            timeout_seconds=timeout_seconds,
+        ), contextlib.closing(Ledger(self.directory)) as ledger:
+            self.deliver(ledger)
+
     def tick(self, *, deliver_results=True):
         with self.lock, contextlib.closing(Ledger(self.directory)) as ledger:
             self.reconcile(ledger)
@@ -838,14 +847,14 @@ class Authority:
                         [],
                         {"reason": "launch_uncertain", "error": str(error)},
                     )
-            if deliver_results:
-                self.deliver(ledger)
             for stage_id, process in list(self.children.items()):
                 if (
                     ledger.stage(stage_id)["state"] not in OWNING
                     and process.poll() is not None
                 ):
                     del self.children[stage_id]
+        if deliver_results:
+            self.deliver_pending()
 
 
 class LoopbackHTTPServer(ThreadingHTTPServer):
@@ -923,8 +932,8 @@ def serve(directory, *, port=0, stop=None, ready=None):
 
         def dispatch():
             while not stop.is_set():
-                with contextlib.closing(Ledger(directory)) as ledger:
-                    authority.deliver(ledger)
+                with contextlib.suppress(platform_runtime.PlatformRuntimeError):
+                    authority.deliver_pending(timeout_seconds=0.2)
                 stop.wait(0.2)
 
         transport = threading.Thread(

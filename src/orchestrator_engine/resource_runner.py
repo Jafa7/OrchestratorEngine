@@ -272,6 +272,16 @@ def execute(directory, stage_id, token):
                 "process_quiescent": quiescent,
             },
         )
+    # Terminal state and outbox insertion are already durable. Project the
+    # result before this supervisor exits so delivery does not depend on the
+    # long-lived authority surviving an enclosing native process scope.
+    try:
+        from .resource_service import Authority
+
+        Authority(directory).deliver_pending()
+    except (OSError, core.OrchestratorError, ValueError, TypeError, KeyError) as error:
+        # The undelivered outbox remains the recovery source of truth.
+        print(f"resource terminal delivery deferred: {error}", file=sys.stderr)
 
 
 def main():

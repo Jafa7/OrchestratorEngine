@@ -161,6 +161,13 @@ the registered project. New connection files resolve the current endpoint from
 the private authority directory, so an ordinary service restart does not require
 another `connect`; reconnect once after upgrading an older connection file. Do
 not commit that file or authority configuration.
+Start or restart the authority outside every owned recipe/check/worker process
+tree. A native containment boundary is required to terminate descendants, so a
+service bootstrapped by contained project code is not durable even when that
+child uses ordinary detached-process flags. Terminal runners independently
+flush their durable outbox before exiting, which preserves the result and
+follow-up event at this boundary; the authority must still be restarted by its
+external service owner before later status, submission or scheduling calls.
 Each project has a distinct bearer credential. Browser-origin requests and
 environment-configured HTTP proxies are excluded. Clients can request only
 registered recipes and inspect their own project; registration is a local

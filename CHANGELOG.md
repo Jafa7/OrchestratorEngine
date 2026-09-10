@@ -4,6 +4,16 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-09-10
+
+- Resource runners now project their durable terminal outbox before exiting,
+  under the same interprocess delivery lock as the authority service. A result
+  and follow-up event therefore survive an authority process lost at the native
+  containment boundary, while failed projection remains safely retriable.
+- Documented that a resource authority must be owned outside recipe, check and
+  worker process trees; ordinary detached flags do not escape owned native
+  containment.
+
 ## [1.9.0] - 2026-09-09
 
 - Added a public retained resource input contract and CLI flow for delayed or
