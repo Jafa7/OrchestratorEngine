@@ -32,7 +32,9 @@ Before creating a tag:
    resolves the immutable SHA locally, then waits and wakes the dispatching
    chat without model polling.
 6. Create an annotated `vX.Y.Z` stable tag or `vX.Y.ZrcN` release-candidate
-   tag on that exact commit and push the tag.
+   tag on that exact commit and push the tag. Do not run `gh release create`:
+   the tag workflow exclusively owns draft creation, asset verification and
+   publication.
 
 `release preflight` never commits, fetches, tags, pushes or publishes. Its
 remote tag check uses read-only `git ls-remote`; pass `--offline` only when the

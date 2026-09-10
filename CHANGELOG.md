@@ -4,6 +4,15 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [1.9.2] - 2026-09-10
+
+- Reissued the resource terminal-delivery fix with a complete workflow-owned
+  release bundle after the `v1.9.1` GitHub Release was published prematurely
+  without assets. Runtime and durable-data contracts are unchanged from
+  `v1.9.1`.
+- Clarified that maintainers and agents must not create a GitHub Release before
+  the tag workflow creates and verifies its draft.
+
 ## [1.9.1] - 2026-09-10
 
 - Resource runners now project their durable terminal outbox before exiting,

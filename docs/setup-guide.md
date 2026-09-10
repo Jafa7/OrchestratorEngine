@@ -46,7 +46,7 @@ command -v codex
 command -v copilot
 ```
 
-Constraints: Python >= 3.11 on the machine where workers run. Version 1.9.1
+Constraints: Python >= 3.11 on the machine where workers run. Version 1.9.2
 supports the complete detached runtime on Linux, WSL, native Windows and macOS.
 Configured commands and external tools must support the selected OS. See the
 [platform support matrix](platform-support.md) and
@@ -59,7 +59,7 @@ For a reproducible adopter install, use an immutable release tag:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.9.1"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.9.2"
 ```
 
 GitHub Release archives and wheel/sdist assets are published with the tag;
@@ -90,7 +90,7 @@ Before continuing with detached workers or a watcher service, expect
 `"detached_lifecycle": "supported"`. An unsupported result is not repaired by
 installing a provider CLI.
 
-The installed v1.9.1 package includes `orchestrator-engine conformance run`.
+The installed v1.9.2 package includes `orchestrator-engine conformance run`.
 Run it here without a provider CLI or credentials. Its default `auto` mode
 runs the full detached synthetic-worker path when that lifecycle is supported
 and otherwise verifies the portable event, signal, notification and
@@ -101,10 +101,10 @@ Full mode additionally checks six concurrent
 synthetic workers, aggregate waits, host-scoped signal routing and deterministic
 reaping of an abandoned unclaimed task descriptor. Continue only when its JSON
 report says `"status": "passed"`; a failed fixture is retained at the reported
-path for diagnosis. This is a required check for the v1.9.1 installation;
+path for diagnosis. This is a required check for the v1.9.2 installation;
 older pinned releases that lack the command need their own upgrade procedure.
 
-The v1.9.1 CI runs native lifecycle, resource coordination, full conformance and
+The v1.9.2 CI runs native lifecycle, resource coordination, full conformance and
 bounded acceptance soaks from the candidate wheel on macOS Intel/ARM and
 Windows, including native Python 3.12 coverage, plus portable-core checks. The
 Linux wheel smoke also runs full conformance without `PYTHONPATH`, covering the

@@ -20,6 +20,10 @@ documented contracts.
 - Preserve existing user changes.
 - Do not commit, push, merge, rebase or perform destructive Git operations
   unless the user explicitly asks.
+- For a release, never create or publish the GitHub Release before the tag
+  workflow. Push the annotated tag only after exact-SHA CI succeeds, then let
+  `.github/workflows/release.yml` create its draft, verify assets and publish.
+  Monitor that workflow before announcing the release.
 - Run git stage/commit operations from inside WSL for this checkout. Do not
   stage or commit from Windows Git over `\\wsl.localhost`; it can corrupt
   executable-bit metadata for scripts.
