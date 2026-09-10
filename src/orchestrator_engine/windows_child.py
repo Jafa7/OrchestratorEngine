@@ -12,6 +12,21 @@ import subprocess
 import sys
 
 
+def call_hidden(argv: list[str]) -> int:
+    """Launch the admitted command without allocating a Windows console."""
+
+    # CREATE_NO_WINDOW does not supply console standard handles. Pass the
+    # launcher's redirected streams explicitly so Popen duplicates them into
+    # the admitted child instead of silently discarding durable output.
+    return subprocess.call(
+        argv,
+        stdin=sys.stdin,
+        stdout=sys.stdout,
+        stderr=sys.stderr,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+
+
 def main() -> int:
     import msvcrt
 
@@ -25,7 +40,7 @@ def main() -> int:
     # it until launcher exit lets a detached dispatcher leave independently.
     retained_job = int(admission[1])
     try:
-        return subprocess.call(sys.argv[2:])
+        return call_hidden(sys.argv[2:])
     except OSError as error:
         print(f"orchestrator command launch failed: {error}", file=sys.stderr)
         return 127

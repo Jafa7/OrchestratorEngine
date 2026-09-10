@@ -168,6 +168,28 @@ child uses ordinary detached-process flags. Terminal runners independently
 flush their durable outbox before exiting, which preserves the result and
 follow-up event at this boundary; the authority must still be restarted by its
 external service owner before later status, submission or scheduling calls.
+On Windows, a custom external launcher must use `CREATE_NO_WINDOW` without
+`DETACHED_PROCESS` or `CREATE_NEW_CONSOLE`; Windows ignores `CREATE_NO_WINDOW`
+when either console-allocation mode is present. `CREATE_NEW_PROCESS_GROUP` may
+be combined with `CREATE_NO_WINDOW`, and standard input/output/error must be
+redirected. For example:
+
+```python
+flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+subprocess.Popen(
+    [runtime_python, "-m", "orchestrator_engine.cli", *arguments],
+    stdin=subprocess.DEVNULL,
+    stdout=service_log,
+    stderr=service_log,
+    close_fds=True,
+    creationflags=flags,
+)
+```
+
+This launch policy controls console visibility; it does not move the authority
+out of an enclosing Job Object. The service owner must already be outside every
+owned operation tree.
+
 Each project has a distinct bearer credential. Browser-origin requests and
 environment-configured HTTP proxies are excluded. Clients can request only
 registered recipes and inspect their own project; registration is a local

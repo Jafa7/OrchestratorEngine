@@ -4,6 +4,13 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [1.9.3] - 2026-09-10
+
+- Windows managed-process barriers now propagate `CREATE_NO_WINDOW` to the
+  admitted command and reject creation flags that would allocate a console.
+  The resource-authority guide also documents the safe external launcher flags
+  so long checks do not open an empty Windows Terminal window.
+
 ## [1.9.2] - 2026-09-10
 
 - Reissued the resource terminal-delivery fix with a complete workflow-owned

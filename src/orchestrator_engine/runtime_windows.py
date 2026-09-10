@@ -342,10 +342,17 @@ class JobProcess(subprocess.Popen):
         self.runtime_identity = None
         kwargs.pop("start_new_session", None)
         kwargs.pop("process_group", None)
-        # No visible console is created for internal launchers or commands.
-        kwargs["creationflags"] = (
-            kwargs.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
+        creationflags = kwargs.get("creationflags", 0)
+        incompatible = creationflags & (
+            subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_CONSOLE
         )
+        if incompatible:
+            raise ValueError(
+                "managed Windows commands cannot use DETACHED_PROCESS or "
+                "CREATE_NEW_CONSOLE; JobProcess owns detachment and console hiding"
+            )
+        # No visible console is created for internal launchers or commands.
+        kwargs["creationflags"] = creationflags | subprocess.CREATE_NO_WINDOW
         read_fd, write_fd = os.pipe()
         try:
             os.set_inheritable(read_fd, True)

@@ -331,6 +331,64 @@ class MacOSIdentityTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name == "nt", "requires native Windows Job Objects")
 class WindowsJobTests(unittest.TestCase):
+    def test_hidden_child_call_forwards_no_console_flag(self):
+        from orchestrator_engine import windows_child
+
+        with mock.patch.object(
+            windows_child.subprocess, "call", return_value=17
+        ) as call:
+            self.assertEqual(windows_child.call_hidden(["tool", "arg"]), 17)
+        call.assert_called_once_with(
+            ["tool", "arg"],
+            stdin=windows_child.sys.stdin,
+            stdout=windows_child.sys.stdout,
+            stderr=windows_child.sys.stderr,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+
+    def test_managed_process_rejects_console_allocating_flags(self):
+        for flag in (subprocess.DETACHED_PROCESS, subprocess.CREATE_NEW_CONSOLE):
+            with self.subTest(flag=flag), self.assertRaisesRegex(
+                ValueError, "cannot use DETACHED_PROCESS or CREATE_NEW_CONSOLE"
+            ):
+                platform_runtime.spawn(
+                    subprocess.Popen,
+                    [sys.executable, "-c", "raise SystemExit(0)"],
+                    creationflags=flag,
+                )
+
+    def test_managed_command_and_descendant_have_no_visible_console(self):
+        grandchild = (
+            "import ctypes,json; "
+            "h=ctypes.windll.kernel32.GetConsoleWindow(); "
+            "print(json.dumps({'console':int(h or 0),"
+            "'visible':bool(h and ctypes.windll.user32.IsWindowVisible(h))}))"
+        )
+        child = (
+            "import ctypes,json,subprocess,sys; "
+            "h=ctypes.windll.kernel32.GetConsoleWindow(); "
+            "run=subprocess.run([sys.executable,'-c',sys.argv[1]],"
+            "capture_output=True,text=True,check=True); "
+            "print(json.dumps({'console':int(h or 0),"
+            "'visible':bool(h and ctypes.windll.user32.IsWindowVisible(h)),"
+            "'grandchild':json.loads(run.stdout)}))"
+        )
+        process = platform_runtime.spawn(
+            subprocess.Popen,
+            [sys.executable, "-c", child, grandchild],
+            owned=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        output, error = process.communicate(timeout=10)
+        self.assertEqual(process.returncode, 0, error)
+        report = json.loads(output)
+        self.assertEqual(report["console"], 0)
+        self.assertFalse(report["visible"])
+        self.assertEqual(report["grandchild"]["console"], 0)
+        self.assertFalse(report["grandchild"]["visible"])
+
     def test_venv_redirected_watcher_heartbeat_is_owned_and_stops(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
