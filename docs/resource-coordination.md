@@ -259,10 +259,11 @@ claims and unknown dependencies fail before commands execute.
 
 The scheduler orders eligible scopes by durable ready sequence and ID, searches
 complete assignments lazily and passes blocked requests. Incompatible partial
-assignments are pruned before expanding unrelated pool choices; the scheduler
-does not materialize the Cartesian product of stage requirements. Explicit
-search frames avoid imposing Python's recursion depth on the number of claims. An older A+B request waiting
-for A initially permits useful B work. After a contested release, a still-ready
+assignments and mandatory leaves with insufficient intrinsic capacity are pruned
+before expanding unrelated pool choices; the scheduler does not materialize the
+Cartesian product of stage requirements. Explicit
+search frames avoid imposing Python's recursion depth on the number of claims.
+An older A+B request waiting for A initially permits useful B work. After a contested release, a still-ready
 older scope can protect one concrete assignment while conflicting owners drain.
 Younger reservations cannot conflict with it or transitively reserve unrelated
 resources. Compatible work and unused capacity remain eligible. Protection is

@@ -121,6 +121,22 @@ class InstallSmokeTests(unittest.TestCase):
                 timeout=30,
                 env=env,
             ).stdout
+            continuity_help = subprocess.run(
+                [str(cli), "continuity", "--help"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+            ).stdout
+            assignment_checkpoint_help = subprocess.run(
+                [str(cli), "continuity", "assignment-checkpoint", "--help"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+            ).stdout
             host_capabilities = self.run_cli(cli, project, "host-capabilities")
             runtime_capabilities = self.run_cli(
                 cli, project, "runtime-capabilities"
@@ -856,6 +872,17 @@ class InstallSmokeTests(unittest.TestCase):
         self.assertIn("--baseline-revision", metrics_progress_help)
         self.assertIn("--current-revision", metrics_progress_help)
         self.assertIn("--minimum-samples", metrics_progress_help)
+        self.assertIn("actor-register", continuity_help)
+        self.assertIn("obligation-open", continuity_help)
+        self.assertIn("request-send", continuity_help)
+        self.assertIn("request-respond", continuity_help)
+        self.assertIn("assignment-checkpoint", continuity_help)
+        self.assertIn("--handled-result", assignment_checkpoint_help)
+        self.assertIn("--reprocess-result", assignment_checkpoint_help)
+        self.assertIn("recovery-config", continuity_help)
+        self.assertIn("note-update", continuity_help)
+        self.assertIn("diagnostic-resolve", continuity_help)
+        self.assertIn("self-check", continuity_help)
         self.assertEqual(
             smoke_evidence["worker_policy"]["name"],
             "quality-efficient",

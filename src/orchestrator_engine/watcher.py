@@ -18,6 +18,7 @@ from typing import Any
 from . import binding as binding_module
 from . import (
     codex_app,
+    continuity,
     core,
     platform_runtime,
     vscode_chat,
@@ -346,6 +347,17 @@ def signal_state_key(project_root: Path, event_id: str) -> str:
     return f"{scope}:{core.validate_event_id(event_id)}"
 
 
+def seen_event_ids_for_project(
+    project_root: Path,
+    seen_signal_keys: set[str],
+) -> set[str]:
+    """Return event IDs already handled in one project scope."""
+
+    scope = signal_state_key(project_root, "scope-probe").split(":", 1)[0]
+    prefix = f"{scope}:"
+    return {key[len(prefix) :] for key in seen_signal_keys if key.startswith(prefix)}
+
+
 def ensure_project_scoped_state(
     state: dict[str, Any],
     project_roots: list[Path],
@@ -588,7 +600,12 @@ def pending_signal_count(
     count = 0
     for project in project_roots:
         try:
-            signals = core.inbox(project, state_dir=state_dir, invalid_sink=[])
+            signals = core.inbox(
+                project,
+                state_dir=state_dir,
+                invalid_sink=[],
+                skip_event_ids=seen_event_ids_for_project(project, seen),
+            )
         except OSError:
             continue
         for signal in signals:
@@ -920,72 +937,82 @@ def acknowledge_signal(
         event_id=event_id,
         state_dir=state_dir,
     )
-    existing_receipt = load_optional_object(receipt_path)
-    state = load_state(state_file)
-    ensure_project_scoped_state(state, [project])
-    scoped_key = signal_state_key(project, event_id)
-    seen = set(state["seen_signal_keys"])
-    deferred_signals: dict[str, dict[str, Any]] = state["deferred_signals"]
-    previous = deferred_signals.get(scoped_key)
-    signal = None
-    fallback_binding = binding_module.load_binding(project, state_dir=state_dir)
-    for candidate in core.inbox(project, state_dir=state_dir, invalid_sink=[]):
-        if candidate.get("event_id") != event_id:
-            continue
-        signal_host_value = signal_host(candidate, fallback_binding=fallback_binding)
-        if signal_host_value == host or (
-            allow_unbound_signal and signal_host_value is None
-        ):
-            signal = candidate
-            break
-    if existing_receipt is not None:
-        if (
-            not core.is_supported_schema_version(existing_receipt.get("schema_version"))
-            or existing_receipt.get("kind") != ACKNOWLEDGEMENT_KIND
-            or existing_receipt.get("event_id") != event_id
-            or existing_receipt.get("host") != host
-            or existing_receipt.get("status") != ACKNOWLEDGED_STATUS
-        ):
-            raise WatcherError(f"invalid acknowledgement receipt: {receipt_path}")
-        acknowledgement = existing_receipt
-    elif previous is None and signal is None and scoped_key not in seen:
-        raise WatcherError(f"event is not pending or deferred: {event_id}")
-    else:
-        acknowledged_at = core.utc_now()
-        subject = receipt_subject_fields(previous, signal)
-        acknowledgement = {
-            "schema_version": core.SCHEMA_VERSION,
-            "kind": ACKNOWLEDGEMENT_KIND,
-            "event_id": event_id,
-            "host": host,
-            **subject,
-            "status": ACKNOWLEDGED_STATUS,
-            "reason": reason.strip(),
-            "acknowledged_at": acknowledged_at,
-            "previous_status": deferred_status(previous) if previous else "pending",
-            "previous_attempts": int((previous or {}).get("attempts", 0)),
-            "previous_deferred": previous,
-            "state_path": str(state_file),
-            "receipt_path": str(receipt_path),
-        }
-        core.atomic_json(receipt_path, acknowledgement)
-    seen.add(scoped_key)
-    state["seen_signal_keys"] = sorted(seen)
-    state["seen_event_ids"] = sorted(
-        set(state["seen_event_ids"]) | {event_id}
-    )
-    deferred_signals.pop(scoped_key, None)
-    state["deferred_signals"] = deferred_signals
-    state["deferred_events"] = legacy_records(deferred_signals)
-    state["acknowledged_events"][event_id] = acknowledgement
-    state["acknowledged_signals"][scoped_key] = {
-        **acknowledgement,
-        "project_root": str(project),
-    }
-    state["schema_version"] = core.SCHEMA_VERSION
-    state["kind"] = STATE_KIND
-    state["updated_at"] = core.utc_now()
-    core.atomic_json(state_file, state)
+    delivery_lock = receipt_path.with_suffix(".delivery.lock")
+    state_lock = state_file.with_suffix(".lock")
+    with platform_runtime.exclusive_file_lock(delivery_lock):
+        signal = None
+        fallback_binding = binding_module.load_binding(project, state_dir=state_dir)
+        for candidate in core.inbox(project, state_dir=state_dir, invalid_sink=[]):
+            if candidate.get("event_id") != event_id:
+                continue
+            signal_host_value = signal_host(
+                candidate, fallback_binding=fallback_binding
+            )
+            if signal_host_value == host or (
+                allow_unbound_signal and signal_host_value is None
+            ):
+                signal = candidate
+                break
+        with platform_runtime.exclusive_file_lock(state_lock):
+            existing_receipt = load_optional_object(receipt_path)
+            state = load_state(state_file)
+            ensure_project_scoped_state(state, [project])
+            scoped_key = signal_state_key(project, event_id)
+            seen = set(state["seen_signal_keys"])
+            deferred_signals: dict[str, dict[str, Any]] = state["deferred_signals"]
+            previous = deferred_signals.get(scoped_key)
+            if existing_receipt is not None:
+                if (
+                    not core.is_supported_schema_version(
+                        existing_receipt.get("schema_version")
+                    )
+                    or existing_receipt.get("kind") != ACKNOWLEDGEMENT_KIND
+                    or existing_receipt.get("event_id") != event_id
+                    or existing_receipt.get("host") != host
+                    or existing_receipt.get("status") != ACKNOWLEDGED_STATUS
+                ):
+                    raise WatcherError(
+                        f"invalid acknowledgement receipt: {receipt_path}"
+                    )
+                acknowledgement = existing_receipt
+            elif previous is None and signal is None and scoped_key not in seen:
+                raise WatcherError(f"event is not pending or deferred: {event_id}")
+            else:
+                acknowledgement = {
+                    "schema_version": core.SCHEMA_VERSION,
+                    "kind": ACKNOWLEDGEMENT_KIND,
+                    "event_id": event_id,
+                    "host": host,
+                    **receipt_subject_fields(previous, signal),
+                    "status": ACKNOWLEDGED_STATUS,
+                    "reason": reason.strip(),
+                    "acknowledged_at": core.utc_now(),
+                    "previous_status": (
+                        deferred_status(previous) if previous else "pending"
+                    ),
+                    "previous_attempts": int((previous or {}).get("attempts", 0)),
+                    "previous_deferred": previous,
+                    "state_path": str(state_file),
+                    "receipt_path": str(receipt_path),
+                }
+                core.atomic_json(receipt_path, acknowledgement)
+            seen.add(scoped_key)
+            state["seen_signal_keys"] = sorted(seen)
+            state["seen_event_ids"] = sorted(
+                set(state["seen_event_ids"]) | {event_id}
+            )
+            deferred_signals.pop(scoped_key, None)
+            state["deferred_signals"] = deferred_signals
+            state["deferred_events"] = legacy_records(deferred_signals)
+            state["acknowledged_events"][event_id] = acknowledgement
+            state["acknowledged_signals"][scoped_key] = {
+                **acknowledgement,
+                "project_root": str(project),
+            }
+            state["schema_version"] = core.SCHEMA_VERSION
+            state["kind"] = STATE_KIND
+            state["updated_at"] = core.utc_now()
+            core.atomic_json(state_file, state)
     return {**acknowledgement, "idempotent": existing_receipt is not None}
 
 
@@ -1103,6 +1130,9 @@ def scan_once(
     suppressed_signals: list[dict[str, str]] = []
     workstream_reconciliations: list[dict[str, Any]] = []
     worker_queue_ticks: list[dict[str, Any]] = []
+    continuity_reconciliations: list[dict[str, Any]] = []
+    inbox_scans: list[dict[str, Any]] = []
+    processed_keys: set[str] = set()
 
     def perform_action(
         project: Path,
@@ -1205,6 +1235,18 @@ def scan_once(
                     "error": f"workstream reconciliation failed: {error}",
                 }
             )
+        if continuity.database_path(project, state_dir=state_dir).is_file():
+            try:
+                continuity_reconciliations.append(
+                    continuity.reconcile(project, state_dir=state_dir)
+                )
+            except (OSError, RuntimeError, ValueError) as error:
+                action_errors.append(
+                    {
+                        "project_root": str(project),
+                        "error": f"continuity reconciliation failed: {error}",
+                    }
+                )
         pending_queue = (
             core.state_root(project, state_dir=state_dir) / "queue" / "pending"
         )
@@ -1227,11 +1269,15 @@ def scan_once(
                     }
                 )
         invalid_signals: list[dict[str, str]] = []
+        inbox_scan_stats: dict[str, int] = {}
         signals = core.inbox(
             project,
             state_dir=state_dir,
             invalid_sink=invalid_signals,
+            skip_event_ids=seen_event_ids_for_project(project, seen),
+            scan_stats=inbox_scan_stats,
         )
+        inbox_scans.append({"project_root": str(project), **inbox_scan_stats})
         for invalid in invalid_signals:
             action_errors.append({"project_root": str(project), **invalid})
         for signal in signals:
@@ -1252,6 +1298,17 @@ def scan_once(
             scoped_key = signal_state_key(project, event_id)
             if scoped_key in seen:
                 continue
+            if continuity.database_path(project, state_dir=state_dir).is_file():
+                try:
+                    continuity.observe_signal(project, signal, state_dir=state_dir)
+                except (OSError, RuntimeError, ValueError) as error:
+                    action_errors.append(
+                        {
+                            "event_id": event_id,
+                            "project_root": str(project),
+                            "error": f"continuity observation failed: {error}",
+                        }
+                    )
             try:
                 not_before = signal_not_before_timestamp(signal)
             except WatcherError as error:
@@ -1280,6 +1337,40 @@ def scan_once(
                 continue
             if host_filter is not None and host not in host_filter:
                 continue
+            try:
+                continuity_disposition = continuity.delivery_disposition(
+                    project, signal, state_dir=state_dir
+                )
+            except (OSError, RuntimeError, ValueError) as error:
+                action_errors.append(
+                    {
+                        "event_id": event_id,
+                        "project_root": str(project),
+                        "error": f"continuity delivery guard failed: {error}",
+                    }
+                )
+                continue
+            if not continuity_disposition["deliver"]:
+                if continuity_disposition["consume"]:
+                    seen.add(scoped_key)
+                    seen_event_ids.add(event_id)
+                    deferred_signals.pop(scoped_key, None)
+                    processed_keys.add(scoped_key)
+                    suppressed_signals.append(
+                        {
+                            "event_id": event_id,
+                            "project_root": str(project),
+                            "reason": str(continuity_disposition["reason"]),
+                        }
+                    )
+                continue
+            acknowledgement_host = host if isinstance(host, str) else "_unbound"
+            receipt_path = acknowledgement_receipt_path(
+                project,
+                host=acknowledgement_host,
+                event_id=event_id,
+                state_dir=state_dir,
+            )
             deferred = deferred_signals.get(scoped_key)
             if (
                 deferred is not None
@@ -1289,25 +1380,48 @@ def scan_once(
             retry_after = deferred.get("retry_after_at") if deferred else None
             if isinstance(retry_after, (int, float)) and retry_after > current_time:
                 continue
-            with workstreams.continuation_delivery_guard(
-                project, signal, state_dir=state_dir
-            ) as disposition:
-                if not disposition["deliver"]:
+            with platform_runtime.exclusive_file_lock(
+                receipt_path.with_suffix(".delivery.lock")
+            ):
+                acknowledgement = load_optional_object(receipt_path)
+                if (
+                    acknowledgement is not None
+                    and acknowledgement.get("kind") == ACKNOWLEDGEMENT_KIND
+                    and acknowledgement.get("status") == ACKNOWLEDGED_STATUS
+                ):
                     seen.add(scoped_key)
                     seen_event_ids.add(event_id)
                     deferred_signals.pop(scoped_key, None)
+                    processed_keys.add(scoped_key)
                     suppressed_signals.append(
                         {
                             "event_id": event_id,
                             "project_root": str(project),
-                            "reason": str(disposition["reason"]),
+                            "reason": "operator_acknowledged",
                         }
                     )
                     continue
-                new_signals.append(signal)
-                mark_seen, defer_reason = perform_action(
-                    project, signal, bound=bound
-                )
+                with workstreams.continuation_delivery_guard(
+                    project, signal, state_dir=state_dir
+                ) as disposition:
+                    if not disposition["deliver"]:
+                        seen.add(scoped_key)
+                        seen_event_ids.add(event_id)
+                        deferred_signals.pop(scoped_key, None)
+                        processed_keys.add(scoped_key)
+                        suppressed_signals.append(
+                            {
+                                "event_id": event_id,
+                                "project_root": str(project),
+                                "reason": str(disposition["reason"]),
+                            }
+                        )
+                        continue
+                    new_signals.append(signal)
+                    mark_seen, defer_reason = perform_action(
+                        project, signal, bound=bound
+                    )
+            processed_keys.add(scoped_key)
             if mark_seen:
                 seen.add(scoped_key)
                 seen_event_ids.add(event_id)
@@ -1334,19 +1448,34 @@ def scan_once(
         "suppressed_signals": suppressed_signals,
         "workstream_reconciliations": workstream_reconciliations,
         "worker_queue_ticks": worker_queue_ticks,
+        "continuity_reconciliations": continuity_reconciliations,
+        "inbox_scans": inbox_scans,
         "action_errors": action_errors,
         "state_path": str(state_file),
     }
-    state.update(
-        schema_version=core.SCHEMA_VERSION,
-        kind=STATE_KIND,
-        seen_event_ids=sorted(seen_event_ids),
-        seen_signal_keys=sorted(seen),
-        deferred_events=legacy_records(deferred_signals),
-        deferred_signals=deferred_signals,
-        updated_at=output["checked_at"],
-    )
-    core.atomic_json(state_file, state)
+    with platform_runtime.exclusive_file_lock(state_file.with_suffix(".lock")):
+        latest = load_state(state_file)
+        ensure_project_scoped_state(latest, projects)
+        seen |= set(latest["seen_signal_keys"])
+        seen_event_ids |= set(latest["seen_event_ids"])
+        merged_deferred = dict(latest["deferred_signals"])
+        for scoped_key in processed_keys:
+            if scoped_key in seen:
+                merged_deferred.pop(scoped_key, None)
+            elif scoped_key in deferred_signals:
+                merged_deferred[scoped_key] = deferred_signals[scoped_key]
+            else:
+                merged_deferred.pop(scoped_key, None)
+        latest.update(
+            schema_version=core.SCHEMA_VERSION,
+            kind=STATE_KIND,
+            seen_event_ids=sorted(seen_event_ids),
+            seen_signal_keys=sorted(seen),
+            deferred_events=legacy_records(merged_deferred),
+            deferred_signals=merged_deferred,
+            updated_at=output["checked_at"],
+        )
+        core.atomic_json(state_file, latest)
     return output
 
 

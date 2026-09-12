@@ -397,21 +397,34 @@ def _sum_field(
 
 
 def _tokens(
-    definition: dict[str, Any], records: list[dict[str, Any]]
+    definition: dict[str, Any],
+    records: list[dict[str, Any]],
+    *,
+    usage_source_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     attempts = _records(records, "execution_attempt")
     known: dict[Hashable, float] = {}
     partial: dict[Hashable, float] = {}
+    unqualified = 0
     for item in attempts:
         value = _number(item["data"].get("total_tokens"))
         measurement = item["data"].get("usage_measurement_status")
+        if value is not None and (
+            measurement not in {"complete", "partial"}
+            or (
+                usage_source_ids is not None
+                and item["source_id"] not in usage_source_ids
+            )
+        ):
+            unqualified += 1
+            continue
         if measurement == "partial" and value is not None:
             key = _source_key(item, item["data"].get("usage_event_id")) or _identity(
                 item
             )
             partial[key] = value
             continue
-        if value is None or measurement not in {None, "complete"}:
+        if value is None or measurement != "complete":
             continue
         key = _source_key(item, item["data"].get("usage_event_id")) or _identity(
             item
@@ -430,6 +443,7 @@ def _tokens(
             "complete_reported_tokens": sum(known.values()) if known else None,
             "partial_usage_records": len(partial),
             "partial_reported_tokens_lower_bound": sum(partial.values()) or None,
+            "unqualified_usage_records": unqualified,
             **_cost_reconciliation(attempts),
         },
     )
@@ -667,6 +681,7 @@ def calculate_metrics(
     *,
     canonical_source_ids: set[str] | None = None,
     source_observation_semantics: dict[str, str] | None = None,
+    usage_source_ids: set[str] | None = None,
     evaluation_time: str | None = None,
 ) -> list[dict[str, Any]]:
     records = latest_logical_records(
@@ -678,6 +693,8 @@ def calculate_metrics(
         (
             _accepted(item, records, evaluation_time=evaluation_time)
             if item["metric_id"] == "MET-001"
+            else _tokens(item, records, usage_source_ids=usage_source_ids)
+            if item["metric_id"] == "MET-007"
             else CALCULATORS[item["metric_id"]](item, records)
         )
         for item in METRIC_DEFINITIONS

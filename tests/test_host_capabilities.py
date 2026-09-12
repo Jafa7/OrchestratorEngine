@@ -26,6 +26,15 @@ class HostCapabilityTests(unittest.TestCase):
                 capability["channel_lifecycle"],
                 host_capabilities.CHANNEL_LIFECYCLES,
             )
+            for field in (
+                "sequential_queue_processing",
+                "consumer_start_observation",
+                "terminal_turn_observation",
+                "missed_event_reconciliation",
+            ):
+                self.assertIn(
+                    capability[field], host_capabilities.CAPABILITY_SUPPORT
+                )
 
     def test_codex_capability_prefers_live_queue_and_declares_fallback(self) -> None:
         receipt = host_capabilities.receipt_fields("codex")
@@ -33,6 +42,8 @@ class HostCapabilityTests(unittest.TestCase):
         self.assertEqual(receipt["live_refresh_support"], "supported")
         self.assertEqual(receipt["channel_lifecycle"], "detached_service")
         self.assertEqual(receipt["requirement"], "codex queue")
+        self.assertEqual(receipt["sequential_queue_processing"], "supported")
+        self.assertEqual(receipt["terminal_turn_observation"], "unsupported")
         self.assertEqual(
             receipt["fallback_delivery_mode"], "headless_app_server_turn"
         )

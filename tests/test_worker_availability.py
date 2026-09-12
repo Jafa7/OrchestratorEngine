@@ -78,9 +78,20 @@ class WorkerAvailabilityTests(unittest.TestCase):
             self.config(root, "raise SystemExit(1)")
             prompt = root / "prompt"
             prompt.write_text("work", encoding="utf-8")
-            with self.assertRaises(workers.WorkerError):
-                workers.run_worker(root, worker="w", task_id="T", prompt_file=prompt,
-                                   preflight_availability=True)
+            with (
+                patch(
+                    "orchestrator_engine.worker_diagnostics.run_availability_probe",
+                    return_value={"status": "unavailable"},
+                ),
+                self.assertRaises(workers.WorkerError),
+            ):
+                workers.run_worker(
+                    root,
+                    worker="w",
+                    task_id="T",
+                    prompt_file=prompt,
+                    preflight_availability=True,
+                )
             self.assertFalse((workers.tasks_root(root) / "T").exists())
 
     def test_availability_modes_apply_config_and_cli_precedence(self):

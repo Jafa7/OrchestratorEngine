@@ -25,6 +25,7 @@ class PlatformRuntimeTests(unittest.TestCase):
         self.assertEqual(report["portable_core"], "supported")
         self.assertEqual(report["file_locking"], "supported")
         self.assertIn(report["detached_lifecycle"], {"supported", "unsupported"})
+        self.assertEqual(report["native_subagent_observation"], "unsupported")
 
     def test_exclusive_file_lock_creates_a_reusable_lock_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

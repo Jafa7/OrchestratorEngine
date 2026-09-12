@@ -36,22 +36,12 @@ def advise(
             as_of=as_of,
         )
     cutoff = _timestamp(as_of)
-    records = latest_logical_records(
+    current = latest_logical_records(
         [
             item
             for item in observations
             if _timestamp(item["known_at"]) <= cutoff
             and _timestamp(item["effective_at"]) <= cutoff
-            if (
-                package_id is None
-                or item["scope"].get("package_id") == package_id
-                or item["data"].get("package_id") == package_id
-            )
-            and (
-                operation_id is None
-                or item["scope"].get("operation_id") == operation_id
-                or item["data"].get("operation_id") == operation_id
-            )
         ],
         # Canonical identity proves object equivalence, not authority. Keep
         # source envelopes separate here so complement fields cannot inherit a
@@ -59,6 +49,20 @@ def advise(
         canonical_source_ids=None,
         source_observation_semantics=source_observation_semantics,
     )
+    records = [
+        item
+        for item in current
+        if (
+            package_id is None
+            or item["scope"].get("package_id") == package_id
+            or item["data"].get("package_id") == package_id
+        )
+        and (
+            operation_id is None
+            or item["scope"].get("operation_id") == operation_id
+            or item["data"].get("operation_id") == operation_id
+        )
+    ]
     owner_sources = project_owner_source_ids or set()
     current_binding, binding_reason = _select_package_binding(
         records, project_owner_source_ids=owner_sources

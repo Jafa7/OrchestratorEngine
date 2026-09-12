@@ -11,7 +11,7 @@ live wakeup:
 - **Live wakeup** means the already-open host chat receives the message and
   the active agent continues in that same visible session.
 
-Everything engine-side runs where the CLI workers run. Version 1.9.3 supports
+Everything engine-side runs where the CLI workers run. Version 1.10.0 supports
 the complete detached runtime on Linux, WSL, native Windows and macOS. Check
 `orchestrator-engine runtime-capabilities` and the
 [platform support matrix](platform-support.md) before setup. In WSL,
@@ -26,16 +26,31 @@ certify a particular desktop host or cross-OS delivery route.
 Machine-readable capabilities are available with
 `orchestrator-engine host-capabilities`:
 
-| Host | `delivery_mode` | `live_refresh_support` | `channel_lifecycle` |
-| --- | --- | --- | --- |
-| Claude | `session_stream` | `supported` | `session_bound` |
-| VS Code | `ui_injection` | `best_effort` | `detached_service` |
-| Codex Desktop | `session_queue` | `supported` | `detached_service` |
+| Host | Delivery | Lifecycle | Sequential queue | Terminal-turn observation |
+| --- | --- | --- | --- | --- |
+| Claude | `session_stream` | `session_bound` | `best_effort` | `unsupported` |
+| VS Code | `ui_injection` | `detached_service` | `best_effort` | `unsupported` |
+| Codex Desktop | `session_queue` | `detached_service` | `supported` | `unsupported` |
 
 This is a versioned report with `schema_version`, `kind`, `host_count` and a
 bounded, stable `hosts` collection. Codex also declares its `codex queue`
 requirement and the `headless_app_server_turn` / `unsupported` fallback. These
 describe message delivery, not deep-link or window activation success.
+
+The report also separates consumer-start observation and missed-event
+reconciliation. A durable enqueue confirms only that the host accepted a
+message. Codex's supported sequential queue permits a later state-inspection
+message without a parallel writer, but the engine cannot claim that a specific
+agent turn ended because terminal-turn observation remains unsupported.
+
+Only Codex currently reports `endpoint_addressability: exact`, which is the
+minimum required by the opt-in multi-chat continuity contract. Claude reports
+`bound_session` and VS Code reports `best_effort`; neither is promoted into an
+exact multi-chat endpoint. Every current adapter reports
+`native_subagent_observation: unsupported`. That field is independent of
+detached worker support: the engine has not found a provider-retained native
+subagent lifecycle source that remains safe to observe after the parent turn
+ends.
 
 For parallel tasks on any host, repeat `--task-id` and select `--mode all` or
 `--mode any`. One aggregate wait is cheaper and easier to deduplicate than one

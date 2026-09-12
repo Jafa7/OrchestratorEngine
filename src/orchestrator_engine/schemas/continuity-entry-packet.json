@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-engine://schemas/continuity-entry-packet",
+  "title": "Transactional continuity activation entry packet",
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_CONTINUITY_ENTRY_PACKET",
+  "type": "object",
+  "required": ["schema_version", "kind", "activation", "work", "obligations", "wait", "managed_results", "requests", "responses", "response_summary", "assignment_checkpoints", "recovery_incidents", "recovery_summary", "operational_note", "obligation_summary", "repository_snapshot", "claim_command", "action_contract"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "ORCHESTRATOR_CONTINUITY_ENTRY_PACKET"},
+    "activation": {
+      "type": "object",
+      "required": ["activation_id", "work_id", "actor_id", "control_epoch", "endpoint_generation", "status", "reason", "manifest", "wake_target"],
+      "properties": {
+        "activation_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"},
+        "work_id": {"type": "string"},
+        "actor_id": {"type": "string"},
+        "work_revision": {"type": "integer", "minimum": 1},
+        "control_epoch": {"type": "integer", "minimum": 1},
+        "endpoint_generation": {"type": "integer", "minimum": 1},
+        "assignment_generation": {"type": ["integer", "null"], "minimum": 1},
+        "status": {"enum": ["pending", "published", "claimed", "revoked"]},
+        "reason": {"type": "string"},
+        "created_at": {"type": "string", "format": "date-time"},
+        "claimed_at": {"type": ["string", "null"], "format": "date-time"},
+        "not_before": {"type": ["string", "null"], "format": "date-time"},
+        "manifest": {"type": "array", "items": {"type": "string"}},
+        "wake_target": {"$ref": "orchestrator-engine://schemas/wake-target"}
+      },
+      "additionalProperties": false
+    },
+    "work": {"type": "object"},
+    "obligations": {"type": "array", "items": {"type": "object"}},
+    "wait": {"type": ["object", "null"]},
+    "managed_results": {"type": "array", "items": {"type": "object"}},
+    "requests": {"type": "array", "items": {"type": "object"}, "maxItems": 64},
+    "responses": {"type": "array", "items": {"type": "object"}, "maxItems": 128},
+    "response_summary": {
+      "type": "object",
+      "required": ["total_count", "included_count", "truncated"],
+      "properties": {
+        "total_count": {"type": "integer", "minimum": 0},
+        "included_count": {"type": "integer", "minimum": 0, "maximum": 128},
+        "truncated": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "assignment_checkpoints": {"type": "array", "items": {"type": "object"}, "maxItems": 64},
+    "recovery_incidents": {"type": "array", "items": {"type": "object"}, "maxItems": 16},
+    "recovery_summary": {
+      "type": "object",
+      "required": ["active_count", "included_count", "truncated"],
+      "properties": {
+        "active_count": {"type": "integer", "minimum": 0},
+        "included_count": {"type": "integer", "minimum": 0, "maximum": 16},
+        "truncated": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "operational_note": {"type": ["object", "null"]},
+    "obligation_summary": {
+      "type": "object",
+      "required": ["total_count", "included_count", "open_required_count", "truncated"],
+      "properties": {
+        "total_count": {"type": "integer", "minimum": 0},
+        "included_count": {"type": "integer", "minimum": 0, "maximum": 64},
+        "open_required_count": {"type": "integer", "minimum": 0},
+        "truncated": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "repository_snapshot": {"type": "object"},
+    "claim_command": {"type": "string", "minLength": 1},
+    "action_contract": {
+      "type": "object",
+      "required": ["request_terminal_reply", "assignment_progress", "reply_handling", "recovery_semantics"],
+      "properties": {
+        "request_terminal_reply": {"type": "string"},
+        "assignment_progress": {"type": "string"},
+        "reply_handling": {"type": "string"},
+        "recovery_semantics": {"type": "string"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -13,6 +13,7 @@ from orchestrator_engine import (
     binding,
     codex_app,
     core,
+    delivery_preflight,
     github_actions,
     platform_runtime,
     verification,
@@ -194,9 +195,12 @@ class GitHubActionsTests(unittest.TestCase):
                 ),
             ]
             for options, message in cases:
-                with self.subTest(options=options), self.assertRaisesRegex(
-                    github_actions.GitHubActionsError,
-                    message,
+                with (
+                    self.subTest(options=options),
+                    self.assertRaisesRegex(
+                        github_actions.GitHubActionsError,
+                        message,
+                    ),
                 ):
                     github_actions.start_monitor(
                         root,
@@ -553,20 +557,25 @@ class GitHubActionsTests(unittest.TestCase):
                 target_thread_id="thread-1",
             )
             popen = mock.Mock(return_value=DummyProcess())
-            first = github_actions.start_monitor(
-                root,
-                repository="Example/Project",
-                run_id="123",
-                expected_head_sha="abcdef1",
-                popen_factory=popen,
-            )
-            second = github_actions.start_monitor(
-                root,
-                repository="example/project",
-                run_id="123",
-                expected_head_sha="abcdef1",
-                popen_factory=popen,
-            )
+            with mock.patch.object(
+                delivery_preflight, "run", wraps=delivery_preflight.run
+            ) as preflight:
+                first = github_actions.start_monitor(
+                    root,
+                    repository="Example/Project",
+                    run_id="123",
+                    expected_head_sha="abcdef1",
+                    popen_factory=popen,
+                )
+                binding.write_binding(root, host="codex", target_thread_id="thread-2")
+                second = github_actions.start_monitor(
+                    root,
+                    repository="example/project",
+                    run_id="123",
+                    expected_head_sha="abcdef1",
+                    popen_factory=popen,
+                )
+                replay_target = preflight.call_args_list[1].kwargs["wake_target"]
             with self.assertRaisesRegex(
                 github_actions.GitHubActionsError,
                 "different dispatch options",
@@ -602,6 +611,7 @@ class GitHubActionsTests(unittest.TestCase):
         self.assertFalse(first["idempotent"])
         self.assertTrue(second["idempotent"])
         self.assertEqual(first["wake_target"]["target_thread_id"], "thread-1")
+        self.assertEqual(replay_target["target_thread_id"], "thread-1")
         self.assertEqual(popen.call_count, 1)
         command = popen.call_args.args[0]
         self.assertIn("supervise", command)
@@ -704,7 +714,9 @@ class GitHubActionsTests(unittest.TestCase):
         wrong_repository = gh_view()
         wrong_repository["url"] = "https://github.com/Other/Project/actions/runs/123"
         wrong_host = gh_view()
-        wrong_host["url"] = "https://enterprise.example/Example/Project/actions/runs/123"
+        wrong_host["url"] = (
+            "https://enterprise.example/Example/Project/actions/runs/123"
+        )
 
         self.assertEqual(
             github_actions.validate_view_identity(data, wrong_repository),
@@ -720,9 +732,12 @@ class GitHubActionsTests(unittest.TestCase):
             root = Path(temporary).resolve()
             write_config(root)
             for value in (float("nan"), float("inf"), float("-inf")):
-                with self.subTest(value=value), self.assertRaisesRegex(
-                    github_actions.GitHubActionsError,
-                    "finite positive number",
+                with (
+                    self.subTest(value=value),
+                    self.assertRaisesRegex(
+                        github_actions.GitHubActionsError,
+                        "finite positive number",
+                    ),
                 ):
                     github_actions.start_monitor(
                         root,
@@ -1039,12 +1054,8 @@ class GitHubActionsTests(unittest.TestCase):
             with self.subTest(outcome=outcome):
                 runner = mock.Mock(
                     side_effect=[
-                        completed_view(
-                            gh_view(status="in_progress", conclusion=None)
-                        ),
-                        completed_view(
-                            gh_view(status="in_progress", conclusion=None)
-                        ),
+                        completed_view(gh_view(status="in_progress", conclusion=None)),
+                        completed_view(gh_view(status="in_progress", conclusion=None)),
                     ]
                 )
                 with mock.patch.object(
@@ -1091,10 +1102,7 @@ class GitHubActionsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             directory = (
-                core.state_root(root)
-                / "monitors"
-                / "github-actions"
-                / "gha-123"
+                core.state_root(root) / "monitors" / "github-actions" / "gha-123"
             )
             directory.mkdir(parents=True)
             descriptor = {
@@ -1427,15 +1435,18 @@ class GitHubActionsTests(unittest.TestCase):
                 ],
                 "command": {},
             }
-            with mock.patch.object(
-                github_actions,
-                "observe_run",
-                return_value=observation,
-            ), mock.patch.object(
-                github_actions,
-                "run_failure_diagnostics",
-                return_value=diagnostics,
-            ) as query:
+            with (
+                mock.patch.object(
+                    github_actions,
+                    "observe_run",
+                    return_value=observation,
+                ),
+                mock.patch.object(
+                    github_actions,
+                    "run_failure_diagnostics",
+                    return_value=diagnostics,
+                ) as query,
+            ):
                 final = github_actions.supervise_monitor(
                     root,
                     monitor_id="gha-failure",
@@ -1448,9 +1459,7 @@ class GitHubActionsTests(unittest.TestCase):
         self.assertEqual(final["status"], "completed")
         self.assertEqual(final["ci_conclusion"], "failure")
         self.assertEqual(result["status"], "failed")
-        self.assertEqual(
-            result["github_actions"]["failure_diagnostics"], diagnostics
-        )
+        self.assertEqual(result["github_actions"]["failure_diagnostics"], diagnostics)
         self.assertEqual(evidence["failure_diagnostics"], diagnostics)
         self.assertIn("problem=Unit tests / Run unit tests", summary)
 
@@ -1485,14 +1494,17 @@ class GitHubActionsTests(unittest.TestCase):
                 "watch": None,
                 "final_view": {"ok": True, "view": gh_view(conclusion="failure")},
             }
-            with mock.patch.object(
-                github_actions,
-                "observe_run",
-                return_value=observation,
-            ), mock.patch.object(
-                github_actions,
-                "run_failure_diagnostics",
-                side_effect=RuntimeError("diagnostic adapter failed"),
+            with (
+                mock.patch.object(
+                    github_actions,
+                    "observe_run",
+                    return_value=observation,
+                ),
+                mock.patch.object(
+                    github_actions,
+                    "run_failure_diagnostics",
+                    side_effect=RuntimeError("diagnostic adapter failed"),
+                ),
             ):
                 final = github_actions.supervise_monitor(
                     root,

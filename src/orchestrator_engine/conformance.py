@@ -623,7 +623,7 @@ def _run_recovery_matrix(project: Path) -> dict[str, Any]:
         evidence=evidence,
         takeover=True,
     )
-    if finalized.get("outcome") != "claimed":
+    if finalized.get("outcome") != "recovered_partial":
         raise ConformanceError("empty result claim was not recovered")
     record("empty_result_claim", task_id)
 

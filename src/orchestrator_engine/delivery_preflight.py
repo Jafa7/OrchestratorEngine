@@ -23,6 +23,7 @@ OPERATION_KINDS = frozenset(
         "github_actions",
         "github_pull_request",
         "local_check",
+        "continuity",
         "worker",
         "workstream",
     }

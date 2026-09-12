@@ -49,6 +49,7 @@ def run_status(
         minimum_severity=minimum_severity,
         stale_after_seconds=stale_after_seconds,
         large_log_bytes=large_log_bytes,
+        compact_indexed=True,
     )
     checks = verification.checks_status(
         project,
@@ -112,6 +113,9 @@ def run_status(
         "status": status_from_severity(worst),
         "worst_severity": worst,
         "components": components,
+        "collection": {
+            "worker_tasks": tasks.get("discovery"),
+        },
         "issue_count": len(issues),
         "issues": issues,
     }
@@ -278,8 +282,13 @@ def summarize_worker_tasks(report: dict[str, Any]) -> dict[str, Any]:
         "status_counts": report.get("status_counts", {}),
         "resolution_counts": report.get("resolution_counts", {}),
         "diagnostic_count": report.get("diagnostic_count", 0),
-        "resolved_task_count": resolved_task_count(tasks),
+        "resolved_task_count": sum(
+            int(value)
+            for value in report.get("resolution_counts", {}).values()
+            if isinstance(value, int)
+        ),
         "resolved_tasks": resolved_tasks,
+        "task_view": report.get("task_view"),
         "large_log_task_count": len(large_log_tasks),
         "large_log_tasks": large_log_tasks,
         "problem_task_count": len(problem_tasks),

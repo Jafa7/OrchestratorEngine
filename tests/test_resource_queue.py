@@ -283,6 +283,99 @@ class QueueTests(unittest.TestCase):
             )
         self.assertEqual(check.call_count, 1)
 
+    def test_bundle_prunes_excluded_leaf_before_cartesian_expansion(self):
+        registry = {"zz-blocked": leaf()}
+        bundle_members = ["zz-blocked"]
+        for index in range(10):
+            members = [f"leaf-{index}-a", f"leaf-{index}-b"]
+            registry.update({member: leaf() for member in members})
+            pool = f"pool-{index}"
+            registry[pool] = {"kind": "pool", "members": members}
+            bundle_members.append(pool)
+        registry["bundle"] = {"kind": "bundle", "members": bundle_members}
+        normalized = normalize_registry(registry)
+
+        with mock.patch.object(
+            resource_queue,
+            "alternatives",
+            wraps=resource_queue.alternatives,
+        ) as generated:
+            choices = list(
+                assignments(
+                    normalized,
+                    [need("bundle")],
+                    excluded={"zz-blocked"},
+                )
+            )
+
+        self.assertEqual(choices, [])
+        self.assertLessEqual(generated.call_count, 2)
+
+    def test_bundle_prunes_occupied_mandatory_leaf_before_expansion(self):
+        registry = {"zz-blocked": leaf()}
+        bundle_members = ["zz-blocked"]
+        for index in range(10):
+            members = [f"leaf-{index}-a", f"leaf-{index}-b"]
+            registry.update({member: leaf() for member in members})
+            pool = f"pool-{index}"
+            registry[pool] = {"kind": "pool", "members": members}
+            bundle_members.append(pool)
+        registry["bundle"] = {"kind": "bundle", "members": bundle_members}
+        normalized = normalize_registry(registry)
+        occupied = {
+            "zz-blocked": {
+                "mode": "exclusive",
+                "units": 1,
+                "compatibility": None,
+            }
+        }
+
+        with mock.patch.object(
+            resource_queue,
+            "compatible",
+            wraps=compatible,
+        ) as checked:
+            choices = list(
+                assignments(normalized, [need("bundle")], others=[occupied])
+            )
+
+        self.assertEqual(choices, [])
+        self.assertLessEqual(checked.call_count, 12)
+
+    def test_bundle_prunes_undersized_mandatory_leaf_before_expansion(self):
+        registry = {"zz-blocked": leaf(capacity=1)}
+        bundle_members = ["zz-blocked"]
+        for index in range(10):
+            members = [f"leaf-{index}-a", f"leaf-{index}-b"]
+            registry.update({member: leaf(capacity=2) for member in members})
+            pool = f"pool-{index}"
+            registry[pool] = {"kind": "pool", "members": members}
+            bundle_members.append(pool)
+        registry["bundle"] = {"kind": "bundle", "members": bundle_members}
+        normalized = normalize_registry(registry)
+
+        with mock.patch.object(
+            resource_queue,
+            "alternatives",
+            wraps=resource_queue.alternatives,
+        ) as generated:
+            choices = list(
+                assignments(
+                    normalized,
+                    [
+                        need(
+                            "bundle",
+                            mode="shared",
+                            compatibility="reader",
+                            units=2,
+                        )
+                    ],
+                )
+            )
+
+        self.assertEqual(choices, [])
+        self.assertLessEqual(generated.call_count, 2)
+
     def test_disjoint_work_bypasses_blocked_multi_resource_request(self):
         self.submit([need("A")])
         first = self.ledger.schedule()[0]
@@ -681,9 +774,9 @@ class ResourceNativeTests(unittest.TestCase):
             if os.name != "nt":
                 self.assertEqual(
                     stat.S_IMODE(
-                        (
-                            self.project / ".orchestrator" / "resources.json"
-                        ).stat().st_mode
+                        (self.project / ".orchestrator" / "resources.json")
+                        .stat()
+                        .st_mode
                     ),
                     0o600,
                 )
@@ -925,8 +1018,9 @@ class ResourceNativeTests(unittest.TestCase):
             candidate = dict(payload)
             if supplied is not None:
                 candidate["token"] = supplied
-            with self.subTest(token=supplied), self.assertRaisesRegex(
-                ResourceError, "revoked"
+            with (
+                self.subTest(token=supplied),
+                self.assertRaisesRegex(ResourceError, "revoked"),
             ):
                 authority.call("sample", "context", candidate)
 
@@ -944,9 +1038,9 @@ class ResourceNativeTests(unittest.TestCase):
     def test_configuration_update_is_revisioned_drained_and_preserves_identity(self):
         before = core.load_object(self.directory / "config.json")
         updated = json.loads(json.dumps(self.config))
-        updated["projects"]["sample"]["recipes"]["verify"]["stages"][0][
-            "commands"
-        ][0]["argv"] = ["{python}", "-c", "print('updated')"]
+        updated["projects"]["sample"]["recipes"]["verify"]["stages"][0]["commands"][0][
+            "argv"
+        ] = ["{python}", "-c", "print('updated')"]
         result = update_configuration(
             self.directory, updated, expected_revision=before["revision"]
         )
@@ -967,17 +1061,13 @@ class ResourceNativeTests(unittest.TestCase):
         authority = Authority(self.directory)
         authority.submit("sample", self.payload())
         with self.assertRaisesRegex(ResourceError, "fully drained"):
-            update_configuration(
-                self.directory, self.config, expected_revision=1
-            )
+            update_configuration(self.directory, self.config, expected_revision=1)
 
     def test_configuration_update_rejects_inconsistent_ledger(self):
         with contextlib.closing(Ledger(self.directory)) as ledger:
             ledger.configure({"changed": leaf()})
         with self.assertRaisesRegex(ResourceError, "does not match"):
-            update_configuration(
-                self.directory, self.config, expected_revision=1
-            )
+            update_configuration(self.directory, self.config, expected_revision=1)
 
     def test_missing_runner_evidence_blocks_delivery_but_not_capacity(self):
         authority = Authority(self.directory)
@@ -986,9 +1076,7 @@ class ResourceNativeTests(unittest.TestCase):
             stage = ledger.schedule()[0]
             ledger.attach(stage["id"], stage["epoch"], {"pid": os.getpid()})
         with mock.patch.object(resource_service.Authority, "deliver_pending"):
-            resource_runner.execute(
-                self.directory, stage["id"], stage["launch_token"]
-            )
+            resource_runner.execute(self.directory, stage["id"], stage["launch_token"])
         with contextlib.closing(Ledger(self.directory)) as ledger:
             path = Path(ledger.stages(request)[0]["evidence"]["path"])
             path.unlink()
@@ -1170,9 +1258,7 @@ class ResourceNativeTests(unittest.TestCase):
             "deliver_pending",
             side_effect=OSError("projection unavailable"),
         ):
-            resource_runner.execute(
-                self.directory, stage["id"], stage["launch_token"]
-            )
+            resource_runner.execute(self.directory, stage["id"], stage["launch_token"])
         with contextlib.closing(Ledger(self.directory)) as ledger:
             self.assertEqual(ledger.stage(stage["id"])["state"], "passed")
             outbox = ledger.db.execute(
@@ -1182,11 +1268,7 @@ class ResourceNativeTests(unittest.TestCase):
         authority.deliver_pending()
         self.assertTrue(
             (
-                self.project
-                / ".orchestrator"
-                / "resources"
-                / request
-                / "result.json"
+                self.project / ".orchestrator" / "resources" / request / "result.json"
             ).exists()
         )
 
@@ -1342,6 +1424,92 @@ class ResourceNativeTests(unittest.TestCase):
         with self.assertRaisesRegex(ResourceError, "pinned destination"):
             authority.submit("sample", conflicting)
 
+    def test_replay_ignores_wake_target_capture_time(self):
+        authority = Authority(self.directory)
+        target = {
+            "schema_version": 1,
+            "kind": "ORCHESTRATOR_WAKE_TARGET",
+            "host": "codex",
+            "target_thread_id": "thread-1",
+            "captured_at": "2026-09-12T08:00:00Z",
+        }
+        payload = {
+            **self.payload(),
+            "subscriber": {"id": "one", "wake": True, "wake_target": target},
+        }
+        authority.submit("sample", payload)
+        replay = {
+            **payload,
+            "subscriber": {
+                **payload["subscriber"],
+                "wake_target": {
+                    **target,
+                    "captured_at": "2026-09-12T09:00:00Z",
+                },
+            },
+        }
+        self.assertTrue(authority.submit("sample", replay)["idempotent"])
+
+    def test_unsubscribe_and_readd_preserve_destination_and_advance_generation(self):
+        authority = Authority(self.directory)
+        payload = self.payload()
+        request = authority.submit("sample", payload)["request"]
+        with contextlib.closing(Ledger(self.directory)) as ledger:
+            contract = digest(ledger.request(request)["plan"])
+            ledger.subscribe(request, contract, payload["subscriber"], remove=True)
+            ledger.subscribe(request, contract, payload["subscriber"])
+            history = ledger.db.execute(
+                "SELECT generation,active FROM subscriber_history "
+                "WHERE request=? AND subscriber=? ORDER BY generation",
+                (request, "one"),
+            ).fetchall()
+            self.assertEqual([tuple(row) for row in history], [(1, 0), (2, 1)])
+            changed = {**payload["subscriber"], "wake": True}
+            with self.assertRaisesRegex(ResourceError, "pinned destination"):
+                ledger.subscribe(request, contract, changed, remove=True)
+
+    def test_interrupted_configuration_update_is_reconciled(self):
+        current = core.load_object(self.directory / "config.json")
+        updated = json.loads(json.dumps(current))
+        updated["resources"]["extra"] = leaf()
+        updated["revision"] += 1
+        updated["resource_digest"] = digest(normalize_registry(updated["resources"]))
+        core.atomic_json(self.directory / "config.next.json", updated)
+
+        Authority(self.directory)
+        self.assertFalse((self.directory / "config.next.json").exists())
+        self.assertEqual(
+            core.load_object(self.directory / "config.json")["revision"],
+            current["revision"],
+        )
+
+        core.atomic_json(self.directory / "config.next.json", updated)
+        with contextlib.closing(Ledger(self.directory)) as ledger:
+            ledger.configure(updated["resources"])
+        Authority(self.directory)
+        self.assertEqual(
+            core.load_object(self.directory / "config.json")["revision"],
+            updated["revision"],
+        )
+
+    def test_large_nested_bundle_yields_without_cartesian_materialization(self):
+        registry = {}
+        bundle_members = []
+        for index in range(20):
+            first = f"leaf-{index}-a"
+            second = f"leaf-{index}-b"
+            pool = f"pool-{index}"
+            registry[first] = leaf()
+            registry[second] = leaf()
+            registry[pool] = {"kind": "pool", "members": [first, second]}
+            bundle_members.append(pool)
+        registry["large-bundle"] = {"kind": "bundle", "members": bundle_members}
+
+        normalized = normalize_registry(registry)
+        first_assignment = next(assignments(normalized, [need("large-bundle")]))
+
+        self.assertEqual(len(first_assignment), 20)
+
     def test_concurrent_replay_removes_unreferenced_snapshot(self):
         authority = Authority(self.directory)
         payload = self.payload()
@@ -1494,9 +1662,7 @@ class ResourceNativeTests(unittest.TestCase):
             stage = ledger.schedule()[0]
             ledger.attach(stage["id"], stage["epoch"], {"pid": os.getpid()})
         with mock.patch.object(resource_service.Authority, "deliver_pending"):
-            resource_runner.execute(
-                self.directory, stage["id"], stage["launch_token"]
-            )
+            resource_runner.execute(self.directory, stage["id"], stage["launch_token"])
         with mock.patch(
             "orchestrator_engine.core.write_followup_event",
             side_effect=OSError("offline"),

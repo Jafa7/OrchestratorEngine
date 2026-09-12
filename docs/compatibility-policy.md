@@ -6,7 +6,7 @@ private implementation details or adopter-owned policy text.
 
 ## Supported runtime scope
 
-The current released scope is v1.9.3. The
+The current released scope is v1.10.0. The
 [native runtime contracts](native-runtime-packages.md) describe containment and
 exact-candidate acceptance evidence.
 

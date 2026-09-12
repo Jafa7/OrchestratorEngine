@@ -4,6 +4,79 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-09-12
+
+- Kept acknowledged Codex session-queue wakeups in the background so watcher
+  delivery no longer changes the user's active window or task. Explicit host
+  actions can still open a task when requested.
+- Added an opt-in transactional multi-chat continuity authority with dynamic
+  actor endpoints, fenced work ownership, explicit peer obligations, typed
+  `any`/`all` waits, handled-result cursors, activation claims, durable outbox
+  recovery, endpoint delivery admission, claim-independent bounded reminders,
+  bounded compact entry packets and a deterministic self-check.
+- Hardened continuity with explicit handled-result acknowledgement, retained
+  source reconciliation independent of watcher receipts, assignment-generation
+  claims, immutable completion, paginated obligation history, revisioned notes,
+  bounded evidence facts and auditable diagnostic disposition.
+- Added assignment-scoped handled-result ledgers, resumable paused assignments,
+  return-actor reply recovery, communication-preserving work transitions and
+  project/actor/work controls that suppress and deterministically re-arm all
+  covered requests and continuations. Recovery reconciliation now isolates
+  malformed incident timestamps so healthy peers continue fairly.
+- Preserved communication authority across completion, endpoint replacement and
+  stop/resume transitions. Paused assignments now receive endpoint-fenced
+  control activations after rebinding, stale claimed requests are re-routed once,
+  owner continuations match the current endpoint generation, completed
+  non-request waits cannot emit dead product wakeups, and owner checkpoints no
+  longer resolve or reset unrelated reply recovery.
+- Made continuity acknowledgement durable across pause, continue, source-set
+  changes and ownership handoff; current claimed activations now fence repeated
+  reconciliation, partially handled `all` waits deliver only new work, retained
+  evidence enriches a stable outcome identity, and v1 database migration
+  preserves live assignment generations with safe named-column writes.
+- Fenced claimed continuations by actor endpoint generation so an owner rebind
+  reissues unhandled work, and normalized legacy result identities, cursors and
+  activation manifests without invalidating previously published outcome IDs.
+- Added watcher integration that records managed terminal results and publishes
+  exactly addressed continuity activations without model polling. Stopped or
+  silent chats are not treated as authoritative state transitions.
+- Hardened terminal publication, deterministic event replay, Codex headless
+  ambiguity handling, watcher acknowledgement races, GitHub Actions terminal
+  reconciliation and retained-target replay.
+- Made resource subscriber identity stable across recapture and unsubscribe /
+  re-add generations, reconciled interrupted configuration publication,
+  removed the authority-wide lock from slow result projection and made nested
+  selector search lazy.
+- Corrected usage provenance and workstream terminal normalization in metrics,
+  collapsed logical history before cohort filtering and made watcher / metrics
+  history traversal bounded by new records rather than parsed retained history.
+- Added recoverable incremental indexes for metrics candidates, observation
+  identities and aggregate worker-task diagnostics. Initial rebuild cost is
+  reported separately; steady-state status refreshes only changed and active
+  tasks while durable terminal artifacts remain available to direct diagnostics.
+- Added per-publication recovery markers for metrics and task-summary indexes.
+  A failed candidate-journal append or crash after authoritative publication now
+  triggers an observable index reconstruction instead of silently hiding the
+  retained artifact from a warm projection. Marker hashes and authoritative
+  JSON now use the same UTF-8 bytes on POSIX and Windows.
+- Pruned impossible nested resource bundles before Cartesian expansion regardless
+  of member naming, including mandatory leaves excluded by policy or occupied by
+  an incompatible holder, or leaves whose own capacity cannot satisfy the claim.
+- Expanded host capability output with endpoint addressability, durable enqueue,
+  consumer-claim, sequential queue, lifecycle observation, missed-event recovery
+  and truthful native-subagent observation fields.
+- Added atomic managed request/reply envelopes: marked sends create their reply
+  obligation and outgoing intent together; receipt and progress remain
+  non-terminal; saved terminal replies return through the durable outbox and
+  require separate handling acknowledgement.
+- Added assignment-scoped checkpoints, typed waits and pauses so one blocked
+  peer task does not freeze independent obligations. Continuity database schema
+  v3 migrates accepted v2 authority state without silently arming old work.
+- Added opt-in default recovery observation for new work, explicit adoption for
+  existing work, project/actor/work stop controls, capability-qualified recovery
+  inspections, causal deduplication, persisted backoff and bounded backlog
+  visibility without model polling or inferred abandonment.
+
 ## [1.9.3] - 2026-09-10
 
 - Windows managed-process barriers now propagate `CREATE_NO_WINDOW` to the

@@ -84,9 +84,7 @@ def _require_private_directory(path):
     if hasattr(os, "geteuid") and metadata.st_uid != os.geteuid():
         raise ResourceError("authority directory must be owned by the current user")
     if stat.S_IMODE(metadata.st_mode) != 0o700:
-        raise ResourceError(
-            "authority directory must use mode 0700"
-        )
+        raise ResourceError("authority directory must use mode 0700")
 
 
 def _private_atomic_json(path, value):
@@ -199,9 +197,13 @@ def update_configuration(directory, config, *, expected_revision):
     validate_config(config)
     if type(expected_revision) is not int or expected_revision < 1:
         raise ResourceError("expected revision must be a positive integer")
-    with platform_runtime.exclusive_file_lock(
-        directory / "service.lock", timeout_seconds=0
+    with (
+        platform_runtime.exclusive_file_lock(
+            directory / "service.lock", timeout_seconds=0
+        ),
+        platform_runtime.exclusive_file_lock(directory / "configuration.lock"),
     ):
+        _reconcile_configuration_unlocked(directory)
         current = core.load_object(directory / "config.json")
         revision = current.get("revision", 1)
         if revision != expected_revision:
@@ -263,6 +265,38 @@ def update_configuration(directory, config, *, expected_revision):
         "revision": updated["revision"],
         "resource_digest": updated["resource_digest"],
     }
+
+
+def _reconcile_configuration_unlocked(directory):
+    """Finish or discard one recognized interrupted configuration update."""
+
+    staged = directory / "config.next.json"
+    if not staged.is_file():
+        return "unchanged"
+    current = core.load_object(directory / "config.json")
+    candidate = core.load_object(staged)
+    validate_config(candidate)
+    if (
+        candidate.get("authority") != current.get("authority")
+        or candidate.get("revision") != current.get("revision", 1) + 1
+    ):
+        raise ResourceError("staged configuration is not a recognized next revision")
+    with contextlib.closing(Ledger(directory)) as ledger:
+        registry_digest = digest(ledger.get("registry"))
+    if registry_digest == candidate.get("resource_digest"):
+        core.atomic_replace(staged, directory / "config.json")
+        return "committed"
+    if registry_digest == current.get("resource_digest"):
+        staged.unlink()
+        return "rolled_back"
+    raise ResourceError(
+        "staged configuration and resource ledger have unrelated revisions"
+    )
+
+
+def _reconcile_configuration(directory):
+    with platform_runtime.exclusive_file_lock(directory / "configuration.lock"):
+        return _reconcile_configuration_unlocked(directory)
 
 
 def input_manifest(root, inputs):
@@ -409,6 +443,7 @@ def capture(root, destination, expected):
 class Authority:
     def __init__(self, directory):
         self.directory = local_directory(directory)
+        _reconcile_configuration(self.directory)
         self.config = core.load_object(self.directory / "config.json")
         self.lock = threading.RLock()
         self.children = {}
@@ -722,9 +757,7 @@ class Authority:
                 # Retries must not rewrite evidence already delivered.
                 if not result.exists():
                     public_value = {
-                        key: item
-                        for key, item in value.items()
-                        if key != "subscriber"
+                        key: item for key, item in value.items() if key != "subscriber"
                     }
                     core.atomic_json(
                         result,
@@ -822,10 +855,13 @@ class Authority:
     def deliver_pending(self, *, timeout_seconds=5):
         """Serialize terminal projection across the service and runner fallback."""
 
-        with self.lock, platform_runtime.exclusive_file_lock(
-            self.directory / "delivery.lock",
-            timeout_seconds=timeout_seconds,
-        ), contextlib.closing(Ledger(self.directory)) as ledger:
+        with (
+            platform_runtime.exclusive_file_lock(
+                self.directory / "delivery.lock",
+                timeout_seconds=timeout_seconds,
+            ),
+            contextlib.closing(Ledger(self.directory)) as ledger,
+        ):
             self.deliver(ledger)
 
     def tick(self, *, deliver_results=True):

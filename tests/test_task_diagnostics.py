@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 from orchestrator_engine import core, task_diagnostics, task_resolution, workers
 
@@ -25,6 +26,152 @@ def alive_only(*alive_pids: int):
 
 
 class TaskDiagnosticTests(unittest.TestCase):
+    def test_compact_index_avoids_reparsing_unchanged_terminal_history(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            for index in range(20):
+                write_task(
+                    root,
+                    f"T-HISTORY-{index:02d}",
+                    {
+                        "schema_version": 1,
+                        "kind": workers.TASK_KIND,
+                        "task_id": f"T-HISTORY-{index:02d}",
+                        "worker": "synthetic",
+                        "status": "failed",
+                    },
+                )
+            original = task_diagnostics.summarize_task
+            with mock.patch.object(
+                task_diagnostics, "summarize_task", wraps=original
+            ) as summarize:
+                first = task_diagnostics.diagnose_tasks(
+                    root, compact_indexed=True
+                )
+                initial_calls = summarize.call_count
+                summarize.reset_mock()
+                second = task_diagnostics.diagnose_tasks(
+                    root, compact_indexed=True
+                )
+
+        self.assertEqual(first["task_count"], 20)
+        self.assertEqual(initial_calls, 20)
+        self.assertEqual(second["task_count"], 20)
+        self.assertEqual(summarize.call_count, 0)
+        self.assertTrue(first["discovery"]["index_rebuilt"])
+        self.assertFalse(second["discovery"]["index_rebuilt"])
+        self.assertEqual(second["discovery"]["rebuild_paths_examined"], 0)
+
+    def test_compact_index_refreshes_only_late_and_active_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_task(
+                root,
+                "T-OLD",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-OLD",
+                    "worker": "synthetic",
+                    "status": "completed",
+                },
+            )
+            task_diagnostics.diagnose_tasks(root, compact_indexed=True)
+            write_task(
+                root,
+                "T-ACTIVE",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-ACTIVE",
+                    "worker": "synthetic",
+                    "status": "running",
+                    "supervisor_pid": 123,
+                },
+            )
+            original = task_diagnostics.summarize_task
+            with mock.patch.object(
+                task_diagnostics, "summarize_task", wraps=original
+            ) as summarize:
+                first = task_diagnostics.diagnose_tasks(
+                    root,
+                    compact_indexed=True,
+                    process_checker=alive_only(123),
+                )
+                first_calls = summarize.call_count
+                summarize.reset_mock()
+                second = task_diagnostics.diagnose_tasks(
+                    root,
+                    compact_indexed=True,
+                    process_checker=alive_only(123),
+                )
+
+        self.assertEqual(first["task_count"], 2)
+        self.assertEqual(first_calls, 1)
+        self.assertEqual(summarize.call_count, 1)
+        self.assertEqual(second["discovery"]["active_rows_refreshed"], 1)
+
+    def test_missing_compact_index_rebuilds_from_durable_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_task(
+                root,
+                "T-DURABLE",
+                {
+                    "schema_version": 1,
+                    "kind": workers.TASK_KIND,
+                    "task_id": "T-DURABLE",
+                    "worker": "synthetic",
+                    "status": "failed",
+                },
+            )
+            task_diagnostics.diagnose_tasks(root, compact_indexed=True)
+            index = (
+                root
+                / ".orchestrator"
+                / "indexes"
+                / "task-diagnostics.sqlite3"
+            )
+            index.unlink()
+
+            rebuilt = task_diagnostics.diagnose_tasks(
+                root, compact_indexed=True
+            )
+
+        self.assertEqual(rebuilt["task_count"], 1)
+        self.assertTrue(rebuilt["discovery"]["index_rebuilt"])
+        self.assertEqual(rebuilt["discovery"]["rebuild_paths_examined"], 1)
+
+    def test_failed_candidate_journal_invalidates_warm_index(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            warmed = task_diagnostics.diagnose_tasks(root, compact_indexed=True)
+            self.assertEqual(warmed["task_count"], 0)
+            with mock.patch.object(
+                task_diagnostics.platform_runtime,
+                "exclusive_file_lock",
+                side_effect=RuntimeError("journal unavailable"),
+            ):
+                write_task(
+                    root,
+                    "T-RECOVERED",
+                    {
+                        "schema_version": 1,
+                        "kind": workers.TASK_KIND,
+                        "task_id": "T-RECOVERED",
+                        "worker": "synthetic",
+                        "status": "failed",
+                    },
+                )
+
+            recovered = task_diagnostics.diagnose_tasks(
+                root, compact_indexed=True
+            )
+
+        self.assertEqual(recovered["task_count"], 1)
+        self.assertTrue(recovered["discovery"]["recovery_rebuilt"])
+        self.assertEqual(recovered["discovery"]["pending_recovery_markers"], 0)
+
     def test_running_task_does_not_report_terminal_usage_measurement(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

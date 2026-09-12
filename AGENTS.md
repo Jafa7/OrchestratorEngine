@@ -40,6 +40,41 @@ documented contracts.
   Continue only when the descriptor is `active` and the message event ID is
   still the descriptor's `active_continuation.event_id`; otherwise treat the
   queued message as revoked evidence and do not execute its next action.
+- When inter-chat work requires a reply, use a managed continuity request with
+  `requires_reply`; do not treat a message in the recipient's own chat as the
+  return response. Claim the addressed activation, record receipt/progress only
+  as non-terminal evidence, and use a terminal response to create the durable
+  return intent. The requester separately records reply handling; transport
+  handling is not product acceptance.
+- A recovery activation is a request to inspect current authority, not permission
+  to repeat an implementation or infer abandonment. Record an assignment
+  checkpoint for a legitimate wait or pause. Before acting on recovery, recheck
+  work control, assignment generation, endpoint generation and retained results.
+  Recovery of a claimed terminal reply must return to the request's pinned
+  return actor and does not replace the original reply-handling authority.
+- When the adopting project enables multi-chat continuity, never infer a
+  handoff, completion or permission to continue from another chat ending its
+  turn. Claim the addressed activation with its expected control epoch before
+  changing the project. Record cross-chat requests as explicit obligations;
+  the assignee must claim the assignment and resolve or cancel the obligation,
+  not merely mention the result in prose. The owner must checkpoint `waiting`
+  with typed sources before ending its turn. Claiming a result activation does
+  not acknowledge that its evidence was handled: after inspection, include its
+  outcome ID with `--handled-result` in the next work or assignment checkpoint.
+  A paused assignment retains its current claim and must be resumed through an
+  explicit revision-fenced checkpoint. After endpoint rebinding, claim the new
+  paused-control activation before resuming or cancelling; claiming it alone
+  does not authorize product execution. Project, actor and work stop controls
+  suppress covered requests and continuations until an explicit resume, which
+  must restore missing current-endpoint routes without duplicating a valid
+  current claim. A completed non-request assignment may retain evidence but must
+  not emit a new product continuation. Use
+  `--reprocess-result` only for an explicit replay decision. The owner may
+  checkpoint `complete` only after all required obligations are terminal. Use a
+  fenced ownership transfer for a new writer; endpoint registration alone does
+  not transfer ownership.
+  Run `continuity self-check --repair` to recover a missing outbox publication,
+  never start an AI agent to poll a peer chat.
 
 ## Risk-based verification
 
@@ -64,6 +99,11 @@ covers its risk:
   ruff check .
   git diff --check
   ```
+
+  When independent review is planned, request it after focused verification,
+  resolve its findings with focused checks, and run the final full gate only on
+  the reviewed combined candidate. Do not spend a full gate merely to prepare
+  an intermediate review snapshot.
 
 Do not repeat an already-passing full gate after a later documentation-only
 edit unless that edit changes generated artifacts, packaging inputs or test

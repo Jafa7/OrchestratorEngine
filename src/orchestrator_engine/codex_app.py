@@ -134,9 +134,7 @@ def probe_session_queue(
         return {"available": False, "reason": f"queue probe failed: {error}"}
     output = _bounded_process_output(completed)
     available = (
-        completed.returncode == 0
-        and "--thread" in output
-        and "--message" in output
+        completed.returncode == 0 and "--thread" in output and "--message" in output
     )
     return {
         "available": available,
@@ -264,9 +262,7 @@ def _safe_diagnostic_identifier(value: Any, *, fallback: str) -> str:
     ):
         return value
     try:
-        encoded = json.dumps(value, sort_keys=True, ensure_ascii=True).encode(
-            "utf-8"
-        )
+        encoded = json.dumps(value, sort_keys=True, ensure_ascii=True).encode("utf-8")
     except (TypeError, ValueError, RecursionError):
         encoded = type(value).__name__.encode("ascii", errors="replace")
     return f"{fallback}-{hashlib.sha256(encoded).hexdigest()[:16]}"
@@ -347,9 +343,10 @@ def _redacted_doctor_summary(report: dict[str, Any]) -> dict[str, Any]:
                     }
                 )
             continue
-        if item_status in {"warning", "fail", "unknown"} and len(
-            problems
-        ) < CODEX_DIAGNOSTIC_PROBLEM_LIMIT:
+        if (
+            item_status in {"warning", "fail", "unknown"}
+            and len(problems) < CODEX_DIAGNOSTIC_PROBLEM_LIMIT
+        ):
             problems.append(
                 {
                     "id": safe_item_id,
@@ -360,9 +357,7 @@ def _redacted_doctor_summary(report: dict[str, Any]) -> dict[str, Any]:
     for item_status in ("warning", "fail"):
         counts[item_status] -= context_limited_counts[item_status]
         counts["skipped"] += context_limited_counts[item_status]
-    effective_status = (
-        _effective_doctor_status(counts) if context_limited else status
-    )
+    effective_status = _effective_doctor_status(counts) if context_limited else status
     summary: dict[str, Any] = {
         "doctor_status": effective_status,
         "provider_doctor_status": status,
@@ -371,8 +366,7 @@ def _redacted_doctor_summary(report: dict[str, Any]) -> dict[str, Any]:
         "provider_check_status_counts": provider_counts,
         "problem_checks": problems,
         "problem_checks_truncated": max(
-            sum(counts[key] for key in ("warning", "fail", "unknown"))
-            - len(problems),
+            sum(counts[key] for key in ("warning", "fail", "unknown")) - len(problems),
             0,
         ),
         "context_limited_checks": context_limited,
@@ -425,9 +419,7 @@ def _doctor_report_validation_reason(
         counts[key] for key in ("warning", "fail", "unknown")
     ):
         return "inconsistent_overall_status"
-    if doctor_status == "warning" and any(
-        counts[key] for key in ("fail", "unknown")
-    ):
+    if doctor_status == "warning" and any(counts[key] for key in ("fail", "unknown")):
         return "inconsistent_overall_status"
     if doctor_status == "skipped" and any(
         counts[key] for key in ("ok", "warning", "fail", "unknown")
@@ -644,7 +636,7 @@ def codex_diagnostic_exit_code(result: dict[str, Any]) -> int:
 
 
 def activate_queued_thread_window(thread_id: str) -> dict[str, Any]:
-    """Focus a queued Desktop task without forcing a history reload."""
+    """Explicitly focus a queued Desktop task without forcing a history reload."""
 
     return activate_thread_window(thread_id, live_refresh=False)
 
@@ -1218,6 +1210,17 @@ def _existing_wakeup(
         return None
     existing = core.load_object(receipt_path)
     if existing.get("status") == "delivery_claimed":
+        selected_mode = existing.get("delivery_mode")
+        if selected_mode not in {
+            "session_queue",
+            "headless_app_server_turn",
+        }:
+            selected_mode = "session_queue"
+        reason_prefix = (
+            "headless_delivery_ambiguous"
+            if selected_mode == "headless_app_server_turn"
+            else "queue_delivery_ambiguous"
+        )
         return {
             "schema_version": core.SCHEMA_VERSION,
             "kind": "CURRENT_THREAD_WAKEUP",
@@ -1227,20 +1230,19 @@ def _existing_wakeup(
             "source_kind": existing.get("source_kind"),
             "target_thread_id": existing.get("target_thread_id"),
             "status": "deferred",
-            **host_capabilities.receipt_fields("codex"),
+            **host_capabilities.receipt_fields(
+                "codex", delivery_mode=str(selected_mode)
+            ),
             "reason": (
-                "queue_delivery_ambiguous: a previous durable delivery claim "
+                f"{reason_prefix}: a previous durable delivery claim "
                 "has no acknowledgement"
             ),
             "created_at": core.utc_now(),
             "receipt": str(receipt_path),
         }
-    if (
-        existing.get("status") == "deferred"
-        and str(existing.get("reason", "")).startswith(
-            "queue_delivery_ambiguous"
-        )
-    ):
+    if existing.get("status") == "deferred" and str(
+        existing.get("reason", "")
+    ).startswith(("queue_delivery_ambiguous", "headless_delivery_ambiguous")):
         return {**existing, "receipt": str(receipt_path)}
     if existing.get("status") not in {
         "queued",
@@ -1267,7 +1269,7 @@ def queue_current_thread(
     state_dir: str = core.DEFAULT_STATE_DIR,
     codex: str = "codex",
     runner=subprocess.run,
-    activator=activate_queued_thread_window,
+    activator=None,
 ) -> dict[str, Any]:
     """Serialize one durable live-queue delivery per project event."""
 
@@ -1302,7 +1304,7 @@ def _queue_current_thread_unlocked(
     state_dir: str = core.DEFAULT_STATE_DIR,
     codex: str = "codex",
     runner=subprocess.run,
-    activator=activate_queued_thread_window,
+    activator=None,
 ) -> dict[str, Any]:
     """Queue a bounded wakeup in the shared live Codex Desktop session."""
 
@@ -1399,8 +1401,7 @@ def _queue_current_thread_unlocked(
             **base_receipt,
             "status": "deferred",
             "reason": (
-                "queue_delivery_ambiguous: success without a matching "
-                "acknowledgement"
+                "queue_delivery_ambiguous: success without a matching acknowledgement"
             ),
         }
         core.atomic_json(receipt_path, receipt)
@@ -1413,12 +1414,13 @@ def _queue_current_thread_unlocked(
         "queue_acknowledged_at": core.utc_now(),
     }
     core.atomic_json(receipt_path, receipt)
-    try:
-        activation = activator(target_thread_id)
-    except Exception as error:
-        activation = {"activation": "failed", "activation_error": str(error)}
-    receipt.update(activation)
-    core.atomic_json(receipt_path, receipt)
+    if activator is not None:
+        try:
+            activation = activator(target_thread_id)
+        except Exception as error:
+            activation = {"activation": "failed", "activation_error": str(error)}
+        receipt.update(activation)
+        core.atomic_json(receipt_path, receipt)
     return {**receipt, "receipt": str(receipt_path)}
 
 
@@ -1431,7 +1433,7 @@ def wake_bound_thread(
     codex: str = "codex",
     queue_runner=subprocess.run,
     queue_probe=None,
-    queue_activator=activate_queued_thread_window,
+    queue_activator=None,
     server_factory=AppServer,
     **legacy_kwargs: Any,
 ) -> dict[str, Any]:
@@ -1541,6 +1543,17 @@ def _wake_current_thread_unlocked(
 
     event_path = Path(event_path_value).expanduser().resolve()
     event = core.verify_terminal_event(event_path)
+    base_receipt = {
+        "schema_version": core.SCHEMA_VERSION,
+        "kind": "CURRENT_THREAD_WAKEUP",
+        "event_id": event_id,
+        **core.subject_fields(event),
+        "target_thread_id": target_thread_id,
+        **host_capabilities.receipt_fields(
+            "codex", delivery_mode="headless_app_server_turn"
+        ),
+        "created_at": core.utc_now(),
+    }
     log_path = (
         core.inbox_root(project, state_dir=state_dir)
         / "logs"
@@ -1548,6 +1561,7 @@ def _wake_current_thread_unlocked(
     )
     server = None
     handed_off = False
+    delivery_claimed = False
     try:
         server = server_factory(codex, stderr_path=log_path)
         server.request(
@@ -1620,6 +1634,15 @@ def _wake_current_thread_unlocked(
             }
             core.atomic_json(receipt_path, receipt)
             return {**receipt, "receipt": str(receipt_path)}
+        core.atomic_json(
+            receipt_path,
+            {
+                **base_receipt,
+                "status": "delivery_claimed",
+                "delivery_claimed_at": core.utc_now(),
+            },
+        )
+        delivery_claimed = True
         server.request("thread/resume", {"threadId": target_thread_id})
         started = server.request(
             "turn/start",
@@ -1661,16 +1684,13 @@ def _wake_current_thread_unlocked(
         declined_so_far = list(getattr(server, "auto_declined", []))
     except (OSError, RuntimeError, ValueError) as error:
         receipt = {
-            "schema_version": core.SCHEMA_VERSION,
-            "kind": "CURRENT_THREAD_WAKEUP",
-            "event_id": event_id,
-            "target_thread_id": target_thread_id,
+            **base_receipt,
             "status": "deferred",
-            **host_capabilities.receipt_fields(
-                "codex", delivery_mode="headless_app_server_turn"
+            "reason": (
+                f"headless_delivery_ambiguous: {error}"
+                if delivery_claimed
+                else str(error)
             ),
-            "reason": str(error),
-            "created_at": core.utc_now(),
         }
         core.atomic_json(receipt_path, receipt)
         return {**receipt, "receipt": str(receipt_path)}

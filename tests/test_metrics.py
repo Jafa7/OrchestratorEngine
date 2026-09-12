@@ -73,6 +73,65 @@ class MetricsStoreTests(unittest.TestCase):
         )
         self.assertEqual(len(self.store.observations()), 1)
 
+    def test_ingest_uses_recoverable_observation_index_after_initial_build(
+        self,
+    ) -> None:
+        first = self.observation(
+            "execution_attempt", {"execution_id": "run-1"}, observation_id="one"
+        )
+        second = self.observation(
+            "execution_attempt", {"execution_id": "run-2"}, observation_id="two"
+        )
+        self.store.ingest([first])
+
+        with patch.object(
+            self.store,
+            "_observation_index",
+            side_effect=AssertionError("full history fallback used"),
+        ):
+            result = self.store.ingest([second])
+
+        self.assertEqual(result["imported"], 1)
+        self.assertFalse(result["index_rebuilt"])
+
+    def test_missing_observation_index_rebuilds_without_duplicate_ingest(self) -> None:
+        item = self.observation(
+            "execution_attempt", {"execution_id": "run-1"}, observation_id="one"
+        )
+        self.store.ingest([item])
+        self.store.observation_index_path.unlink()
+
+        result = self.store.ingest([item])
+
+        self.assertEqual(result["status"], "unchanged")
+        self.assertEqual(result["imported"], 0)
+        self.assertTrue(result["index_rebuilt"])
+
+    def test_token_metric_requires_usage_capability_and_complete_provenance(
+        self,
+    ) -> None:
+        self.store.ingest(
+            [
+                self.observation(
+                    "execution_attempt",
+                    {
+                        "execution_id": "run-1",
+                        "total_tokens": 42000,
+                        "usage_measurement_status": "complete",
+                    },
+                    observation_id="unqualified-usage",
+                )
+            ]
+        )
+
+        report = build_report(self.store)
+        metric = next(
+            item for item in report["metrics"] if item["metric_id"] == "MET-007"
+        )
+
+        self.assertIsNone(metric["value"])
+        self.assertEqual(metric["details"]["unqualified_usage_records"], 1)
+
     def test_attempt_sequence_must_be_a_positive_integer(self) -> None:
         with self.assertRaisesRegex(
             contracts.MetricsContractError,
@@ -508,13 +567,23 @@ class MetricsCalculationTests(unittest.TestCase):
         values = [
             self.item(
                 "execution_attempt",
-                {"execution_id": "run", "usage_event_id": "usage", "total_tokens": 100},
+                {
+                    "execution_id": "run",
+                    "usage_event_id": "usage",
+                    "total_tokens": 100,
+                    "usage_measurement_status": "complete",
+                },
                 "mirror-a",
                 "2026-09-08T10:00:00Z",
             ),
             self.item(
                 "execution_attempt",
-                {"execution_id": "run", "usage_event_id": "usage", "total_tokens": 100},
+                {
+                    "execution_id": "run",
+                    "usage_event_id": "usage",
+                    "total_tokens": 100,
+                    "usage_measurement_status": "complete",
+                },
                 "mirror-b",
                 "2026-09-08T10:01:00Z",
             ),
@@ -589,6 +658,7 @@ class MetricsCalculationTests(unittest.TestCase):
                     "execution_id": "run",
                     "usage_event_id": "usage",
                     "total_tokens": 100,
+                    "usage_measurement_status": "complete",
                 },
                 observation_id=f"usage-{index}",
                 observed_at="2026-09-08T10:00:00Z",
@@ -1155,6 +1225,38 @@ class MetricsAdapterAndCliTests(unittest.TestCase):
                 changed["records"][0]["observation_id"],
             )
 
+    def test_adapter_recovers_artifact_after_candidate_journal_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            warmed = collect_orchestrator_engine(root, source_id=self.SOURCE)
+            self.assertEqual(warmed["candidate_count"], 0)
+            result_path = (
+                root / ".orchestrator" / "tasks" / "T-RECOVERED" / "result.json"
+            )
+            with patch(
+                "orchestrator_engine.platform_runtime.exclusive_file_lock",
+                side_effect=RuntimeError("journal unavailable"),
+            ):
+                core.atomic_json(
+                    result_path,
+                    {
+                        "schema_version": 1,
+                        "kind": "WORKER_RESULT",
+                        "task_id": "T-RECOVERED",
+                        "terminal_status": "failed",
+                        "finished_at": "2026-09-08T10:00:00Z",
+                    },
+                )
+
+            recovered = collect_orchestrator_engine(
+                root, source_id=self.SOURCE
+            )
+
+        self.assertEqual(recovered["candidate_count"], 1)
+        self.assertEqual(recovered["record_count"], 1)
+        self.assertTrue(recovered["discovery"]["recovery_rebuilt"])
+        self.assertEqual(recovered["discovery"]["pending_recovery_markers"], 0)
+
     def test_adapter_cursor_eventually_visits_later_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1187,7 +1289,62 @@ class MetricsAdapterAndCliTests(unittest.TestCase):
             self.assertTrue(first["truncated"])
             self.assertEqual(first["record_count"], 2)
             self.assertEqual(second["record_count"], 1)
-            self.assertIsNone(second["next_cursor"])
+            self.assertTrue(second["next_cursor"].startswith("metrics-index:"))
+            third = collect_orchestrator_engine(
+                root,
+                source_id=self.SOURCE,
+                maximum=2,
+                cursor=second["next_cursor"],
+            )
+            self.assertEqual(third["candidate_count"], 0)
+            self.assertFalse(third["discovery"]["index_rebuilt"])
+            self.assertEqual(third["discovery"]["rebuild_paths_examined"], 0)
+
+    def test_adapter_cursor_skips_deleted_rows_without_losing_later_file(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = []
+            for index in range(4):
+                path = (
+                    root
+                    / ".orchestrator"
+                    / "workstreams"
+                    / f"stream-{index}"
+                    / "workstream.json"
+                )
+                paths.append(path)
+                core.atomic_json(
+                    path,
+                    {
+                        "schema_version": 1,
+                        "kind": "ORCHESTRATOR_WORKSTREAM",
+                        "workstream_id": f"stream-{index}",
+                        "status": "active",
+                        "created_at": "2026-09-08T10:00:00Z",
+                    },
+                )
+
+            first = collect_orchestrator_engine(
+                root, source_id=self.SOURCE, maximum=1
+            )
+            paths[1].unlink()
+            paths[2].unlink()
+            second = collect_orchestrator_engine(
+                root,
+                source_id=self.SOURCE,
+                maximum=1,
+                cursor=first["next_cursor"],
+            )
+
+            self.assertEqual(second["record_count"], 1)
+            self.assertEqual(
+                second["records"][0]["data"]["work_item_id"], "stream-3"
+            )
+            self.assertGreaterEqual(
+                second["discovery"]["candidate_rows_examined"], 3
+            )
 
     def test_adapter_keeps_unavailable_usage_unknown(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1424,7 +1581,7 @@ class MetricsAdapterAndCliTests(unittest.TestCase):
                 item for item in report["metrics"] if item["metric_id"] == "MET-010"
             )
 
-            self.assertEqual(report["observation_count"], 2)
+            self.assertEqual(report["observation_count"], 1)
             self.assertEqual(metric["value"], 1)
             self.assertEqual(metric["details"]["delivered"], 1)
 

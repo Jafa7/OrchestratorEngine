@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import itertools
 import json
 import os
 import secrets
@@ -71,6 +70,19 @@ def validate_subscriber(subscriber):
         binding.validate_wake_target(target)
 
 
+def same_subscriber(first, second):
+    """Compare immutable routing and delivery semantics, not capture time."""
+
+    if not isinstance(first, dict) or not isinstance(second, dict):
+        return False
+    fields = {"id", "wake", "wake_policy", "check_id"}
+    if any(first.get(field) != second.get(field) for field in fields):
+        return False
+    return binding.same_wake_destination(
+        first.get("wake_target"), second.get("wake_target")
+    )
+
+
 def normalize_registry(raw):
     if not isinstance(raw, dict):
         raise ResourceError("resources must be an object")
@@ -112,30 +124,138 @@ def normalize_registry(raw):
         entry["kind"] = kind
         result[name] = entry
     for name in result:
-        alternatives(result, name)
+        if next(alternatives(result, name), None) is None:
+            raise ResourceError("bundle has no assignment without overlapping members")
     return result
 
 
-def alternatives(registry, name, trail=()):
+def selector_leaves(registry, name, trail=()):
     if name in trail or name not in registry:
         raise ResourceError("unknown or cyclic resource selector")
     entry = registry[name]
     if entry["kind"] == "resource":
-        return [(name,)]
-    choices = [
-        alternatives(registry, member, (*trail, name)) for member in entry["members"]
+        return {name}
+    leaves = set()
+    for member in entry["members"]:
+        leaves.update(selector_leaves(registry, member, (*trail, name)))
+    return leaves
+
+
+def selector_available(registry, name, *, excluded=(), trail=()):
+    """Return whether a selector has a structurally possible choice."""
+
+    if name in trail or name not in registry:
+        raise ResourceError("unknown or cyclic resource selector")
+    entry = registry[name]
+    if entry["kind"] == "resource":
+        return name not in excluded
+    available = [
+        selector_available(
+            registry,
+            member,
+            excluded=excluded,
+            trail=(*trail, name),
+        )
+        for member in entry["members"]
     ]
     if entry["kind"] in {"alias", "pool"}:
-        return sorted(set(itertools.chain.from_iterable(choices)))
-    result = []
-    for selection in itertools.product(*choices):
-        flattened = tuple(sorted(itertools.chain.from_iterable(selection)))
-        if len(set(flattened)) != len(flattened):
-            continue
-        result.append(flattened)
-    if not result:
-        raise ResourceError("bundle has no assignment without overlapping members")
-    return sorted(set(result))
+        return any(available)
+    return all(available)
+
+
+def selector_claim_available(
+    registry,
+    name,
+    *,
+    claim,
+    others,
+    excluded=(),
+    trail=(),
+):
+    """Return whether every mandatory branch can satisfy one claim."""
+
+    if name in trail or name not in registry:
+        raise ResourceError("unknown or cyclic resource selector")
+    entry = registry[name]
+    if entry["kind"] == "resource":
+        return name not in excluded and compatible(
+            registry, {name: dict(claim)}, others
+        )
+    checks = (
+        selector_claim_available(
+            registry,
+            member,
+            claim=claim,
+            others=others,
+            excluded=excluded,
+            trail=(*trail, name),
+        )
+        for member in entry["members"]
+    )
+    if entry["kind"] in {"alias", "pool"}:
+        return any(checks)
+    return all(checks)
+
+
+def alternatives(registry, name, trail=(), *, priority=None, excluded=()):
+    """Yield selector alternatives lazily, including nested bundles."""
+
+    if name in trail or name not in registry:
+        raise ResourceError("unknown or cyclic resource selector")
+    entry = registry[name]
+    if entry["kind"] == "resource":
+        if name not in excluded:
+            yield (name,)
+        return
+    if not selector_available(registry, name, excluded=excluded, trail=trail):
+        return
+    priority = priority or {}
+    members = sorted(
+        entry["members"],
+        key=lambda member: (
+            min(
+                (priority.get(leaf, 0) for leaf in selector_leaves(registry, member)),
+                default=0,
+            ),
+            member,
+        ),
+    )
+    if entry["kind"] in {"alias", "pool"}:
+        seen = set()
+        for member in members:
+            for choice in alternatives(
+                registry,
+                member,
+                (*trail, name),
+                priority=priority,
+                excluded=excluded,
+            ):
+                if choice not in seen:
+                    seen.add(choice)
+                    yield choice
+        return
+
+    seen = set()
+
+    def combine(index, selected):
+        if index == len(members):
+            choice = tuple(sorted(selected))
+            if choice not in seen:
+                seen.add(choice)
+                yield choice
+            return
+        for option in alternatives(
+            registry,
+            members[index],
+            (*trail, name),
+            priority=priority,
+            excluded=excluded,
+        ):
+            if selected.intersection(option):
+                continue
+            yield from combine(index + 1, selected | set(option))
+
+    yield from combine(0, set())
 
 
 def demands(registry, needs):
@@ -155,7 +275,9 @@ def demands(registry, needs):
             identifier(group)
         if mode == "exclusive" and units != 1:
             raise ResourceError("exclusive access consumes the entire leaf")
-        result.append((alternatives(registry, name), mode, units, group))
+        if name not in registry:
+            raise ResourceError("unknown or cyclic resource selector")
+        result.append((name, mode, units, group))
     return result
 
 
@@ -164,17 +286,10 @@ def assignments(registry, needs, *, others=(), excluded=(), priority=None, requi
     specifications = demands(registry, needs)
     priority = priority or {}
     excluded, required = set(excluded), set(required)
-    options = [
-        sorted(
-            item[0],
-            key=lambda leaves: (sum(priority.get(k, 0) for k in leaves), leaves),
-        )
-        for item in specifications
-    ]
-    remaining = [set() for _ in range(len(options) + 1)]
-    for index in reversed(range(len(options))):
-        remaining[index] = remaining[index + 1] | set(
-            itertools.chain.from_iterable(options[index])
+    remaining = [set() for _ in range(len(specifications) + 1)]
+    for index in reversed(range(len(specifications))):
+        remaining[index] = remaining[index + 1] | selector_leaves(
+            registry, specifications[index][0]
         )
 
     # Explicit DFS frames preserve lazy search without a Python recursion ceiling.
@@ -189,13 +304,40 @@ def assignments(registry, needs, *, others=(), excluded=(), priority=None, requi
             yield allocation
             continue
         if iterator is None:
-            iterator = iter(options[index])
+            _, mode, units, group = specifications[index]
+            claim = {
+                "mode": mode,
+                "units": units,
+                "compatibility": group,
+            }
+            if not selector_claim_available(
+                registry,
+                specifications[index][0],
+                claim=claim,
+                others=others,
+                excluded=excluded,
+            ):
+                stack.pop()
+                continue
+            unavailable = {
+                leaf
+                for leaf in selector_leaves(registry, specifications[index][0])
+                if not compatible(
+                    registry,
+                    {leaf: claim},
+                    others,
+                )
+            }
+            iterator = alternatives(
+                registry,
+                specifications[index][0],
+                priority=priority,
+                excluded=excluded | unavailable,
+            )
             stack[-1] = (index, allocation, iterator)
         leaves = next(iterator, None)
         if leaves is None:
             stack.pop()
-            continue
-        if excluded.intersection(leaves):
             continue
         _, mode, units, group = specifications[index]
         candidate = dict(allocation)
@@ -220,6 +362,8 @@ def assignments(registry, needs, *, others=(), excluded=(), priority=None, requi
 
 def compatible(registry, allocation, others):
     for leaf, claim in allocation.items():
+        if leaf in registry and claim["units"] > registry[leaf]["capacity"]:
+            return False
         occupied = [other[leaf] for other in others if leaf in other]
         if not occupied:
             continue
@@ -283,6 +427,11 @@ class Ledger:
                    attempts INTEGER NOT NULL DEFAULT 0,
                    next_attempt REAL NOT NULL DEFAULT 0,
                    last_error TEXT);
+                CREATE TABLE IF NOT EXISTS subscriber_history
+                  (request TEXT NOT NULL, subscriber TEXT NOT NULL,
+                   generation INTEGER NOT NULL, body TEXT NOT NULL,
+                   active INTEGER NOT NULL,
+                   PRIMARY KEY(request,subscriber,generation));
             """)
             for key, value in {
                 "version": 1,
@@ -296,6 +445,13 @@ class Ledger:
                 )
         if self.get("version") != 1:
             raise ResourceError("unsupported resource ledger schema")
+        self.db.execute(
+            "CREATE TABLE IF NOT EXISTS subscriber_history "
+            "(request TEXT NOT NULL, subscriber TEXT NOT NULL, "
+            "generation INTEGER NOT NULL, body TEXT NOT NULL, "
+            "active INTEGER NOT NULL, "
+            "PRIMARY KEY(request,subscriber,generation))"
+        )
 
     def close(self):
         self.db.close()
@@ -471,6 +627,11 @@ class Ledger:
                 "INSERT INTO requests VALUES (?,?,?,?)",
                 (request_id, project, external, canonical(body)),
             )
+            if subscriber is not None:
+                self.db.execute(
+                    "INSERT INTO subscriber_history VALUES (?,?,?,?,1)",
+                    (request_id, subscriber["id"], 1, canonical(subscriber)),
+                )
             for definition in definitions:
                 stage = {
                     **definition,
@@ -566,8 +727,8 @@ class Ledger:
                 for other in stages:
                     if other["id"] == stage["id"] or other["state"] != "waiting":
                         continue
-                    for options, *_ in demands(registry, other.get("needs", [])):
-                        for leaf in set(itertools.chain.from_iterable(options)):
+                    for selector, *_ in demands(registry, other.get("needs", [])):
+                        for leaf in selector_leaves(registry, selector):
                             demand_count[leaf] = demand_count.get(leaf, 0) + 1
                 needs = stage.get("needs", [])
                 chosen = next(
@@ -728,19 +889,57 @@ class Ledger:
             if digest(request["plan"]) != contract_digest:
                 raise ResourceError("subscriber verification contract differs")
             identifier(subscriber["id"])
-            if any(
-                s["id"] == subscriber["id"] and s != subscriber
-                for s in request["subscribers"]
+            current = next(
+                (s for s in request["subscribers"] if s["id"] == subscriber["id"]),
+                None,
+            )
+            if current is not None and not same_subscriber(current, subscriber):
+                raise ResourceError(
+                    "subscription identity already has a pinned destination"
+                )
+            history = self.db.execute(
+                "SELECT generation,body,active FROM subscriber_history "
+                "WHERE request=? AND subscriber=? ORDER BY generation DESC LIMIT 1",
+                (request_id, subscriber["id"]),
+            ).fetchone()
+            if history is None and current is not None:
+                self.db.execute(
+                    "INSERT INTO subscriber_history VALUES (?,?,?,?,1)",
+                    (request_id, subscriber["id"], 1, canonical(current)),
+                )
+                history = (1, canonical(current), 1)
+            if history is not None and not same_subscriber(
+                json.loads(history[1]), subscriber
             ):
                 raise ResourceError(
                     "subscription identity already has a pinned destination"
                 )
             if remove:
                 request["subscribers"] = [
-                    s for s in request["subscribers"] if s != subscriber
+                    s for s in request["subscribers"] if s["id"] != subscriber["id"]
                 ]
-            elif subscriber not in request["subscribers"]:
+                self.db.execute(
+                    "UPDATE subscriber_history SET active=0 "
+                    "WHERE request=? AND subscriber=? AND active=1",
+                    (request_id, subscriber["id"]),
+                )
+            elif current is None:
                 request["subscribers"].append(subscriber)
+                generation = int(history[0]) + 1 if history is not None else 1
+                self.db.execute(
+                    "UPDATE subscriber_history SET active=0 "
+                    "WHERE request=? AND subscriber=?",
+                    (request_id, subscriber["id"]),
+                )
+                self.db.execute(
+                    "INSERT INTO subscriber_history VALUES (?,?,?,?,1)",
+                    (
+                        request_id,
+                        subscriber["id"],
+                        generation,
+                        canonical(subscriber),
+                    ),
+                )
             self.db.execute(
                 "UPDATE requests SET body=? WHERE id=?",
                 (canonical(request), request_id),
@@ -850,10 +1049,29 @@ class Ledger:
                 ]
             )
             for subscriber in request["subscribers"]:
+                history = self.db.execute(
+                    "SELECT generation FROM subscriber_history "
+                    "WHERE request=? AND subscriber=? AND active=1 "
+                    "ORDER BY generation DESC LIMIT 1",
+                    (request_id, subscriber["id"]),
+                ).fetchone()
+                generation = int(history[0]) if history is not None else 1
+                if history is None:
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO subscriber_history VALUES (?,?,?,?,1)",
+                        (
+                            request_id,
+                            subscriber["id"],
+                            generation,
+                            canonical(subscriber),
+                        ),
+                    )
                 event_id = str(
                     uuid.uuid5(
                         uuid.NAMESPACE_URL,
-                        canonical([request_id, subscriber["id"], outcome_id]),
+                        canonical(
+                            [request_id, subscriber["id"], generation, outcome_id]
+                        ),
                     )
                 )
                 value = {
@@ -863,12 +1081,9 @@ class Ledger:
                     "status": status,
                     "outcome_id": outcome_id,
                     "subscriber": subscriber,
+                    "subscriber_generation": generation,
                     "stages": [
-                        {
-                            k: v
-                            for k, v in s.items()
-                            if k not in PRIVATE_STAGE_FIELDS
-                        }
+                        {k: v for k, v in s.items() if k not in PRIVATE_STAGE_FIELDS}
                         for s in stages
                     ],
                 }

@@ -267,6 +267,45 @@ def start_monitor(
     )
     directory = monitor_dir_for(project, resolved_id, state_dir=state_dir)
     descriptor_path = directory / "monitor.json"
+    if descriptor_path.is_file():
+        with admission_lock(project, state_dir=state_dir):
+            existing = core.load_object(descriptor_path)
+            existing_dispatch = {
+                key: existing.get(key) for key in dispatch_identity
+            }
+            comparable_existing = {
+                **existing_dispatch,
+                "repository": str(existing_dispatch["repository"]).casefold(),
+            }
+            comparable_dispatch = {
+                **dispatch_identity,
+                "repository": str(dispatch_identity["repository"]).casefold(),
+            }
+            if comparable_existing != comparable_dispatch:
+                raise GitHubPullRequestError(
+                    "monitor already exists with different dispatch options: "
+                    f"{resolved_id}"
+                )
+        retained_target = existing.get("wake_target")
+        try:
+            completion_delivery = delivery_preflight.run(
+                project,
+                operation_kind="github_pull_request",
+                operation_id=resolved_id,
+                wake_policy=wake_policy,
+                wake_target=(
+                    retained_target if isinstance(retained_target, dict) else None
+                ),
+                mode=completion_delivery_mode,
+                state_dir=state_dir,
+            )
+            delivery_preflight.enforce(completion_delivery)
+        except delivery_preflight.DeliveryPreflightError as error:
+            raise GitHubPullRequestError(str(error)) from error
+        return delivery_preflight.attach(
+            {**existing, "descriptor_path": str(descriptor_path), "idempotent": True},
+            completion_delivery,
+        )
     bound = binding.load_binding(project, state_dir=state_dir)
     wake_target = binding.wake_target_from_binding(bound) if bound is not None else None
     try:
@@ -335,6 +374,18 @@ def start_monitor(
                     raise GitHubPullRequestError(
                         "monitor already exists with different dispatch options: "
                         f"{resolved_id}"
+                    )
+                if not binding.same_wake_destination(
+                    (
+                        existing.get("wake_target")
+                        if isinstance(existing.get("wake_target"), dict)
+                        else None
+                    ),
+                    wake_target,
+                ):
+                    raise GitHubPullRequestError(
+                        "monitor appeared with a retained wake destination; retry "
+                        "to preflight that destination"
                     )
                 return delivery_preflight.attach(
                     {**existing, "descriptor_path": str(path), "idempotent": True},

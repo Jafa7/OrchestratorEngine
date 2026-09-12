@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import sqlite3
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,6 +26,8 @@ DEFAULT_LARGE_LOG_BYTES = 1024 * 1024
 TASK_STATUSES = RUNNING_STATUSES | QUEUED_STATUSES | core.TERMINAL_STATUSES
 ProcessChecker = Callable[[int], bool]
 VERIFICATION_LEVEL_RANK = {"structural": 0, "focused": 1, "full": 2}
+TASK_INDEX_SCHEMA_VERSION = 2
+MAX_COMPACT_RESOLVED_TASKS = 32
 
 
 class TaskDiagnosticError(RuntimeError):
@@ -192,6 +196,7 @@ def diagnose_tasks(
     large_log_bytes: int = DEFAULT_LARGE_LOG_BYTES,
     process_checker: ProcessChecker = process_alive,
     now: datetime | None = None,
+    compact_indexed: bool = False,
 ) -> dict[str, Any]:
     if stale_after_seconds <= 0:
         raise TaskDiagnosticError("stale_after_seconds must be positive")
@@ -199,6 +204,16 @@ def diagnose_tasks(
         raise TaskDiagnosticError("large_log_bytes must be positive")
     project = project_root.expanduser().resolve()
     current = now or datetime.now(UTC)
+    if compact_indexed and task_id is None and worker is None and status is None:
+        return _diagnose_tasks_indexed(
+            project,
+            state_dir=state_dir,
+            minimum_severity=minimum_severity,
+            stale_after_seconds=stale_after_seconds,
+            large_log_bytes=large_log_bytes,
+            process_checker=process_checker,
+            now=current,
+        )
     task_paths = selected_task_paths(project, state_dir=state_dir, task_id=task_id)
 
     summaries: dict[str, Any] = {}
@@ -251,6 +266,177 @@ def diagnose_tasks(
     }
 
 
+def _diagnose_tasks_indexed(
+    project_root: Path,
+    *,
+    state_dir: str,
+    minimum_severity: str,
+    stale_after_seconds: float,
+    large_log_bytes: int,
+    process_checker: ProcessChecker,
+    now: datetime,
+) -> dict[str, Any]:
+    state_root = core.state_root(project_root, state_dir=state_dir)
+    index_path = state_root / "indexes" / "task-diagnostics.sqlite3"
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(index_path, timeout=10)
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS metadata(
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS summaries(
+                task_id TEXT PRIMARY KEY,
+                descriptor_path TEXT NOT NULL,
+                status TEXT NOT NULL,
+                worker TEXT,
+                resolution_status TEXT,
+                info_count INTEGER NOT NULL,
+                warning_count INTEGER NOT NULL,
+                error_count INTEGER NOT NULL,
+                max_log_bytes INTEGER NOT NULL,
+                summary_json TEXT NOT NULL,
+                indexed_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS task_summary_status_idx
+                ON summaries(status, task_id);
+            """
+        )
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(summaries)")
+        }
+        if "max_log_bytes" not in columns:
+            connection.execute(
+                "ALTER TABLE summaries ADD COLUMN max_log_bytes INTEGER "
+                "NOT NULL DEFAULT 0"
+            )
+            connection.execute("DELETE FROM summaries")
+            connection.execute(
+                "DELETE FROM metadata WHERE key IN ('schema_version','journal_offset')"
+            )
+        connection.commit()
+        connection.execute("BEGIN IMMEDIATE")
+        discovery = _refresh_task_index(
+            connection,
+            project_root,
+            state_dir=state_dir,
+            stale_after_seconds=stale_after_seconds,
+            large_log_bytes=large_log_bytes,
+            process_checker=process_checker,
+            now=now,
+        )
+        recovery_markers = discovery.pop("_recovery_markers", [])
+        status_rows = connection.execute(
+            "SELECT status, COUNT(*) AS count FROM summaries GROUP BY status"
+        ).fetchall()
+        resolution_rows = connection.execute(
+            """SELECT resolution_status, COUNT(*) AS count FROM summaries
+               WHERE resolution_status IS NOT NULL GROUP BY resolution_status"""
+        ).fetchall()
+        severity_column = {
+            "info": "info_count + warning_count + error_count",
+            "warning": "warning_count + error_count",
+            "error": "error_count",
+        }[minimum_severity]
+        selected = connection.execute(
+            f"""SELECT * FROM summaries
+                WHERE status IN ('starting','running','cancelling','queued')
+                   OR (({severity_column}) > 0 AND resolution_status IS NULL)
+                   OR max_log_bytes > ?
+                ORDER BY task_id""",
+            (large_log_bytes,),
+        ).fetchall()
+        resolved = connection.execute(
+            """SELECT * FROM summaries WHERE resolution_status IS NOT NULL
+               ORDER BY indexed_at DESC, task_id LIMIT ?""",
+            (MAX_COMPACT_RESOLVED_TASKS,),
+        ).fetchall()
+        totals = connection.execute(
+            f"""SELECT COUNT(*) AS task_count,
+                       COALESCE(SUM({severity_column}), 0) AS diagnostic_count,
+                       COALESCE(SUM(info_count), 0) AS info_count,
+                       COALESCE(SUM(warning_count), 0) AS warning_count,
+                       COALESCE(SUM(error_count), 0) AS error_count
+                FROM summaries"""
+        ).fetchone()
+        connection.commit()
+        core.clear_index_recovery_markers(recovery_markers)
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+    summaries: dict[str, Any] = {}
+    for row in [*selected, *resolved]:
+        summary = json.loads(row["summary_json"])
+        diagnostics = worker_diagnostics.filter_diagnostics(
+            summary.get("diagnostics", []), minimum_severity=minimum_severity
+        )
+        summary["diagnostics"] = diagnostics
+        summary["diagnostic_count"] = len(diagnostics)
+        summary["severity_counts"] = worker_diagnostics.severity_counts(diagnostics)
+        summary["worst_severity"] = worker_diagnostics.worst_severity(diagnostics)
+        summaries[str(row["task_id"])] = summary
+    severity_counts = {
+        severity: int(totals[f"{severity}_count"])
+        for severity in worker_diagnostics.SEVERITIES
+    }
+    filtered_severity_counts = {
+        severity: count
+        for severity, count in severity_counts.items()
+        if worker_diagnostics.SEVERITY_RANK[severity]
+        >= worker_diagnostics.SEVERITY_RANK[minimum_severity]
+    }
+    return {
+        "schema_version": core.SCHEMA_VERSION,
+        "kind": TASK_DIAGNOSTICS_KIND,
+        "tasks_root": str(workers.tasks_root(project_root, state_dir=state_dir)),
+        "generated_at": core.utc_now(),
+        "filters": {
+            "task_id": None,
+            "worker": None,
+            "status": None,
+            "minimum_severity": minimum_severity,
+            "stale_after_seconds": stale_after_seconds,
+            "large_log_bytes": large_log_bytes,
+            "compact_indexed": True,
+        },
+        "task_count": int(totals["task_count"]),
+        "status_counts": {
+            **{item: 0 for item in sorted(TASK_STATUSES)},
+            **{str(row["status"]): int(row["count"]) for row in status_rows},
+        },
+        "resolution_counts": {
+            **{item: 0 for item in sorted(task_resolution.RESOLUTION_STATUSES)},
+            **{
+                str(row["resolution_status"]): int(row["count"])
+                for row in resolution_rows
+            },
+        },
+        "diagnostic_count": int(totals["diagnostic_count"]),
+        "severity_counts": filtered_severity_counts,
+        "worst_severity": worker_diagnostics.worst_severity(
+            [
+                {"severity": severity}
+                for severity, count in filtered_severity_counts.items()
+                if count
+            ]
+        ),
+        "tasks": summaries,
+        "task_view": {
+            "included_count": len(summaries),
+            "active_or_unresolved_count": len(selected),
+            "resolved_included_count": len(resolved),
+            "resolved_limit": MAX_COMPACT_RESOLVED_TASKS,
+        },
+        "discovery": discovery,
+    }
+
+
 def status_counts(summaries: Iterable[dict[str, Any]]) -> dict[str, int]:
     counts = {status: 0 for status in sorted(TASK_STATUSES)}
     unknown_count = 0
@@ -298,6 +484,250 @@ def selected_task_paths(
         for task_dir in sorted(root.iterdir())
         if task_dir.is_dir()
     ]
+
+
+def _refresh_task_index(
+    connection: sqlite3.Connection,
+    project_root: Path,
+    *,
+    state_dir: str,
+    stale_after_seconds: float,
+    large_log_bytes: int,
+    process_checker: ProcessChecker,
+    now: datetime,
+) -> dict[str, Any]:
+    state_root = core.state_root(project_root, state_dir=state_dir)
+    recovery = core.index_recovery_markers(
+        state_root, index_name="task-diagnostics"
+    )
+    recoverable_markers = [*recovery["ready"], *recovery["invalid"]]
+    if recoverable_markers:
+        connection.execute("DELETE FROM summaries")
+        connection.execute("DELETE FROM metadata")
+    journal = state_root / "indexes" / "task-diagnostics.jsonl"
+    bootstrapped = connection.execute(
+        "SELECT value FROM metadata WHERE key='schema_version'"
+    ).fetchone()
+    rebuilt = bootstrapped is None
+    rebuild_paths_examined = 0
+    if rebuilt:
+        initial_offset = journal.stat().st_size if journal.is_file() else 0
+        root = workers.tasks_root(project_root, state_dir=state_dir)
+        if root.is_dir():
+            for task_dir in root.iterdir():
+                if not task_dir.is_dir():
+                    continue
+                rebuild_paths_examined += 1
+                _index_task_summary(
+                    connection,
+                    project_root,
+                    descriptor_path=task_dir / "task.json",
+                    state_dir=state_dir,
+                    stale_after_seconds=stale_after_seconds,
+                    large_log_bytes=large_log_bytes,
+                    process_checker=process_checker,
+                    now=now,
+                )
+        connection.execute(
+            "INSERT INTO metadata(key,value) VALUES('schema_version',?)",
+            (str(TASK_INDEX_SCHEMA_VERSION),),
+        )
+        connection.execute(
+            "INSERT INTO metadata(key,value) VALUES('journal_offset',?)",
+            (str(initial_offset),),
+        )
+    elif bootstrapped["value"] != str(TASK_INDEX_SCHEMA_VERSION):
+        connection.execute("DELETE FROM summaries")
+        connection.execute("DELETE FROM metadata")
+        return _refresh_task_index(
+            connection,
+            project_root,
+            state_dir=state_dir,
+            stale_after_seconds=stale_after_seconds,
+            large_log_bytes=large_log_bytes,
+            process_checker=process_checker,
+            now=now,
+        )
+
+    offset_row = connection.execute(
+        "SELECT value FROM metadata WHERE key='journal_offset'"
+    ).fetchone()
+    offset = int(offset_row["value"]) if offset_row is not None else 0
+    changed_task_ids: set[str] = set()
+    journal_records_examined = 0
+    if journal.is_file():
+        size = journal.stat().st_size
+        if offset > size:
+            connection.execute("DELETE FROM summaries")
+            connection.execute("DELETE FROM metadata")
+            return _refresh_task_index(
+                connection,
+                project_root,
+                state_dir=state_dir,
+                stale_after_seconds=stale_after_seconds,
+                large_log_bytes=large_log_bytes,
+                process_checker=process_checker,
+                now=now,
+            )
+        with journal.open("rb") as handle:
+            handle.seek(offset)
+            while True:
+                line_start = handle.tell()
+                line = handle.readline()
+                if not line:
+                    break
+                if not line.endswith(b"\n"):
+                    handle.seek(line_start)
+                    break
+                offset = handle.tell()
+                journal_records_examined += 1
+                try:
+                    value = json.loads(line)
+                    task_id = _task_id_from_journal_path(
+                        state_root, Path(value["path"])
+                    )
+                except (
+                    KeyError,
+                    OSError,
+                    TypeError,
+                    ValueError,
+                    core.OrchestratorError,
+                    json.JSONDecodeError,
+                ):
+                    continue
+                if task_id is not None:
+                    changed_task_ids.add(task_id)
+    active_task_ids = {
+        str(row["task_id"])
+        for row in connection.execute(
+            """SELECT task_id FROM summaries
+               WHERE status IN ('starting','running','cancelling','queued')"""
+        ).fetchall()
+    }
+    refreshed = changed_task_ids | active_task_ids
+    for task_id in sorted(refreshed):
+        descriptor_path = (
+            workers.tasks_root(project_root, state_dir=state_dir)
+            / task_id
+            / "task.json"
+        )
+        if not descriptor_path.parent.is_dir():
+            connection.execute("DELETE FROM summaries WHERE task_id=?", (task_id,))
+            continue
+        _index_task_summary(
+            connection,
+            project_root,
+            descriptor_path=descriptor_path,
+            state_dir=state_dir,
+            stale_after_seconds=stale_after_seconds,
+            large_log_bytes=large_log_bytes,
+            process_checker=process_checker,
+            now=now,
+        )
+    connection.execute(
+        """INSERT INTO metadata(key,value) VALUES('journal_offset',?)
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+        (str(offset),),
+    )
+    return {
+        "index_rebuilt": rebuilt,
+        "rebuild_paths_examined": rebuild_paths_examined,
+        "journal_records_examined": journal_records_examined,
+        "active_rows_refreshed": len(active_task_ids),
+        "changed_rows_refreshed": len(changed_task_ids),
+        "index_path": str(state_root / "indexes" / "task-diagnostics.sqlite3"),
+        "coverage": (
+            "recovery_pending"
+            if recovery["pending"]
+            else "all_indexed_tasks_with_active_and_changed_rows_refreshed"
+        ),
+        "recovery_rebuilt": bool(recoverable_markers),
+        "pending_recovery_markers": len(recovery["pending"]),
+        "invalid_recovery_markers": len(recovery["invalid"]),
+        "_recovery_markers": recoverable_markers,
+    }
+
+
+def _task_id_from_journal_path(state_root: Path, path: Path) -> str | None:
+    resolved_state = state_root.resolve()
+    resolved = path.expanduser().resolve()
+    relative = resolved.relative_to(resolved_state)
+    parts = relative.parts
+    if len(parts) == 3 and parts[0] == "tasks":
+        return core.validate_event_id(parts[1])
+    if (
+        len(parts) == 2
+        and parts[0] == "task-resolutions"
+        and resolved.suffix == ".json"
+    ):
+        return core.validate_event_id(resolved.stem)
+    return None
+
+
+def _index_task_summary(
+    connection: sqlite3.Connection,
+    project_root: Path,
+    *,
+    descriptor_path: Path,
+    state_dir: str,
+    stale_after_seconds: float,
+    large_log_bytes: int,
+    process_checker: ProcessChecker,
+    now: datetime,
+) -> None:
+    summary = summarize_task(
+        project_root,
+        descriptor_path,
+        state_dir=state_dir,
+        stale_after_seconds=stale_after_seconds,
+        large_log_bytes=large_log_bytes,
+        process_checker=process_checker,
+        now=now,
+    )
+    task_id = str(summary["directory_task_id"])
+    counts = worker_diagnostics.severity_counts(summary.get("diagnostics", []))
+    resolution = summary.get("resolution")
+    resolution_status = (
+        str(resolution.get("status")) if isinstance(resolution, dict) else None
+    )
+    connection.execute(
+        """INSERT INTO summaries(
+               task_id, descriptor_path, status, worker, resolution_status,
+               info_count, warning_count, error_count, max_log_bytes,
+               summary_json, indexed_at
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(task_id) DO UPDATE SET
+             descriptor_path=excluded.descriptor_path,
+             status=excluded.status,
+             worker=excluded.worker,
+             resolution_status=excluded.resolution_status,
+             info_count=excluded.info_count,
+             warning_count=excluded.warning_count,
+             error_count=excluded.error_count,
+             max_log_bytes=excluded.max_log_bytes,
+             summary_json=excluded.summary_json,
+             indexed_at=excluded.indexed_at""",
+        (
+            task_id,
+            str(descriptor_path),
+            str(summary.get("status") or "unknown"),
+            summary.get("worker"),
+            resolution_status,
+            int(counts.get("info", 0)),
+            int(counts.get("warning", 0)),
+            int(counts.get("error", 0)),
+            max(
+                (
+                    size
+                    for size in summary.get("log_sizes", {}).values()
+                    if isinstance(size, int)
+                ),
+                default=0,
+            ),
+            json.dumps(summary, sort_keys=True, separators=(",", ":")),
+            core.utc_now(),
+        ),
+    )
 
 
 def summarize_task(

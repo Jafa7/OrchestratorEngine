@@ -16,6 +16,7 @@ from . import (
     claude_stream,
     codex_app,
     conformance,
+    continuity,
     core,
     delivery_preflight,
     diagnostics,
@@ -938,7 +939,8 @@ def build_parser() -> argparse.ArgumentParser:
     workstream_start.add_argument("--workstream-id", required=True)
     workstream_start.add_argument("--goal", required=True)
     workstream_start.add_argument(
-        "--unlimited", action="store_true",
+        "--unlimited",
+        action="store_true",
         help="Explicitly select no continuation or wall-time limit (the default).",
     )
     workstream_start.add_argument(
@@ -1006,9 +1008,209 @@ def build_parser() -> argparse.ArgumentParser:
             "--" + field.replace("_", "-"), type=int, default=argparse.SUPPRESS
         )
         group.add_argument(
-            disable_flag, dest=field, action="store_const", const=None,
+            disable_flag,
+            dest=field,
+            action="store_const",
+            const=None,
             default=argparse.SUPPRESS,
         )
+
+    continuity_parser = subparsers.add_parser(
+        "continuity",
+        help="Coordinate durable work, actors, obligations and typed waits.",
+    )
+    continuity_subparsers = continuity_parser.add_subparsers(
+        dest="continuity_command", required=True
+    )
+    continuity_subparsers.add_parser("init", help="Initialize continuity state.")
+    actor_register = continuity_subparsers.add_parser(
+        "actor-register", help="Register or update one addressable project actor."
+    )
+    actor_register.add_argument("--actor-id", required=True)
+    actor_register.add_argument("--role", required=True)
+    actor_register.add_argument(
+        "--host", choices=sorted(binding.SUPPORTED_HOSTS), required=True
+    )
+    actor_register.add_argument("--target-thread-id")
+    actor_register.add_argument("--capability", action="append", default=[])
+    actor_register.add_argument(
+        "--completion-delivery-mode",
+        choices=sorted(delivery_preflight.MODES),
+    )
+    actor_list = continuity_subparsers.add_parser("actor-list")
+    actor_list.add_argument("--actor-id")
+    work_start = continuity_subparsers.add_parser("work-start")
+    work_start.add_argument("--work-id", required=True)
+    work_start.add_argument("--owner-actor", required=True)
+    work_start.add_argument("--objective", required=True)
+    work_start.add_argument("--reference", action="append", default=[])
+    continuity_status = continuity_subparsers.add_parser("status")
+    continuity_status.add_argument("--work-id")
+    continuity_status.add_argument(
+        "--obligation-limit", type=int, default=continuity.MAX_STATUS_OBLIGATIONS
+    )
+    continuity_status.add_argument("--obligation-cursor")
+    continuity_status.add_argument(
+        "--result-limit", type=int, default=continuity.MAX_STATUS_RESULTS
+    )
+    continuity_status.add_argument("--result-cursor")
+    continuity_status.add_argument(
+        "--request-limit", type=int, default=continuity.MAX_STATUS_REQUESTS
+    )
+    continuity_status.add_argument("--request-cursor")
+    note_update = continuity_subparsers.add_parser("note-update")
+    note_update.add_argument("--work-id", required=True)
+    note_update.add_argument("--actor-id", required=True)
+    note_update.add_argument("--expected-note-revision", type=int, required=True)
+    note_update.add_argument("--text", required=True)
+    note_update.add_argument("--reference", action="append", default=[])
+    obligation_open = continuity_subparsers.add_parser("obligation-open")
+    obligation_open.add_argument("--work-id", required=True)
+    obligation_open.add_argument("--obligation-id", required=True)
+    obligation_open.add_argument("--requester-actor", required=True)
+    obligation_open.add_argument("--assignee-actor", required=True)
+    obligation_open.add_argument("--resume-actor", required=True)
+    obligation_open.add_argument("--summary", required=True)
+    obligation_open.add_argument("--optional", action="store_true")
+    obligation_open.add_argument("--reminder-seconds", type=float, default=600.0)
+    obligation_open.add_argument("--max-reminders", type=int, default=2)
+    obligation_resolve = continuity_subparsers.add_parser("obligation-resolve")
+    obligation_resolve.add_argument("--obligation-id", required=True)
+    obligation_resolve.add_argument("--actor-id", required=True)
+    obligation_resolve.add_argument("--activation-id", required=True)
+    obligation_resolve.add_argument(
+        "--status",
+        choices=sorted(continuity.TERMINAL_OBLIGATION_STATUSES),
+        required=True,
+    )
+    obligation_resolve.add_argument("--result-ref", required=True)
+    request_send = continuity_subparsers.add_parser("request-send")
+    request_send.add_argument("--work-id", required=True)
+    request_send.add_argument("--request-id", required=True)
+    request_send.add_argument("--idempotency-key", required=True)
+    request_send.add_argument("--sender-actor", required=True)
+    request_send.add_argument("--recipient-actor", required=True)
+    request_send.add_argument("--return-actor", required=True)
+    request_content = request_send.add_mutually_exclusive_group(required=True)
+    request_content.add_argument("--message")
+    request_content.add_argument("--message-ref")
+    request_send.add_argument("--requires-reply", action="store_true")
+    request_send.add_argument("--required", action="store_true")
+    request_send.add_argument("--reminder-seconds", type=float, default=600.0)
+    request_send.add_argument("--max-reminders", type=int, default=2)
+    request_respond = continuity_subparsers.add_parser("request-respond")
+    request_respond.add_argument("--request-id", required=True)
+    request_respond.add_argument("--response-id", required=True)
+    request_respond.add_argument("--actor-id", required=True)
+    request_respond.add_argument("--activation-id", required=True)
+    request_respond.add_argument(
+        "--kind", choices=sorted(continuity.RESPONSE_KINDS), required=True
+    )
+    response_content = request_respond.add_mutually_exclusive_group(required=True)
+    response_content.add_argument("--content")
+    response_content.add_argument("--content-ref")
+    request_respond.add_argument(
+        "--terminal-status",
+        choices=sorted(continuity.TERMINAL_OBLIGATION_STATUSES),
+    )
+    request_handle = continuity_subparsers.add_parser("request-handle")
+    request_handle.add_argument("--request-id", required=True)
+    request_handle.add_argument("--actor-id", required=True)
+    request_handle.add_argument("--activation-id", required=True)
+    assignment_checkpoint = continuity_subparsers.add_parser(
+        "assignment-checkpoint"
+    )
+    assignment_checkpoint.add_argument("--obligation-id", required=True)
+    assignment_checkpoint.add_argument("--actor-id", required=True)
+    assignment_checkpoint.add_argument("--activation-id", required=True)
+    assignment_checkpoint.add_argument(
+        "--expected-revision", type=int, required=True
+    )
+    assignment_checkpoint.add_argument(
+        "--mode", choices=sorted(continuity.ASSIGNMENT_MODES), required=True
+    )
+    assignment_checkpoint.add_argument("--summary", required=True)
+    assignment_checkpoint.add_argument("--next-action")
+    assignment_checkpoint.add_argument(
+        "--wait-mode", choices=sorted(continuity.WAIT_MODES), default="all"
+    )
+    assignment_checkpoint.add_argument("--wait-on", action="append", default=[])
+    assignment_checkpoint.add_argument(
+        "--handled-result", action="append", default=[]
+    )
+    assignment_checkpoint.add_argument(
+        "--reprocess-result", action="append", default=[]
+    )
+    assignment_checkpoint.add_argument("--delay-seconds", type=float, default=10.0)
+    recovery_config = continuity_subparsers.add_parser("recovery-config")
+    recovery_toggle = recovery_config.add_mutually_exclusive_group(required=True)
+    recovery_toggle.add_argument("--enable", action="store_true")
+    recovery_toggle.add_argument("--disable", action="store_true")
+    recovery_config.add_argument(
+        "--interval-seconds",
+        type=float,
+        default=continuity.DEFAULT_RECOVERY_INTERVAL_SECONDS,
+    )
+    recovery_config.add_argument(
+        "--max-interval-seconds",
+        type=float,
+        default=continuity.DEFAULT_RECOVERY_MAX_INTERVAL_SECONDS,
+    )
+    recovery_adopt = continuity_subparsers.add_parser("recovery-adopt")
+    recovery_adopt.add_argument("--work-id", action="append", required=True)
+    recovery_adopt.add_argument("--actor-id", required=True)
+    recovery_adopt.add_argument("--interval-seconds", type=float)
+    recovery_adopt.add_argument("--max-interval-seconds", type=float)
+    recovery_control = continuity_subparsers.add_parser("recovery-control")
+    recovery_control.add_argument(
+        "--scope", choices=sorted(continuity.RECOVERY_SCOPES), required=True
+    )
+    recovery_control.add_argument("--scope-id", required=True)
+    recovery_control.add_argument(
+        "--state", choices=sorted(continuity.RECOVERY_STATES), required=True
+    )
+    recovery_control.add_argument("--actor-id", required=True)
+    recovery_control.add_argument("--reason", required=True)
+    continuity_checkpoint = continuity_subparsers.add_parser("checkpoint")
+    continuity_checkpoint.add_argument("--work-id", required=True)
+    continuity_checkpoint.add_argument("--actor-id", required=True)
+    continuity_checkpoint.add_argument("--expected-revision", type=int, required=True)
+    continuity_checkpoint.add_argument(
+        "--mode", choices=sorted(continuity.WORK_MODES), required=True
+    )
+    continuity_checkpoint.add_argument("--summary", required=True)
+    continuity_checkpoint.add_argument("--next-action")
+    continuity_checkpoint.add_argument(
+        "--wait-mode", choices=sorted(continuity.WAIT_MODES), default="all"
+    )
+    continuity_checkpoint.add_argument("--wait-on", action="append", default=[])
+    continuity_checkpoint.add_argument(
+        "--handled-result", action="append", default=[]
+    )
+    continuity_checkpoint.add_argument(
+        "--reprocess-result", action="append", default=[]
+    )
+    continuity_checkpoint.add_argument("--delay-seconds", type=float, default=10.0)
+    continuity_transfer = continuity_subparsers.add_parser("transfer")
+    continuity_transfer.add_argument("--work-id", required=True)
+    continuity_transfer.add_argument("--from-actor", required=True)
+    continuity_transfer.add_argument("--to-actor", required=True)
+    continuity_transfer.add_argument("--expected-revision", type=int, required=True)
+    continuity_transfer.add_argument("--reason", required=True)
+    continuity_transfer.add_argument("--fenced", action="store_true")
+    continuity_claim = continuity_subparsers.add_parser("claim")
+    continuity_claim.add_argument("--activation-id", required=True)
+    continuity_claim.add_argument("--actor-id", required=True)
+    continuity_claim.add_argument("--expected-epoch", type=int, required=True)
+    continuity_entry = continuity_subparsers.add_parser("entry-packet")
+    continuity_entry.add_argument("--activation-id", required=True)
+    continuity_subparsers.add_parser("reconcile")
+    continuity_self_check = continuity_subparsers.add_parser("self-check")
+    continuity_self_check.add_argument("--repair", action="store_true")
+    diagnostic_resolve = continuity_subparsers.add_parser("diagnostic-resolve")
+    diagnostic_resolve.add_argument("--diagnostic-id", required=True)
+    diagnostic_resolve.add_argument("--actor-id", required=True)
+    diagnostic_resolve.add_argument("--correction", required=True)
 
     ci = subparsers.add_parser(
         "ci",
@@ -1254,9 +1456,7 @@ def build_parser() -> argparse.ArgumentParser:
         "release",
         help="Inspect release readiness without publishing or changing Git state.",
     )
-    release_subparsers = release.add_subparsers(
-        dest="release_command", required=True
-    )
+    release_subparsers = release.add_subparsers(dest="release_command", required=True)
     release_check = release_subparsers.add_parser(
         "preflight",
         help="Run read-only release metadata, Git, tool and delivery checks.",
@@ -1408,10 +1608,11 @@ def main(argv: list[str] | None = None) -> int:
                 raise core.OrchestratorError("check requires exactly one project root")
             output = run_local_check_command(args, roots[0])
             print_json(output)
-            if (
-                args.check_command in {"run", "supervise"}
-                and output.get("status") in {"failed", "errored", "cancelled"}
-            ):
+            if args.check_command in {"run", "supervise"} and output.get("status") in {
+                "failed",
+                "errored",
+                "cancelled",
+            }:
                 return 1
         elif args.command == "workstream":
             if len(roots) != 1:
@@ -1419,6 +1620,12 @@ def main(argv: list[str] | None = None) -> int:
                     "workstream requires exactly one project root"
                 )
             print_json(run_workstream_command(args, roots[0]))
+        elif args.command == "continuity":
+            if len(roots) != 1:
+                raise core.OrchestratorError(
+                    "continuity requires exactly one project root"
+                )
+            print_json(run_continuity_command(args, roots[0]))
         elif args.command == "ci":
             if len(roots) != 1:
                 raise core.OrchestratorError("ci requires exactly one project root")
@@ -1695,6 +1902,211 @@ def run_workstream_command(args: argparse.Namespace, root: Path) -> object:
     )
 
 
+def run_continuity_command(args: argparse.Namespace, root: Path) -> object:
+    common = {"state_dir": args.state_dir}
+    command = args.continuity_command
+    if command == "init":
+        return continuity.initialize(root, **common)
+    if command == "actor-register":
+        return continuity.register_actor(
+            root,
+            actor_id=args.actor_id,
+            role=args.role,
+            host=args.host,
+            target_thread_id=args.target_thread_id,
+            capabilities=args.capability,
+            completion_delivery_mode=args.completion_delivery_mode,
+            **common,
+        )
+    if command == "actor-list":
+        return continuity.actor_status(root, actor_id=args.actor_id, **common)
+    if command == "work-start":
+        return continuity.start_work(
+            root,
+            work_id=args.work_id,
+            owner_actor=args.owner_actor,
+            objective=args.objective,
+            references=args.reference,
+            **common,
+        )
+    if command == "status":
+        return continuity.status(
+            root,
+            work_id=args.work_id,
+            obligation_limit=args.obligation_limit,
+            obligation_cursor=args.obligation_cursor,
+            result_limit=args.result_limit,
+            result_cursor=args.result_cursor,
+            request_limit=args.request_limit,
+            request_cursor=args.request_cursor,
+            **common,
+        )
+    if command == "note-update":
+        return continuity.update_note(
+            root,
+            work_id=args.work_id,
+            actor_id=args.actor_id,
+            expected_note_revision=args.expected_note_revision,
+            text=args.text,
+            references=args.reference,
+            **common,
+        )
+    if command == "obligation-open":
+        return continuity.open_obligation(
+            root,
+            work_id=args.work_id,
+            obligation_id=args.obligation_id,
+            requester_actor=args.requester_actor,
+            assignee_actor=args.assignee_actor,
+            resume_actor=args.resume_actor,
+            summary=args.summary,
+            required=not args.optional,
+            reminder_seconds=args.reminder_seconds,
+            max_reminders=args.max_reminders,
+            **common,
+        )
+    if command == "obligation-resolve":
+        return continuity.resolve_obligation(
+            root,
+            obligation_id=args.obligation_id,
+            actor_id=args.actor_id,
+            activation_id=args.activation_id,
+            status_value=args.status,
+            result_ref=args.result_ref,
+            **common,
+        )
+    if command == "request-send":
+        return continuity.request_send(
+            root,
+            work_id=args.work_id,
+            request_id=args.request_id,
+            idempotency_key=args.idempotency_key,
+            sender_actor=args.sender_actor,
+            recipient_actor=args.recipient_actor,
+            return_actor=args.return_actor,
+            message=args.message,
+            message_ref=args.message_ref,
+            requires_reply=args.requires_reply,
+            required=args.required,
+            reminder_seconds=args.reminder_seconds,
+            max_reminders=args.max_reminders,
+            **common,
+        )
+    if command == "request-respond":
+        return continuity.request_respond(
+            root,
+            request_id=args.request_id,
+            response_id=args.response_id,
+            actor_id=args.actor_id,
+            activation_id=args.activation_id,
+            kind=args.kind,
+            content=args.content,
+            content_ref=args.content_ref,
+            terminal_status=args.terminal_status,
+            **common,
+        )
+    if command == "request-handle":
+        return continuity.request_handle(
+            root,
+            request_id=args.request_id,
+            actor_id=args.actor_id,
+            activation_id=args.activation_id,
+            **common,
+        )
+    if command == "assignment-checkpoint":
+        return continuity.assignment_checkpoint(
+            root,
+            obligation_id=args.obligation_id,
+            actor_id=args.actor_id,
+            activation_id=args.activation_id,
+            expected_revision=args.expected_revision,
+            mode=args.mode,
+            summary=args.summary,
+            next_action=args.next_action,
+            wait_mode=args.wait_mode,
+            wait_on=args.wait_on,
+            handled_results=args.handled_result,
+            reprocess_results=args.reprocess_result,
+            delay_seconds=args.delay_seconds,
+            **common,
+        )
+    if command == "recovery-config":
+        return continuity.configure_recovery(
+            root,
+            enabled=args.enable and not args.disable,
+            interval_seconds=args.interval_seconds,
+            max_interval_seconds=args.max_interval_seconds,
+            **common,
+        )
+    if command == "recovery-adopt":
+        return continuity.adopt_recovery(
+            root,
+            work_ids=args.work_id,
+            actor_id=args.actor_id,
+            interval_seconds=args.interval_seconds,
+            max_interval_seconds=args.max_interval_seconds,
+            **common,
+        )
+    if command == "recovery-control":
+        return continuity.set_recovery_control(
+            root,
+            scope_kind=args.scope,
+            scope_id=args.scope_id,
+            state=args.state,
+            actor_id=args.actor_id,
+            reason=args.reason,
+            **common,
+        )
+    if command == "checkpoint":
+        return continuity.checkpoint(
+            root,
+            work_id=args.work_id,
+            actor_id=args.actor_id,
+            expected_revision=args.expected_revision,
+            mode=args.mode,
+            summary=args.summary,
+            next_action=args.next_action,
+            wait_mode=args.wait_mode,
+            wait_on=args.wait_on,
+            handled_results=args.handled_result,
+            reprocess_results=args.reprocess_result,
+            delay_seconds=args.delay_seconds,
+            **common,
+        )
+    if command == "transfer":
+        return continuity.transfer(
+            root,
+            work_id=args.work_id,
+            from_actor=args.from_actor,
+            to_actor=args.to_actor,
+            expected_revision=args.expected_revision,
+            reason=args.reason,
+            fenced=args.fenced,
+            **common,
+        )
+    if command == "claim":
+        return continuity.claim(
+            root,
+            activation_id=args.activation_id,
+            actor_id=args.actor_id,
+            expected_epoch=args.expected_epoch,
+            **common,
+        )
+    if command == "entry-packet":
+        return continuity.entry_packet(root, activation_id=args.activation_id, **common)
+    if command == "reconcile":
+        return continuity.reconcile(root, **common)
+    if command == "diagnostic-resolve":
+        return continuity.resolve_diagnostic(
+            root,
+            diagnostic_id=args.diagnostic_id,
+            actor_id=args.actor_id,
+            correction=args.correction,
+            **common,
+        )
+    return continuity.self_check(root, repair=args.repair, **common)
+
+
 def run_local_check_command(args: argparse.Namespace, root: Path) -> dict:
     if args.check_command == "plan":
         return local_checks.plan_check(
@@ -1953,10 +2365,7 @@ def run_worker_wait_command(args: argparse.Namespace, root: Path) -> dict[str, o
     interactive = not args.json
     is_tty = bool(getattr(sys.stdout, "isatty", lambda: False)())
     use_color = (interactive and args.color == "always") or (
-        interactive
-        and args.color == "auto"
-        and is_tty
-        and "NO_COLOR" not in os.environ
+        interactive and args.color == "auto" and is_tty and "NO_COLOR" not in os.environ
     )
     use_bell = (interactive and args.bell == "always") or (
         interactive and args.bell == "auto" and is_tty
@@ -2007,10 +2416,7 @@ def run_operation_wait_command(
     interactive = not args.json
     is_tty = bool(getattr(sys.stdout, "isatty", lambda: False)())
     use_color = (interactive and args.color == "always") or (
-        interactive
-        and args.color == "auto"
-        and is_tty
-        and "NO_COLOR" not in os.environ
+        interactive and args.color == "auto" and is_tty and "NO_COLOR" not in os.environ
     )
     use_bell = (interactive and args.bell == "always") or (
         interactive and args.bell == "auto" and is_tty
@@ -2019,9 +2425,10 @@ def run_operation_wait_command(
 
     def render(snapshot: dict[str, object]) -> None:
         nonlocal last_line_width
-        final = bool(snapshot.get("condition_met")) or snapshot.get(
-            "wait_status"
-        ) in {"timed_out", "action_required"}
+        final = bool(snapshot.get("condition_met")) or snapshot.get("wait_status") in {
+            "timed_out",
+            "action_required",
+        }
         if not is_tty and not final:
             return
         line = format_operation_wait_line(snapshot, use_color=use_color)
@@ -2062,9 +2469,7 @@ def operation_status_exit_code(snapshot: dict[str, object]) -> int:
     return 0
 
 
-def format_operation_wait_line(
-    snapshot: dict[str, object], *, use_color: bool
-) -> str:
+def format_operation_wait_line(snapshot: dict[str, object], *, use_color: bool) -> str:
     status = str(snapshot.get("status") or "unknown")
     mode = str(snapshot.get("mode") or "all")
     terminal_count = int(snapshot.get("terminal_count") or 0)
@@ -2104,9 +2509,7 @@ def worker_wait_exit_code(snapshot: dict[str, object]) -> int:
     return 0 if snapshot.get("status") == "completed" else 2
 
 
-def format_worker_wait_line(
-    snapshot: dict[str, object], *, use_color: bool
-) -> str:
+def format_worker_wait_line(snapshot: dict[str, object], *, use_color: bool) -> str:
     if snapshot.get("kind") == "WORKER_WAIT_GROUP_STATUS":
         return format_worker_wait_group_line(snapshot, use_color=use_color)
     status = str(snapshot.get("status") or "unknown")
@@ -2166,8 +2569,7 @@ def format_worker_wait_group_line(
     if use_color:
         prefix = f"\x1b[{color};1m{prefix}\x1b[0m"
     return (
-        f"{prefix} {terminal_count}/{task_count} tasks | {mode} | "
-        f"{status} | {detail}"
+        f"{prefix} {terminal_count}/{task_count} tasks | {mode} | {status} | {detail}"
     )
 
 
@@ -2205,10 +2607,10 @@ def run_report_command(args: argparse.Namespace, root: Path) -> str | None:
 
 
 def run_watcher_command(args: argparse.Namespace, roots: list[Path]) -> object | None:
-    restarting = (
-        args.watcher_command == "service"
-        and args.service_command in {"restart", "ensure"}
-    )
+    restarting = args.watcher_command == "service" and args.service_command in {
+        "restart",
+        "ensure",
+    }
     action = args.action if restarting else (args.action or "notify")
     target_thread_id = watcher_target_thread_id(args, action=action)
     host_filter = {args.host} if args.host else None

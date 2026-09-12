@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import hashlib
 import json
@@ -57,23 +58,212 @@ def validate_event_id(value: object) -> str:
     """Return one bounded filename-safe event identifier."""
 
     if not isinstance(value, str) or not EVENT_ID_PATTERN.fullmatch(value):
-        raise OrchestratorError(
-            "event_id must match [A-Za-z0-9][A-Za-z0-9_.-]{0,127}"
-        )
+        raise OrchestratorError("event_id must match [A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
     return value
 
 
 def atomic_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    temporary.write_text(json_text(value), encoding="utf-8")
+    payload = json_text(value).encode("utf-8")
+    temporary.write_bytes(payload)
+    markers = _prepare_index_candidates(
+        path, expected_sha256=hashlib.sha256(payload).hexdigest()
+    )
     atomic_replace(temporary, path)
+    _record_metrics_candidate(path, marker=markers.get("metrics-candidates"))
+    _record_task_diagnostic_candidate(
+        path, marker=markers.get("task-diagnostics")
+    )
+
+
+def _metrics_candidate_state_root(path: Path) -> Path | None:
+    name = path.name
+    if name in {"result.json", "usage.json"} and path.parent.parent.name == "tasks":
+        return path.parent.parent.parent
+    if name == "verification-result.json" and path.parent.parent.name == "checks":
+        return path.parent.parent.parent
+    if name == "workstream.json" and path.parent.parent.name == "workstreams":
+        return path.parent.parent.parent
+    if path.parent.name == "events" and path.suffix == ".json":
+        return path.parent.parent
+    if (
+        path.parent.name in {"thread-wakeups", "acknowledgements"}
+        and path.parent.parent.name == "inbox"
+        and path.suffix == ".json"
+    ):
+        return path.parent.parent.parent
+    return None
+
+
+def _record_metrics_candidate(path: Path, *, marker: Path | None = None) -> None:
+    state_root = _metrics_candidate_state_root(path)
+    if state_root is None:
+        return
+    journal = state_root / "indexes" / "metrics-candidates.jsonl"
+    journal.parent.mkdir(parents=True, exist_ok=True)
+    record = (
+        json.dumps(
+            {"path": str(path.resolve()), "recorded_at": utc_now()},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+    from . import platform_runtime
+
+    try:
+        with platform_runtime.exclusive_file_lock(
+            journal.with_suffix(".lock"), timeout_seconds=5
+        ):
+            descriptor = os.open(
+                journal, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o644
+            )
+            try:
+                os.write(descriptor, record)
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+    except (OSError, RuntimeError):
+        # Candidate discovery is rebuilt from authoritative artifacts. A failed
+        # projection must not roll a successful operation write back in spirit.
+        return
+    _clear_index_marker(marker)
+
+
+def _task_diagnostic_state_root(path: Path) -> Path | None:
+    if path.parent.parent.name == "tasks":
+        return path.parent.parent.parent
+    if path.parent.name == "task-resolutions" and path.suffix == ".json":
+        return path.parent.parent
+    return None
+
+
+def _record_task_diagnostic_candidate(
+    path: Path, *, marker: Path | None = None
+) -> None:
+    state_root = _task_diagnostic_state_root(path)
+    if state_root is None:
+        return
+    journal = state_root / "indexes" / "task-diagnostics.jsonl"
+    journal.parent.mkdir(parents=True, exist_ok=True)
+    record = (
+        json.dumps(
+            {"path": str(path.resolve()), "recorded_at": utc_now()},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+    from . import platform_runtime
+
+    try:
+        with platform_runtime.exclusive_file_lock(
+            journal.with_suffix(".lock"), timeout_seconds=5
+        ):
+            descriptor = os.open(
+                journal, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o644
+            )
+            try:
+                os.write(descriptor, record)
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+    except (OSError, RuntimeError):
+        # This index is recoverable from durable task artifacts. Its update must
+        # never turn a successful authoritative state write into a failure.
+        return
+    _clear_index_marker(marker)
+
+
+def _prepare_index_candidates(path: Path, *, expected_sha256: str) -> dict[str, Path]:
+    markers: dict[str, Path] = {}
+    targets = (
+        ("metrics-candidates", _metrics_candidate_state_root(path)),
+        ("task-diagnostics", _task_diagnostic_state_root(path)),
+    )
+    for index_name, state_root in targets:
+        if state_root is None:
+            continue
+        marker_root = state_root / "indexes" / f"{index_name}.dirty"
+        marker = marker_root / f"{uuid.uuid4().hex}.json"
+        temporary_marker = marker.with_suffix(".tmp")
+        try:
+            marker_root.mkdir(parents=True, exist_ok=True)
+            descriptor = os.open(
+                temporary_marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644
+            )
+            try:
+                payload = json_text(
+                    {
+                        "path": str(path.resolve()),
+                        "expected_sha256": expected_sha256,
+                        "prepared_at": utc_now(),
+                    }
+                ).encode("utf-8")
+                os.write(descriptor, payload)
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            atomic_replace(temporary_marker, marker)
+        except (OSError, RuntimeError):
+            with contextlib.suppress(OSError):
+                temporary_marker.unlink()
+            continue
+        markers[index_name] = marker
+    return markers
+
+
+def _clear_index_marker(marker: Path | None) -> None:
+    if marker is None:
+        return
+    try:
+        marker.unlink(missing_ok=True)
+    except OSError:
+        return
+
+
+def index_recovery_markers(
+    state_root: Path, *, index_name: str
+) -> dict[str, list[Path]]:
+    """Classify projection markers without trusting their recorded paths."""
+
+    marker_root = state_root / "indexes" / f"{index_name}.dirty"
+    ready: list[Path] = []
+    pending: list[Path] = []
+    invalid: list[Path] = []
+    if not marker_root.is_dir():
+        return {"ready": ready, "pending": pending, "invalid": invalid}
+    resolved_state = state_root.resolve()
+    for marker in marker_root.glob("*.json"):
+        try:
+            record = load_object(marker)
+            candidate = Path(record["path"]).resolve()
+            candidate.relative_to(resolved_state)
+            expected = record["expected_sha256"]
+            if not isinstance(expected, str) or len(expected) != 64:
+                raise ValueError("invalid expected hash")
+            if candidate.is_file() and sha256_file(candidate) == expected:
+                ready.append(marker)
+            else:
+                pending.append(marker)
+        except (KeyError, OSError, TypeError, ValueError, OrchestratorError):
+            invalid.append(marker)
+    return {"ready": ready, "pending": pending, "invalid": invalid}
+
+
+def clear_index_recovery_markers(markers: list[Path]) -> None:
+    for marker in markers:
+        _clear_index_marker(marker)
 
 
 def transient_file_error(error: OSError) -> bool:
     """Recognize bounded filesystem races, without hiding permanent failures."""
     return error.errno == errno.ENODATA or (
-        os.name == "nt" and (
+        os.name == "nt"
+        and (
             getattr(error, "winerror", None) in {5, 32, 33}
             or error.errno == errno.EACCES
         )
@@ -113,14 +303,22 @@ def claim_json(path: Path, value: object) -> bool:
     winner's file instead of overwriting it.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json_text(value).encode("utf-8")
     try:
         descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     except FileExistsError:
         return False
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        handle.write(json_text(value))
+    markers = _prepare_index_candidates(
+        path, expected_sha256=hashlib.sha256(payload).hexdigest()
+    )
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(payload)
         handle.flush()
         os.fsync(handle.fileno())
+    _record_metrics_candidate(path, marker=markers.get("metrics-candidates"))
+    _record_task_diagnostic_candidate(
+        path, marker=markers.get("task-diagnostics")
+    )
     return True
 
 
@@ -248,6 +446,38 @@ def signal_path_for(
     )
 
 
+def _retain_event_and_signal(
+    *,
+    event_path: Path,
+    signal_path: Path,
+    event: dict[str, Any],
+    signal: dict[str, Any],
+    immutable: tuple[str, ...],
+    conflict_label: str,
+    emit_signal: bool,
+) -> dict[str, Any]:
+    # Imported lazily because platform_runtime itself imports this module.
+    from . import platform_runtime
+
+    with platform_runtime.exclusive_file_lock(
+        event_path.with_suffix(".publication.lock")
+    ):
+        existing = load_object(event_path) if event_path.is_file() else None
+        if existing is not None:
+            if any(existing.get(key) != event.get(key) for key in immutable):
+                raise OrchestratorError(
+                    f"{conflict_label} {event['event_id']} conflicts with "
+                    "retained outcome"
+                )
+            event = existing
+            signal["created_at"] = event["created_at"]
+        else:
+            atomic_json(event_path, event)
+        if emit_signal:
+            atomic_json(signal_path, signal)
+    return event
+
+
 def project_id(project_root: Path) -> str:
     return project_root.expanduser().resolve().name
 
@@ -334,9 +564,26 @@ def write_terminal_event(
     if wake_target is not None:
         event["wake_target"] = wake_target
         signal["wake_target"] = wake_target
-    atomic_json(event_path, event)
-    if emit_signal:
-        atomic_json(signal_path, signal)
+    event = _retain_event_and_signal(
+        event_path=event_path,
+        signal_path=signal_path,
+        event=event,
+        signal=signal,
+        immutable=(
+            "kind",
+            "event_id",
+            "project_id",
+            "task_id",
+            "terminal_status",
+            "result_path",
+            "result_sha256",
+            "evidence_path",
+            "evidence_sha256",
+            "wake_target",
+        ),
+        conflict_label="terminal event",
+        emit_signal=emit_signal,
+    )
     return {
         "event": event,
         "event_path": str(event_path),
@@ -424,9 +671,28 @@ def write_followup_event(
         normalized = parsed.astimezone(UTC).isoformat(timespec="milliseconds")
         event["not_before"] = normalized
         signal["not_before"] = normalized
-    atomic_json(event_path, event)
-    if emit_signal:
-        atomic_json(signal_path, signal)
+    event = _retain_event_and_signal(
+        event_path=event_path,
+        signal_path=signal_path,
+        event=event,
+        signal=signal,
+        immutable=(
+            "kind",
+            "event_id",
+            "project_id",
+            "source_kind",
+            "operation_id",
+            "terminal_status",
+            "result_path",
+            "result_sha256",
+            "evidence_path",
+            "evidence_sha256",
+            "wake_target",
+            "not_before",
+        ),
+        conflict_label="follow-up event",
+        emit_signal=emit_signal,
+    )
     return {
         "event": event,
         "event_path": str(event_path),
@@ -452,9 +718,7 @@ def verify_terminal_event(event_path: Path) -> dict[str, Any]:
             raise OrchestratorError(f"terminal event has invalid {key}")
     validate_event_id(event["event_id"])
     allowed_statuses = (
-        TERMINAL_STATUSES
-        if kind == "WORKER_TERMINAL"
-        else FOLLOWUP_TERMINAL_STATUSES
+        TERMINAL_STATUSES if kind == "WORKER_TERMINAL" else FOLLOWUP_TERMINAL_STATUSES
     )
     if event.get("terminal_status") not in allowed_statuses:
         raise OrchestratorError("terminal event has invalid terminal_status")
@@ -495,6 +759,8 @@ def inbox(
     *,
     state_dir: str = DEFAULT_STATE_DIR,
     invalid_sink: list[dict[str, str]] | None = None,
+    skip_event_ids: set[str] | None = None,
+    scan_stats: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
     """List inbox signals.
 
@@ -505,6 +771,12 @@ def inbox(
     signals = inbox_root(project_root, state_dir=state_dir) / "signals"
     rows: list[dict[str, Any]] = []
     for path in sorted(signals.glob("*.json")):
+        if scan_stats is not None:
+            scan_stats["paths_examined"] = scan_stats.get("paths_examined", 0) + 1
+        if skip_event_ids is not None and path.stem in skip_event_ids:
+            if scan_stats is not None:
+                scan_stats["paths_skipped"] = scan_stats.get("paths_skipped", 0) + 1
+            continue
         try:
             signal = load_object(path)
         except (OSError, OrchestratorError) as error:
@@ -512,6 +784,8 @@ def inbox(
                 raise
             invalid_sink.append({"signal_path": str(path), "error": str(error)})
             continue
+        if scan_stats is not None:
+            scan_stats["records_loaded"] = scan_stats.get("records_loaded", 0) + 1
         signal["signal_path"] = str(path)
         rows.append(signal)
     return rows
@@ -539,18 +813,14 @@ def survey_schema_versions(
         )
     )
     candidates.extend(
-        sorted(
-            (state_root(project, state_dir=state_dir) / "checks").glob("*/*.json")
-        )
+        sorted((state_root(project, state_dir=state_dir) / "checks").glob("*/*.json"))
     )
     history = state_root(project, state_dir=state_dir) / "check-history.json"
     if history.is_file():
         candidates.append(history)
     candidates.extend(
         sorted(
-            (state_root(project, state_dir=state_dir) / "workstreams").glob(
-                "*/*.json"
-            )
+            (state_root(project, state_dir=state_dir) / "workstreams").glob("*/*.json")
         )
     )
     candidates.extend(

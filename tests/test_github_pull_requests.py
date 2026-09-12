@@ -10,6 +10,7 @@ from unittest import mock
 from orchestrator_engine import (
     binding,
     core,
+    delivery_preflight,
     github_pull_requests,
     platform_runtime,
     verification,
@@ -287,24 +288,30 @@ class GitHubPullRequestTests(unittest.TestCase):
             write_config(root)
             binding.write_binding(root, host="codex", target_thread_id="thread-1")
             popen = mock.Mock(return_value=DummyProcess())
-            first = github_pull_requests.start_monitor(
-                root,
-                repository="Example/Project",
-                pr_number=7,
-                expected_head_sha=SHA,
-                popen_factory=popen,
-            )
-            second = github_pull_requests.start_monitor(
-                root,
-                repository="example/project",
-                pr_number=7,
-                expected_head_sha=SHA,
-                popen_factory=popen,
-            )
+            with mock.patch.object(
+                delivery_preflight, "run", wraps=delivery_preflight.run
+            ) as preflight:
+                first = github_pull_requests.start_monitor(
+                    root,
+                    repository="Example/Project",
+                    pr_number=7,
+                    expected_head_sha=SHA,
+                    popen_factory=popen,
+                )
+                binding.write_binding(root, host="codex", target_thread_id="thread-2")
+                second = github_pull_requests.start_monitor(
+                    root,
+                    repository="example/project",
+                    pr_number=7,
+                    expected_head_sha=SHA,
+                    popen_factory=popen,
+                )
+                replay_target = preflight.call_args_list[1].kwargs["wake_target"]
 
         self.assertFalse(first["idempotent"])
         self.assertTrue(second["idempotent"])
         self.assertEqual(first["wake_target"]["target_thread_id"], "thread-1")
+        self.assertEqual(replay_target["target_thread_id"], "thread-1")
         self.assertEqual(popen.call_count, 1)
 
     def test_start_rejects_non_finite_polling_values(self) -> None:
@@ -316,9 +323,12 @@ class GitHubPullRequestTests(unittest.TestCase):
                 ("timeout_seconds", float("inf")),
                 ("timeout_seconds", float("-inf")),
             ):
-                with self.subTest(field=field, value=value), self.assertRaisesRegex(
-                    github_pull_requests.GitHubPullRequestError,
-                    "must be between",
+                with (
+                    self.subTest(field=field, value=value),
+                    self.assertRaisesRegex(
+                        github_pull_requests.GitHubPullRequestError,
+                        "must be between",
+                    ),
                 ):
                     github_pull_requests.start_monitor(
                         root,

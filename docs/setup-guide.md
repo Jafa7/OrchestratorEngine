@@ -46,7 +46,7 @@ command -v codex
 command -v copilot
 ```
 
-Constraints: Python >= 3.11 on the machine where workers run. Version 1.9.3
+Constraints: Python >= 3.11 on the machine where workers run. Version 1.10.0
 supports the complete detached runtime on Linux, WSL, native Windows and macOS.
 Configured commands and external tools must support the selected OS. See the
 [platform support matrix](platform-support.md) and
@@ -59,7 +59,7 @@ For a reproducible adopter install, use an immutable release tag:
 
 ```bash
 python -m pip install \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.9.3"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.10.0"
 ```
 
 GitHub Release archives and wheel/sdist assets are published with the tag;
@@ -90,7 +90,7 @@ Before continuing with detached workers or a watcher service, expect
 `"detached_lifecycle": "supported"`. An unsupported result is not repaired by
 installing a provider CLI.
 
-The installed v1.9.3 package includes `orchestrator-engine conformance run`.
+The installed v1.10.0 package includes `orchestrator-engine conformance run`.
 Run it here without a provider CLI or credentials. Its default `auto` mode
 runs the full detached synthetic-worker path when that lifecycle is supported
 and otherwise verifies the portable event, signal, notification and
@@ -101,10 +101,10 @@ Full mode additionally checks six concurrent
 synthetic workers, aggregate waits, host-scoped signal routing and deterministic
 reaping of an abandoned unclaimed task descriptor. Continue only when its JSON
 report says `"status": "passed"`; a failed fixture is retained at the reported
-path for diagnosis. This is a required check for the v1.9.3 installation;
+path for diagnosis. This is a required check for the v1.10.0 installation;
 older pinned releases that lack the command need their own upgrade procedure.
 
-The v1.9.3 CI runs native lifecycle, resource coordination, full conformance and
+The v1.10.0 CI runs native lifecycle, resource coordination, full conformance and
 bounded acceptance soaks from the candidate wheel on macOS Intel/ARM and
 Windows, including native Python 3.12 coverage, plus portable-core checks. The
 Linux wheel smoke also runs full conformance without `PYTHONPATH`, covering the
@@ -127,6 +127,13 @@ Resource coordination is optional. After basic adoption, follow
 coordination of mutable resources. Register the authority, projects and recipes
 explicitly, then select `resource_recipe` in the relevant check suite. Ordinary
 checks do not join a resource queue automatically.
+
+Multi-chat continuity is also optional. Configure it only when the project has
+two or more independently addressable chats that exchange implementation,
+review or architecture obligations. Do not guess the number of chats or their
+roles: register each actor and exact endpoint with the project owner, then
+follow [Multi-chat continuity](multi-chat-continuity.md). A normal single-chat
+adoption does not initialize the continuity database.
 
 ## Step 2 — Adopt the project layout
 
@@ -899,6 +906,15 @@ To delegate a task to a CLI worker:
    the same operation. For release and other multi-stage pipelines, suppress
    intermediate wakeups and emit only the final handoff signal.
 
+7. If several exact Codex chats share project work, use the opt-in
+   [multi-chat continuity contract](multi-chat-continuity.md). Send work that
+   requires a return answer with `continuity request-send --requires-reply`.
+   The recipient must claim it and record a terminal `request-respond`; replying
+   only in its own chat does not close the sender's durable obligation. Record a
+   legitimate long check with `assignment-checkpoint --mode waiting`. Recovery
+   activations inspect current authority and never authorize repeating completed
+   work. Do not use an app Goal while queued continuation owns resumption.
+
 ## Adopter-neutral public content
 
 Keep public product documentation, contracts, fixtures and examples
@@ -961,7 +977,7 @@ descriptor; pass an option explicitly only when changing it intentionally.
 | `watcher stream status` is `erroring` | The stream loop is alive but the latest scan or line delivery failed. Inspect `last_error`, fix or re-arm the host stream, then use `watcher deferred retry` when operator retry is required. The signal remains durable and is deduplicated by `event_id`. |
 | Codex receipt `deferred` with `thread_active` or `thread_recently_active` | The CLI lacks `codex queue`, so the compatibility fallback guarded against a parallel headless turn. Upgrade Codex or end the active turn and let the retry proceed. |
 | Codex receipt `submitted` with `turn_status: "running"` | The compatibility fallback started a long headless App Server turn; a background finalizer updates the receipt when it ends. |
-| Codex receipt `queued` but window did not focus | Queue delivery is still valid. Check `activation`; the optional deep link needs `powershell.exe` reachable in WSL and the Desktop app installed. |
+| Codex receipt is `queued`, but the window did not focus | This is expected: background queue delivery never changes the user's active window or task. Open the target task explicitly when you want to inspect it. |
 | Codex receipt is `queued`, but the chat does not resume | End the current turn and disable any app-level Goal retaining it. For watcher-driven automation, use a durable workstream with a `waiting_external` checkpoint; do not combine detached queue delivery with an in-turn wait. |
 | Codex receipt uses `headless_app_server_turn`, but no new visible Desktop turn | The installed launcher lacks the live queue capability. Upgrade Codex, re-run `bind --host codex` if the launcher changed, and review the durable history for this event manually. |
 | `code chat` exits non-zero | The reached `code` CLI may lack the documented `chat` subcommand, WSL interop may resolve the wrong wrapper, the chat provider may not be signed in, or no usable window may be active. Check `code --version`, the resolved executable and the host's official chat CLI behavior; delivery stays retryable. |

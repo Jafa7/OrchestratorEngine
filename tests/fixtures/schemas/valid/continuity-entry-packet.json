@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_CONTINUITY_ENTRY_PACKET",
+  "activation": {
+    "activation_id": "cont-example",
+    "work_id": "WORK-1",
+    "actor_id": "implementation",
+    "work_revision": 2,
+    "control_epoch": 1,
+    "endpoint_generation": 1,
+    "assignment_generation": null,
+    "status": "published",
+    "reason": "wait_satisfied",
+    "created_at": "2026-09-12T08:00:00Z",
+    "claimed_at": null,
+    "not_before": null,
+    "manifest": ["obligation:REVIEW-1"],
+    "wake_target": {
+      "schema_version": 1,
+      "kind": "ORCHESTRATOR_WAKE_TARGET",
+      "host": "codex",
+      "target_thread_id": "thread-implementation",
+      "captured_at": "2026-09-12T08:00:00Z"
+    }
+  },
+  "work": {"work_id": "WORK-1", "mode": "waiting", "references": ["docs/decision.md"]},
+  "obligations": [{"obligation_id": "REVIEW-1", "status": "completed"}],
+  "wait": {"work_id": "WORK-1", "generation": 1, "mode": "all", "sources": ["obligation:REVIEW-1"], "handled_results": [], "updated_at": "2026-09-12T08:00:00Z"},
+  "managed_results": [],
+  "requests": [],
+  "responses": [],
+  "response_summary": {"total_count": 0, "included_count": 0, "truncated": false},
+  "assignment_checkpoints": [],
+  "recovery_incidents": [],
+  "recovery_summary": {"active_count": 0, "included_count": 0, "truncated": false},
+  "operational_note": null,
+  "obligation_summary": {"total_count": 1, "included_count": 1, "open_required_count": 0, "truncated": false},
+  "repository_snapshot": {"status": "captured", "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "dirty": true, "changed_path_count": 2},
+  "claim_command": "orchestrator-engine continuity claim --activation-id cont-example --actor-id implementation --expected-epoch 1",
+  "action_contract": {
+    "request_terminal_reply": "continuity request-respond --kind terminal",
+    "assignment_progress": "continuity assignment-checkpoint",
+    "reply_handling": "continuity request-handle",
+    "recovery_semantics": "Inspect current durable state; do not repeat completed work."
+  }
+}

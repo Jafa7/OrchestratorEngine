@@ -175,9 +175,7 @@ def load_config(
         ) from error
     integrations = root.get("integrations")
     github = (
-        integrations.get("github_actions")
-        if isinstance(integrations, dict)
-        else None
+        integrations.get("github_actions") if isinstance(integrations, dict) else None
     )
     if not isinstance(github, dict):
         raise GitHubActionsError("missing [integrations.github_actions] config")
@@ -261,8 +259,7 @@ def default_discovery_monitor_id(
     workflow_name: str | None,
 ) -> str:
     identity = (
-        f"{hostname}/{repository.casefold()}/{expected_head_sha}/"
-        f"{workflow_name or '*'}"
+        f"{hostname}/{repository.casefold()}/{expected_head_sha}/{workflow_name or '*'}"
     )
     suffix = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:10]
     return f"gha-sha-{expected_head_sha[:12]}-{suffix}"
@@ -502,6 +499,54 @@ def start_monitor(
     )
     directory = monitor_dir_for(project, resolved_monitor_id, state_dir=state_dir)
     descriptor_path = directory / "monitor.json"
+    if descriptor_path.is_file():
+        with monitor_admission_lock(project, state_dir=state_dir):
+            existing = core.load_object(descriptor_path)
+            existing_dispatch = {
+                key: (
+                    existing.get("run_id")
+                    if key == "requested_run_id" and "requested_run_id" not in existing
+                    else existing.get(key)
+                )
+                for key in dispatch_identity
+            }
+            comparable_existing = {
+                **existing_dispatch,
+                "repository": str(existing_dispatch["repository"]).casefold(),
+            }
+            comparable_dispatch = {
+                **dispatch_identity,
+                "repository": str(dispatch_identity["repository"]).casefold(),
+            }
+            if comparable_existing != comparable_dispatch:
+                raise GitHubActionsError(
+                    "monitor already exists with different dispatch options: "
+                    f"{resolved_monitor_id}"
+                )
+        retained_target = existing.get("wake_target")
+        try:
+            completion_delivery = delivery_preflight.run(
+                project,
+                operation_kind="github_actions",
+                operation_id=resolved_monitor_id,
+                wake_policy=wake_policy,
+                wake_target=(
+                    retained_target if isinstance(retained_target, dict) else None
+                ),
+                mode=completion_delivery_mode,
+                state_dir=state_dir,
+            )
+            delivery_preflight.enforce(completion_delivery)
+        except delivery_preflight.DeliveryPreflightError as error:
+            raise GitHubActionsError(str(error)) from error
+        return delivery_preflight.attach(
+            {
+                **existing,
+                "descriptor_path": str(descriptor_path),
+                "idempotent": True,
+            },
+            completion_delivery,
+        )
     wake_target = capture_wake_target(project, state_dir=state_dir)
     try:
         completion_delivery = delivery_preflight.run(
@@ -576,6 +621,18 @@ def start_monitor(
                     raise GitHubActionsError(
                         "monitor already exists with different dispatch options: "
                         f"{resolved_monitor_id}"
+                    )
+                if not binding.same_wake_destination(
+                    (
+                        existing.get("wake_target")
+                        if isinstance(existing.get("wake_target"), dict)
+                        else None
+                    ),
+                    wake_target,
+                ):
+                    raise GitHubActionsError(
+                        "monitor appeared with a retained wake destination; retry "
+                        "to preflight that destination"
                     )
                 return delivery_preflight.attach(
                     {
@@ -1719,8 +1776,7 @@ def finalize_monitor(
     diagnostics = observation.get("failure_diagnostics")
     problem_jobs = (
         diagnostics.get("problem_jobs")
-        if isinstance(diagnostics, dict)
-        and diagnostics.get("status") == "available"
+        if isinstance(diagnostics, dict) and diagnostics.get("status") == "available"
         else None
     )
     if isinstance(problem_jobs, list) and problem_jobs:
@@ -1770,9 +1826,9 @@ def finalize_monitor(
     if isinstance(observation.get("discovery"), dict):
         result["github_actions"]["discovery"] = observation["discovery"]
     if isinstance(observation.get("error"), str):
-        result["github_actions"]["error"] = redact_text(
-            observation["error"]
-        )[:MAX_REASON_LENGTH]
+        result["github_actions"]["error"] = redact_text(observation["error"])[
+            :MAX_REASON_LENGTH
+        ]
     if isinstance(observation.get("failure_diagnostics"), dict):
         result["github_actions"]["failure_diagnostics"] = observation[
             "failure_diagnostics"
@@ -1806,9 +1862,7 @@ def finalize_monitor(
     if isinstance(observation.get("discovery"), dict):
         evidence["discovery"] = observation["discovery"]
     if isinstance(observation.get("error"), str):
-        evidence["error"] = redact_text(observation["error"])[
-            :MAX_REASON_LENGTH
-        ]
+        evidence["error"] = redact_text(observation["error"])[:MAX_REASON_LENGTH]
     if isinstance(observation.get("recovery"), dict):
         evidence["recovery"] = observation["recovery"]
     if isinstance(observation.get("failure_diagnostics"), dict):
@@ -2079,9 +2133,7 @@ def retry_monitor(
         "unavailable",
         "ambiguous",
     }:
-        raise GitHubActionsError(
-            "only a terminal unsuccessful monitor can be retried"
-        )
+        raise GitHubActionsError("only a terminal unsuccessful monitor can be retried")
     retry_index = 1
     while True:
         new_id = f"{monitor_id}-r{retry_index}"
@@ -2124,6 +2176,85 @@ def supervisor_process_state(
     return worker_lease.pid_state(pid)
 
 
+def recover_completed_monitor(
+    project_root: Path,
+    descriptor: dict[str, Any],
+    *,
+    state_dir: str,
+) -> dict[str, Any] | None:
+    """Complete a stale descriptor from already-published terminal artifacts."""
+
+    project = project_root.expanduser().resolve()
+    monitor_id = str(descriptor["monitor_id"])
+    directory = monitor_dir_for(project, monitor_id, state_dir=state_dir)
+    recorded_directory = (
+        Path(str(descriptor.get("monitor_dir", ""))).expanduser().resolve()
+    )
+    if recorded_directory != directory:
+        return None
+    check_dir = verification.checks_root(project, state_dir=state_dir) / monitor_id
+    result_path = check_dir / "verification-result.json"
+    summary_path = check_dir / "summary.txt"
+    evidence_path = directory / "evidence.json"
+    if not (
+        result_path.is_file() and summary_path.is_file() and evidence_path.is_file()
+    ):
+        return None
+    try:
+        result = core.load_object(result_path)
+        evidence = core.load_object(evidence_path)
+    except (OSError, core.OrchestratorError):
+        return None
+    monitor_status = evidence.get("monitor_status")
+    if (
+        not core.is_supported_schema_version(result.get("schema_version"))
+        or not core.is_supported_schema_version(evidence.get("schema_version"))
+        or result.get("kind") != verification.VERIFICATION_RESULT_KIND
+        or result.get("check_id") != monitor_id
+        or evidence.get("kind") != EVIDENCE_KIND
+        or evidence.get("monitor_id") != monitor_id
+        or monitor_status not in TERMINAL_MONITOR_STATUSES
+    ):
+        return None
+    observation = {
+        "monitor_status": monitor_status,
+        "ci_conclusion": evidence.get("ci_conclusion"),
+        "failure_kind": evidence.get("failure_kind"),
+    }
+    emitted = core.write_followup_event(
+        project,
+        operation_id=monitor_id,
+        source_kind=SOURCE_KIND,
+        terminal_status=event_status(observation),
+        result_path=result_path,
+        evidence_path=evidence_path,
+        state_dir=state_dir,
+        wake_target=(
+            descriptor.get("wake_target")
+            if isinstance(descriptor.get("wake_target"), dict)
+            else None
+        ),
+        emit_signal=should_wake(str(descriptor["wake_policy"]), observation),
+    )
+    descriptor.update(
+        status=monitor_status,
+        ci_conclusion=evidence.get("ci_conclusion"),
+        failure_kind=evidence.get("failure_kind"),
+        started_at=evidence.get("started_at"),
+        finished_at=evidence.get("finished_at"),
+        last_alive_at=evidence.get("finished_at"),
+        result_path=str(result_path),
+        summary_path=str(summary_path),
+        evidence_path=str(evidence_path),
+        event_path=emitted["event_path"],
+        signal_path=emitted["signal_path"],
+        signal_emitted=emitted["signal_emitted"],
+        recovered_at=core.utc_now(),
+    )
+    core.atomic_json(directory / "monitor.json", descriptor)
+    return descriptor
+
+
 def reap_monitors(
     project_root: Path,
     *,
@@ -2149,9 +2280,7 @@ def reap_monitors(
                 )
                 continue
             if (
-                not core.is_supported_schema_version(
-                    descriptor.get("schema_version")
-                )
+                not core.is_supported_schema_version(descriptor.get("schema_version"))
                 or descriptor.get("kind") != MONITOR_KIND
             ):
                 outcomes.append(
@@ -2179,6 +2308,19 @@ def reap_monitors(
                     {
                         "monitor_id": monitor_id,
                         "status": "unsafe_missing_identity",
+                    }
+                )
+                continue
+            recovered = recover_completed_monitor(
+                project, descriptor, state_dir=state_dir
+            )
+            if recovered is not None:
+                outcomes.append(
+                    {
+                        "monitor_id": monitor_id,
+                        "status": "reconciled_terminal",
+                        "terminal_status": recovered.get("status"),
+                        "event_path": recovered.get("event_path"),
                     }
                 )
                 continue

@@ -59,6 +59,8 @@ SCHEMA_NAMES = (
     "metrics-report",
     "metrics-guidance",
     "metrics-progress",
+    "continuity-entry-packet",
+    "continuity-activation-evidence",
 )
 KIND = "ORCHESTRATOR_SCHEMA_CATALOG"
 

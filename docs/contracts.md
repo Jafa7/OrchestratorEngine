@@ -20,7 +20,8 @@ Stable names are `worker-task`, `worker-result`, `worker-evidence`,
 `github-pr-cancel-request`, `workstream`, `workstream-checkpoint`,
 `workstream-result`, `workstream-evidence`, `local-check`,
 `local-check-evidence`, `check-duration-history`, `resource-queue`,
-`resource-input-contract`, `task-resolution`, and `artifact-resolution`. They
+`resource-input-contract`, `task-resolution`, `artifact-resolution`,
+`continuity-entry-packet`, and `continuity-activation-evidence`. They
 are included in wheels and
 source distributions and require no runtime dependency.
 `orchestrator-engine schemas` lists names; pass one name to print its schema.
@@ -83,6 +84,36 @@ on these behaviors:
 - Malformed-schema acknowledgements are hash-bound companion files under
   `.orchestrator/artifact-resolutions/`; they never rewrite the historical
   artifact and stop applying if its bytes change.
+- Opt-in multi-chat continuity uses a project-local transactional authority.
+  Activations carry revision, control-epoch, endpoint-generation and optional
+  assignment-generation fences. A claim establishes current execution authority
+  but does not acknowledge result handling; handled outcome identities advance
+  only through an explicit checkpoint, persist at work scope across pause,
+  continue, source-set changes and handoff, and remain distinct from transport
+  receipts and product acceptance. Explicit reprocessing removes one retained
+  acknowledgement.
+- Continuity wait sources name exact typed operation identities. Reconciliation
+  reads validated retained operation artifacts independently of watcher seen
+  state. Entry packets expose the current wait, applicable retained results and
+  an independently revisioned operational note. Result references and observed
+  artifact hashes are separate facts; neither implies product acceptance.
+- Completed continuity work is immutable. Historical obligations are retained
+  without a lifetime workflow ceiling. Entry packets and detailed obligation,
+  result and activation views are bounded or paginated. Resolved self-check
+  findings retain their observed fact and correction and remain dismissed until
+  changed evidence creates a new finding identity.
+- Aggregate status uses a recoverable task-summary index under
+  `.orchestrator/indexes/`. Its first use or reconstruction reads durable task
+  history; steady-state collection refreshes journaled changes and active tasks.
+  The index is a projection, never authority: deleting it triggers reconstruction,
+  and `worker tasks --task-id ID` continues to read the retained task artifacts
+  directly. A per-publication recovery marker precedes the authoritative replace;
+  it is cleared only after the candidate journal is durable. A surviving marker
+  makes a warm index rebuild or report a pending publication rather than silently
+  claiming complete coverage. The marker hashes the exact UTF-8 bytes written by
+  both replace and exclusive-create publication paths, independent of platform
+  newline translation. Collection reports distinguish rebuild, journal, recovery
+  and active-row cost.
 
 The following are intentionally not version 1 core contracts:
 
@@ -105,9 +136,12 @@ values, path layout or terminal status names require a schema/version bump.
 
 `host-capabilities` emits a bounded, versioned provider-neutral report with
 `schema_version`, `kind`, `host_count` and a stable `hosts` array. Every host
-item has `host`, `delivery_mode`, `live_refresh_support` and
-`channel_lifecycle`. Claude reports `session_bound`; VS Code and Codex Desktop
-report `detached_service`. Current delivery values are `session_stream` /
+item has `host`, `delivery_mode`, `live_refresh_support`, `channel_lifecycle`,
+`endpoint_addressability`, `durable_enqueue`, `consumer_claim`,
+`sequential_queue_processing`, `consumer_start_observation`,
+`terminal_turn_observation`, `missed_event_reconciliation` and
+`native_subagent_observation`. Claude reports `session_bound`; VS Code and Codex
+Desktop report `detached_service`. Current delivery values are `session_stream` /
 `supported` for Claude, `ui_injection` / `best_effort` for VS Code, and
 `session_queue` / `supported` for Codex Desktop.
 Codex declares `requirement: "codex queue"` plus a
@@ -115,10 +149,98 @@ Codex declares `requirement: "codex queue"` plus a
 `status: "queued"` and records the CLI acknowledgement as `queue_message_id`;
 it confirms acceptance into the live session queue, not completion of the
 subsequent agent turn. Receipt fields use the actual selected delivery mode.
+`native_subagent_observation: unsupported` is intentional for the current host
+adapters: no retained provider source has been proven safe to observe after the
+parent model turn ends. Detached workers and checks remain supported. The
+engine must not advertise a native subagent bridge until that source and its
+consumer-claim semantics are independently verified.
+`runtime-capabilities` repeats this boundary independently of the selected host
+so callers cannot mistake detached process support for native subagent
+observation support.
 `ui_injection` is a stable version 1 protocol identifier for invoking the documented
 VS Code CLI, not a claim that host security is bypassed. The legacy `woken`
 status means completed headless history delivery when the Codex receipt has
 `delivery_mode: "headless_app_server_turn"`.
+
+## Multi-chat continuity
+
+Multi-chat continuity is opt-in and uses
+`.orchestrator/continuity/continuity.sqlite3` as its single transactional
+authority. Actor count and roles are dynamic. A work item has one owner, a
+monotonic revision and a fenced control epoch; completion is irreversible.
+Cross-chat work is represented by an explicit obligation whose assignment,
+bounded reminders and terminal resolution are durable state, never inferred
+from a chat becoming idle or ending a turn.
+
+A managed request atomically persists its stable idempotency identity, bounded
+message or retained reference, pinned recipient and return actors, optional
+reply obligation and outgoing activation. Informational requests create no
+reply debt. Receipt and progress responses retain evidence without resolving
+the obligation. A terminal response atomically stores the response, resolves
+the communication obligation and creates the return activation. Transport
+handling remains separate from product acceptance.
+
+Assignment checkpoints are fenced by obligation generation and can record
+`continue`, a typed `waiting` predicate or an explicit `paused` state without
+changing work ownership. Continue and waiting transitions advance assignment
+generation; pause retains the current claim so a revision-fenced checkpoint or
+terminal response can resume or cancel it. Rebinding a paused assignee fences
+the old claim and emits a new endpoint-fenced `assignment_paused_control`; its
+claim is control authority only and does not resume product execution. Assignment
+waits maintain their own explicit handled-result ledger and never acknowledge an
+outcome merely because its activation was claimed. Recovery observation is
+opt-in for new work and must be explicitly adopted for historical unfinished
+work. A due recovery activation is a state inspection, not authority to repeat
+work. It requires a supported sequential queue or correlated terminal-turn
+evidence, is deduplicated by causal identity, and persists exponential backoff
+without a hidden retry ceiling.
+Explicit project, actor or work stops take precedence over every covered new
+request, continuation and recovery route. The durable payload remains stored;
+resume creates a fresh route from current fenced state.
+
+Work completion fences new product execution but does not erase an optional
+managed request created while the work was mutable. Its unclaimed, continuing,
+waiting or paused assignment may still reach one terminal response, and the
+pinned return actor may still handle that reply. Owner checkpoints acknowledge
+only owner-continuation recovery; they do not resolve, duplicate or reset the
+backoff of an unrelated reply-handling incident. A completed non-request
+assignment can retain its result as historical evidence but cannot emit a new
+deliverable product activation. Re-arming an owner after endpoint replacement
+matches the current endpoint generation, so a stale claimed continuation never
+suppresses the one replacement route.
+
+Activations capture an exact versioned endpoint and must be claimed with their
+actor and expected control epoch before work continues. Endpoint replacement
+increments its generation, revokes unclaimed delivery for the old destination
+and reissues open work. Claims are coordination fences for trusted local
+participants, not user authentication or filesystem write enforcement.
+
+The outbox publishes ordinary `ORCHESTRATOR_FOLLOWUP_SIGNAL` records with
+`source_kind: continuity_activation`. The retained result conforms to
+`continuity-entry-packet`; evidence conforms to
+`continuity-activation-evidence`. Entry packets prioritize manifest obligations
+and open required obligations, cap the embedded list, and expose truncation in
+`obligation_summary`. The watcher checks the activation's current authority
+state before delivery, so a queued signal for a claimed or revoked activation
+is consumed as stale evidence rather than waking a chat.
+
+Typed waits accept `obligation`, `worker`, `check`, `ci`, `pr` and `workstream`
+sources. Terminal operation evidence is retained before `all` or `any` is
+evaluated. Claiming a satisfied activation only fences its current execution;
+an explicit checkpoint acknowledges each processed outcome. An `all` wait may
+use acknowledged outcomes to establish source readiness while its next manifest
+contains only outcomes that still require handling. A result artifact's immutable
+content hash defines the outcome identity; later descriptor or evidence facts
+enrich that outcome without publishing a duplicate activation. Schema upgrade
+normalizes legacy digests and source-key cursors while retaining prior published
+outcome IDs as acknowledgement aliases. A claimed activation fences replay only
+for its current actor endpoint generation; rebinding the owner reissues unhandled
+work to the new exact endpoint. The full operational and recovery flow is
+documented in [Multi-chat continuity](multi-chat-continuity.md).
+
+The continuity database schema is version 3. Migration from version 2 preserves
+existing actors, work, obligations, live claims, outbox rows, result aliases,
+handled-result ledgers and controls. It does not silently arm historical work.
 
 `orchestrator-engine --project-root PROJECT codex diagnose` is an explicit,
 read-only Codex adapter diagnostic. It runs `codex doctor --json` with a bounded
@@ -1974,8 +2096,9 @@ For a Codex CLI exposing `codex queue`, the watcher sends the deterministic
 wakeup to the snapshotted target thread through the shared live session daemon.
 The active host serializes it behind any current turn. Receipt
 `status: "queued"` means only that the CLI returned a matching message/thread
-acknowledgement. The receipt also records best-effort desktop deep-link focus;
-focus failure does not invalidate queue acceptance.
+acknowledgement. The background queue route does not focus a window, switch
+tasks or request a Desktop reload. Opening a task remains an explicit user or
+host action.
 
 If the capability probe does not find `codex queue --thread` and `--message`,
 the adapter uses the legacy headless App Server path described above. Its

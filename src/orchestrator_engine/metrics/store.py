@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import uuid
 from collections.abc import Iterable
 from pathlib import Path
@@ -36,6 +37,7 @@ class MetricsStore:
         self.registry_path = self.root / "registry.json"
         self.current_path = self.root / "current.json"
         self.lock_path = self.root / "writer.lock"
+        self.observation_index_path = self.root / "observation-index.sqlite3"
 
     def initialize(self) -> dict[str, Any]:
         self._make_directories()
@@ -248,7 +250,9 @@ class MetricsStore:
             if disabled:
                 raise MetricsStoreError(f"metrics source is disabled: {disabled[0]}")
             current = self.current_generation(verify_objects=False)
-            existing = self._observation_index(current)
+            existing, index_rebuilt = self._observation_digests(
+                current, set(seen_ids)
+            )
             additions = []
             for item in normalized:
                 previous_digest = existing.get(item["observation_id"])
@@ -266,6 +270,7 @@ class MetricsStore:
                     "imported": 0,
                     "duplicates": len(normalized) + repeated_in_batch,
                     "generation": current["generation_digest"],
+                    "index_rebuilt": index_rebuilt,
                 }
             manifest = self._commit_generation_unlocked(
                 parent=current["generation_digest"],
@@ -274,11 +279,13 @@ class MetricsStore:
                 new_observations=additions,
                 previous_segments=current["segment_digests"],
             )
+            self._advance_observation_index(manifest, additions)
         return {
             "status": "committed",
             "imported": len(additions),
             "duplicates": len(normalized) - len(additions) + repeated_in_batch,
             "generation": manifest["generation_digest"],
+            "index_rebuilt": index_rebuilt,
         }
 
     def collector_cursor(self, source_id: str) -> str | None:
@@ -668,6 +675,125 @@ class MetricsStore:
                     ):
                         values[item["observation_id"]] = contracts.content_digest(item)
         return values
+
+    def _observation_digests(
+        self,
+        generation: dict[str, Any],
+        observation_ids: set[str],
+    ) -> tuple[dict[str, str], bool]:
+        connection = sqlite3.connect(self.observation_index_path, timeout=10)
+        try:
+            rebuilt = self._ensure_observation_index(connection, generation)
+            values: dict[str, str] = {}
+            identifiers = sorted(observation_ids)
+            for start in range(0, len(identifiers), 500):
+                batch = identifiers[start : start + 500]
+                marks = ",".join("?" for _ in batch)
+                if not marks:
+                    continue
+                for row in connection.execute(
+                    f"SELECT observation_id, digest FROM observations "
+                    f"WHERE observation_id IN ({marks})",
+                    batch,
+                ):
+                    values[str(row[0])] = str(row[1])
+            connection.commit()
+            return values, rebuilt
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def _ensure_observation_index(
+        self, connection: sqlite3.Connection, generation: dict[str, Any]
+    ) -> bool:
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS metadata(
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS observations(
+                observation_id TEXT PRIMARY KEY,
+                digest TEXT NOT NULL
+            );
+            """
+        )
+        current = connection.execute(
+            "SELECT value FROM metadata WHERE key='generation_digest'"
+        ).fetchone()
+        if current is not None and current[0] == generation["generation_digest"]:
+            return False
+        connection.execute("DELETE FROM observations")
+        for segment_digest in generation["segment_digests"]:
+            segment = self._load_hashed(
+                self.root / "segments" / f"{segment_digest}.json",
+                segment_digest,
+            )
+            declared = segment.get("observation_digests")
+            if not isinstance(declared, dict) or not all(
+                isinstance(key, str) and isinstance(item, str)
+                for key, item in declared.items()
+            ):
+                declared = self._observation_index(generation)
+                connection.executemany(
+                    "INSERT INTO observations VALUES(?,?)", declared.items()
+                )
+                break
+            for observation_id, digest in declared.items():
+                try:
+                    connection.execute(
+                        "INSERT INTO observations VALUES(?,?)",
+                        (observation_id, digest),
+                    )
+                except sqlite3.IntegrityError as error:
+                    raise MetricsStoreError(
+                        "duplicate observation in metrics generation"
+                    ) from error
+        connection.execute(
+            """INSERT INTO metadata(key,value) VALUES('generation_digest',?)
+               ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+            (generation["generation_digest"],),
+        )
+        return True
+
+    def _advance_observation_index(
+        self,
+        generation: dict[str, Any],
+        additions: list[dict[str, Any]],
+    ) -> None:
+        connection = sqlite3.connect(self.observation_index_path, timeout=10)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            parent = generation.get("parent_generation")
+            indexed = connection.execute(
+                "SELECT value FROM metadata WHERE key='generation_digest'"
+            ).fetchone()
+            if indexed is None or indexed[0] != parent:
+                self._ensure_observation_index(connection, generation)
+            else:
+                connection.executemany(
+                    "INSERT INTO observations VALUES(?,?)",
+                    (
+                        (
+                            item["observation_id"],
+                            contracts.content_digest(item),
+                        )
+                        for item in additions
+                    ),
+                )
+                connection.execute(
+                    """UPDATE metadata SET value=?
+                       WHERE key='generation_digest'""",
+                    (generation["generation_digest"],),
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
 
 def load_json_records(path: Path) -> list[dict[str, Any]]:

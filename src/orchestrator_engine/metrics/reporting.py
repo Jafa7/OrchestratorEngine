@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from . import contracts
-from .calculations import calculate_metrics
+from .calculations import calculate_metrics, latest_logical_records
 from .catalog import METRIC_DEFINITIONS
 from .store import MetricsStore
 
@@ -45,7 +45,12 @@ def build_report(
         for item in registry["sources"]
         if item["enabled"] is True
     }
-    observations = [
+    usage_source_ids = {
+        item["source_id"]
+        for item in registry["sources"]
+        if item["enabled"] is True and "usage" in item.get("capabilities", [])
+    }
+    eligible = [
         item
         for item in store.observations(generation)
         if item["source_id"] in enabled_sources
@@ -53,7 +58,16 @@ def build_report(
         <= cutoff_value
         and datetime.fromisoformat(item["effective_at"].replace("Z", "+00:00"))
         <= cutoff_value
-        and (
+    ]
+    current = latest_logical_records(
+        eligible,
+        canonical_source_ids=canonical_sources,
+        source_observation_semantics=source_semantics,
+    )
+    observations = [
+        item
+        for item in current
+        if (
             package_id is None
             or item["scope"].get("package_id") == package_id
             or item["data"].get("package_id") == package_id
@@ -86,6 +100,7 @@ def build_report(
             observations,
             canonical_source_ids=canonical_sources,
             source_observation_semantics=source_semantics,
+            usage_source_ids=usage_source_ids,
             evaluation_time=cutoff,
         ),
     }

@@ -17,22 +17,47 @@ DELIVERY_MODES = frozenset(
 )
 LIVE_REFRESH_SUPPORT = frozenset({"supported", "best_effort", "unsupported"})
 CHANNEL_LIFECYCLES = frozenset({"session_bound", "detached_service"})
+CAPABILITY_SUPPORT = frozenset({"supported", "best_effort", "unsupported"})
 
 _CAPABILITIES: dict[str, dict[str, Any]] = {
     "claude": {
         "delivery_mode": "session_stream",
         "live_refresh_support": "supported",
         "channel_lifecycle": "session_bound",
+        "endpoint_addressability": "bound_session",
+        "durable_enqueue": "supported",
+        "consumer_claim": "local_contract",
+        "sequential_queue_processing": "best_effort",
+        "consumer_start_observation": "unsupported",
+        "terminal_turn_observation": "unsupported",
+        "missed_event_reconciliation": "best_effort",
+        "native_subagent_observation": "unsupported",
     },
     "vscode": {
         "delivery_mode": "ui_injection",
         "live_refresh_support": "best_effort",
         "channel_lifecycle": "detached_service",
+        "endpoint_addressability": "best_effort",
+        "durable_enqueue": "best_effort",
+        "consumer_claim": "local_contract",
+        "sequential_queue_processing": "best_effort",
+        "consumer_start_observation": "unsupported",
+        "terminal_turn_observation": "unsupported",
+        "missed_event_reconciliation": "best_effort",
+        "native_subagent_observation": "unsupported",
     },
     "codex": {
         "delivery_mode": "session_queue",
         "live_refresh_support": "supported",
         "channel_lifecycle": "detached_service",
+        "endpoint_addressability": "exact",
+        "durable_enqueue": "supported",
+        "consumer_claim": "local_contract",
+        "sequential_queue_processing": "supported",
+        "consumer_start_observation": "unsupported",
+        "terminal_turn_observation": "unsupported",
+        "missed_event_reconciliation": "supported",
+        "native_subagent_observation": "unsupported",
         "requirement": "codex queue",
         "fallback_delivery_mode": "headless_app_server_turn",
         "fallback_live_refresh_support": "unsupported",
@@ -63,6 +88,10 @@ def receipt_fields(
         "delivery_mode": fallback_mode,
         "live_refresh_support": result["fallback_live_refresh_support"],
         "channel_lifecycle": result["channel_lifecycle"],
+        "sequential_queue_processing": "unsupported",
+        "consumer_start_observation": "unsupported",
+        "terminal_turn_observation": "supported",
+        "missed_event_reconciliation": "best_effort",
     }
 
 

@@ -24,6 +24,35 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(value, {"ok": True})
         self.assertEqual(read_text.call_count, 2)
 
+    def test_index_recovery_hashes_match_published_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            state_root = root / ".orchestrator"
+            atomic_path = state_root / "tasks" / "ATOMIC" / "result.json"
+            claim_path = state_root / "tasks" / "CLAIM" / "result.json"
+            with mock.patch(
+                "orchestrator_engine.platform_runtime.exclusive_file_lock",
+                side_effect=RuntimeError("journal unavailable"),
+            ):
+                core.atomic_json(atomic_path, {"kind": "WORKER_RESULT"})
+                self.assertTrue(
+                    core.claim_json(claim_path, {"kind": "WORKER_RESULT"})
+                )
+
+            metrics = core.index_recovery_markers(
+                state_root, index_name="metrics-candidates"
+            )
+            diagnostics = core.index_recovery_markers(
+                state_root, index_name="task-diagnostics"
+            )
+
+        self.assertEqual(len(metrics["ready"]), 2)
+        self.assertEqual(metrics["pending"], [])
+        self.assertEqual(metrics["invalid"], [])
+        self.assertEqual(len(diagnostics["ready"]), 2)
+        self.assertEqual(diagnostics["pending"], [])
+        self.assertEqual(diagnostics["invalid"], [])
+
     def test_emit_writes_terminal_event_and_signal(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

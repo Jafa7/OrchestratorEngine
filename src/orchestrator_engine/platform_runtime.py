@@ -196,6 +196,7 @@ def capabilities() -> dict[str, object]:
         "portable_core": "supported",
         "file_locking": "supported",
         "detached_lifecycle": "supported" if detached else "unsupported",
+        "native_subagent_observation": "unsupported",
         "recommended_runtime": None if detached else "linux-or-wsl",
     }
 

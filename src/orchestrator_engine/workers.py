@@ -161,12 +161,9 @@ def validate_worker_handoff(handoff: dict[str, Any]) -> None:
         raise WorkerError("worker handoff summary is missing or too large")
     for field, maximum in HANDOFF_LIST_LIMITS.items():
         value = handoff.get(field)
-        if value is not None and (
-            not isinstance(value, list) or len(value) > maximum
-        ):
+        if value is not None and (not isinstance(value, list) or len(value) > maximum):
             raise WorkerError(
-                f"worker handoff {field} must be an array with at most "
-                f"{maximum} items"
+                f"worker handoff {field} must be an array with at most {maximum} items"
             )
     verification = handoff.get("verification")
     if verification is None:
@@ -180,8 +177,7 @@ def validate_worker_handoff(handoff: dict[str, Any]) -> None:
     checks = verification.get("checks")
     if not isinstance(checks, list) or len(checks) > 64:
         raise WorkerError(
-            "worker handoff verification checks must be an array with at most "
-            "64 items"
+            "worker handoff verification checks must be an array with at most 64 items"
         )
     for check in checks:
         if not isinstance(check, dict):
@@ -409,9 +405,7 @@ def enforce_task_intent(
         return {
             "mode": mode,
             "evaluated_at": core.utc_now(),
-            "permission_profile": config.get("extras", {}).get(
-                "permission_profile"
-            ),
+            "permission_profile": config.get("extras", {}).get("permission_profile"),
         }
     admission_fields = {"role", "risk", "verification", "authorizations"}
     needs_admission = any(key in intent for key in admission_fields)
@@ -754,9 +748,7 @@ def load_worker_execution_snapshot(
     )
     normalized.update(
         availability_probe=(
-            ["<dispatch-time profile snapshot>"]
-            if availability_configured
-            else None
+            ["<dispatch-time profile snapshot>"] if availability_configured else None
         ),
         availability_timeout_seconds=None,
         diagnostics=[],
@@ -902,10 +894,7 @@ def diagnose_workers(
         if (
             dispatch["intent_enforcement"] == "strict"
             and worker_diagnostics.is_known_ai_profile(config["command"])
-            and (
-                not isinstance(admission, dict)
-                or not admission.get("verification")
-            )
+            and (not isinstance(admission, dict) or not admission.get("verification"))
         ):
             profile_diagnostics.append(
                 worker_diagnostics.diagnostic(
@@ -1511,8 +1500,7 @@ def run_worker(
     )
     if effective_availability_mode not in AVAILABILITY_MODES:
         raise WorkerError(
-            "availability mode must be one of: "
-            + ", ".join(sorted(AVAILABILITY_MODES))
+            "availability mode must be one of: " + ", ".join(sorted(AVAILABILITY_MODES))
         )
     availability_snapshot: dict[str, Any] | None = None
     if effective_availability_mode != "off":
@@ -2142,9 +2130,7 @@ def worker_wait_snapshot(
     result_path = task_dir / "result.json"
     result = load_terminal_result(result_path)
     descriptor_status = str(descriptor.get("status") or "unknown")
-    result_status = (
-        str(result["terminal_status"]) if result is not None else None
-    )
+    result_status = str(result["terminal_status"]) if result is not None else None
     terminal = result is not None and descriptor_status in core.TERMINAL_STATUSES
     status = (
         result_status
@@ -2223,10 +2209,7 @@ def worker_wait_health(
     if descriptor_status not in {"starting", "running", "cancelling"}:
         return None
     heartbeat_age = worker_lease.lease_age_seconds(
-        {
-            "renewed_at": descriptor.get("last_alive_at")
-            or descriptor.get("created_at")
-        },
+        {"renewed_at": descriptor.get("last_alive_at") or descriptor.get("created_at")},
         now=now,
     )
     # A terminal result is claimed before the descriptor's final atomic write.
@@ -2513,25 +2496,27 @@ def finalize_terminal_task(
 ) -> dict[str, Any]:
     """Write the terminal artifacts for a task as its single elected writer.
 
-    `result.json` is created exclusively, and creating it *is* the election: a
-    supervisor and a reaper that both believe they own the same task cannot both
-    write, so the task can never end with two divergent terminal records. The
-    loser reports the winner's result instead of overwriting it.
+    A task-local publication lock elects one finalizer at a time. A supervisor
+    and a reaper that both believe they own the same task cannot write divergent
+    terminal records; the loser reports the retained result instead.
 
     `takeover` may only be set by a caller that has proven the previous writer is
     dead. It permits two recoveries, neither of which discards durable evidence:
-    replacing an empty claim left by a writer that died mid-write, and completing
-    a finalization whose result was written but whose event never was.
+    quarantining an incomplete result left by a writer that died mid-write, and
+    completing a finalization whose result was written but whose event never was.
 
     Outcomes: `claimed` (this caller wrote the result), `reconciled` (the
-    previous writer's result stands and this caller completed the emission), or
-    `lost` (another writer owns the terminal record).
+    previous writer's result stands and this caller completed the emission),
+    `recovered_partial` (raw partial bytes were quarantined), or `lost` (another
+    writer owns the terminal record).
     """
     result_path = task_dir / "result.json"
     evidence_path = task_dir / "evidence.json"
+    lock_path = task_dir / "terminal-publication.lock"
     outcome = "claimed"
     final = result
-    if not core.claim_json(result_path, result):
+    quarantined_path: Path | None = None
+    with platform_runtime.exclusive_file_lock(lock_path):
         existing = load_terminal_result(result_path)
         if existing is not None:
             if not takeover:
@@ -2542,31 +2527,51 @@ def finalize_terminal_task(
                 }
             outcome = "reconciled"
             final = existing
-        elif takeover and result_path.stat().st_size == 0:
+        elif result_path.exists():
+            if not takeover:
+                return {
+                    "outcome": "lost",
+                    "result": None,
+                    "result_path": str(result_path),
+                    "conflict": (
+                        "result.json exists but is not a readable terminal result"
+                    ),
+                }
+            raw = result_path.read_bytes()
+            recovery_dir = task_dir / "recovery"
+            recovery_dir.mkdir(parents=True, exist_ok=True)
+            digest = hashlib.sha256(raw).hexdigest()
+            quarantined_path = recovery_dir / f"result.invalid.{digest}.json"
+            if not quarantined_path.exists():
+                quarantined_path.write_bytes(raw)
             core.atomic_json(result_path, result)
+            outcome = "recovered_partial"
         else:
-            return {
-                "outcome": "lost",
-                "result": None,
-                "result_path": str(result_path),
-                "conflict": "result.json exists but is not a readable terminal result",
-            }
+            core.atomic_json(result_path, result)
 
-    terminal_status = str(final["terminal_status"])
-    if not evidence_path.is_file() or outcome == "claimed":
-        evidence["finished_at"] = final.get("finished_at", evidence["finished_at"])
-        core.atomic_json(evidence_path, evidence)
-    emitted = core.write_terminal_event(
-        project_root,
-        task_id=task_id,
-        terminal_status=terminal_status,
-        result_path=result_path,
-        evidence_path=evidence_path,
-        state_dir=state_dir,
-        event_id=core.terminal_event_id(project_root, task_id=task_id),
-        wake_target=wake_target,
-        emit_signal=emit_signal,
-    )
+        terminal_status = str(final["terminal_status"])
+        if not evidence_path.is_file() or outcome in {"claimed", "recovered_partial"}:
+            evidence = json.loads(json.dumps(evidence))
+            evidence["finished_at"] = final.get("finished_at", evidence["finished_at"])
+            if quarantined_path is not None:
+                recovery = evidence.setdefault("recovery", {})
+                recovery.update(
+                    disposition="partial_terminal_quarantined",
+                    quarantined_result_path=str(quarantined_path),
+                    quarantined_result_sha256=quarantined_path.name.split(".")[-2],
+                )
+            core.atomic_json(evidence_path, evidence)
+        emitted = core.write_terminal_event(
+            project_root,
+            task_id=task_id,
+            terminal_status=terminal_status,
+            result_path=result_path,
+            evidence_path=evidence_path,
+            state_dir=state_dir,
+            event_id=core.terminal_event_id(project_root, task_id=task_id),
+            wake_target=wake_target,
+            emit_signal=emit_signal,
+        )
     return {
         "outcome": outcome,
         "result": final,

@@ -2912,7 +2912,6 @@ class CodexSessionQueueTests(unittest.TestCase):
                 target_thread_id="thread-1",
                 codex="codex.exe",
                 runner=runner,
-                activator=lambda _thread_id: {"activation": "requested"},
             )
             duplicate = codex_app.queue_current_thread(
                 root,
@@ -2926,6 +2925,8 @@ class CodexSessionQueueTests(unittest.TestCase):
         self.assertEqual(receipt["delivery_mode"], "session_queue")
         self.assertEqual(receipt["live_refresh_support"], "supported")
         self.assertEqual(receipt["queue_message_id"], "message-123")
+        self.assertNotIn("activation", receipt)
+        self.assertNotIn("activation_url", receipt)
         self.assertNotIn("ignored trailing output", receipt)
         self.assertEqual(
             commands[0][:4], ["codex.exe", "queue", "--thread", "thread-1"]
@@ -2933,6 +2934,35 @@ class CodexSessionQueueTests(unittest.TestCase):
         self.assertIn("LOCAL_AI_ORCHESTRATOR_WAKEUP v1", commands[0][-1])
         self.assertEqual(duplicate["status"], "skipped")
         self.assertEqual(len(commands), 1)
+
+    def test_live_queue_route_does_not_activate_desktop_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-background-queue")
+            signal = core.inbox(root)[0]
+            with mock.patch.object(
+                codex_app,
+                "activate_queued_thread_window",
+                side_effect=AssertionError(
+                    "Desktop activation is not background delivery"
+                ),
+            ) as activate:
+                receipt = codex_app.wake_bound_thread(
+                    root,
+                    signal,
+                    target_thread_id="thread-1",
+                    codex="codex.exe",
+                    queue_probe=lambda *_args, **_kwargs: {"available": True},
+                    queue_runner=lambda *_args, **_kwargs: FakeCompleted(
+                        stdout=(
+                            "Queued message message-background for thread thread-1."
+                        )
+                    ),
+                )
+
+        self.assertEqual(receipt["status"], "queued")
+        self.assertEqual(receipt["queue_message_id"], "message-background")
+        activate.assert_not_called()
 
     def test_queue_timeout_is_manual_required_without_retry(self) -> None:
         def runner(command, **_kwargs):

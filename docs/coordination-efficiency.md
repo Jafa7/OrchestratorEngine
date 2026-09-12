@@ -96,9 +96,9 @@ The generated JSON is the machine-readable result behind the checked-in SVG.
 
 | Scenario | Naive polling | Status reads | Context share | Reduction |
 | --- | ---: | ---: | ---: | ---: |
-| Long test | 655,360 B | 18,787 B | 2.87% | 97.13% |
-| AI worker | 2,621,440 B | 18,789 B | 0.72% | 99.28% |
-| Parallel workers | 3,932,160 B | 21,376 B | 0.54% | 99.46% |
+| Long test | 655,360 B | 21,926 B | 3.35% | 96.65% |
+| AI worker | 2,621,440 B | 21,928 B | 0.84% | 99.16% |
+| Parallel workers | 3,932,160 B | 24,515 B | 0.62% | 99.38% |
 
 Every scenario passed the selective-inspection quality guard. The smaller
 status reads come from carrying task state, diagnostics, sizes and artifact
