@@ -75,6 +75,16 @@ documented contracts.
   not transfer ownership.
   Run `continuity self-check --repair` to recover a missing outbox publication,
   never start an AI agent to poll a peer chat.
+- Record observed orchestration contradictions as bounded operational feedback,
+  separating facts from hypotheses. Do not investigate every observation or
+  run extra full gates merely to report it. `continuity feedback-record` is
+  local-only; sending requires an explicitly configured destination and evidence
+  allowlist. Coalesce stable causes and preserve local evidence on delivery
+  failure; never export private adopter plans or create duplicate fallback
+  wakeups. FYI reporting is not permission to implement or release. Use a
+  separate managed reply request and typed wait only for a named blocking
+  dependency; otherwise continue independently authorized work. See
+  `docs/multi-chat-continuity.md#operational-feedback`.
 
 ## Risk-based verification
 
@@ -131,7 +141,11 @@ and detached wake delivery cannot provide the required bounded bridge. See
 
 Choose exactly one completion route for each operation. For long work, enable
 its wake policy and end the turn so the watcher can resume the chat. For a
-bounded in-turn wait, dispatch with `--wake-policy never` and use one
+managed continuity wait, continuity may instead own the terminal wakeup: dispatch
+the underlying operation with `--wake-policy never`, verify the owner's channel
+with require-ready admission, and checkpoint `waiting` on its exact typed source
+before ending the turn. Do not also enable the operation's direct wakeup.
+For a bounded in-turn wait, dispatch with `--wake-policy never` and use one
 `worker wait` or `operation wait`. Do not combine a wake-enabled operation with
 a blocking wait unless the user explicitly wants a second queued notification.
 In a multi-stage pipeline, intermediate stages use no wakeup; only the terminal
@@ -150,6 +164,16 @@ and run the full gate again only when a new final candidate is ready. Do not
 run the complete suite after every intermediate edit.
 
 ## Accepted-plan execution
+
+Before ending a turn, distinguish a finished slice from a finished authorized
+plan. Continue independently authorized remaining work in the current turn, or
+record a fenced continuity `continue` checkpoint with its concrete next action
+before ending. Use `waiting` for a named dependency and `paused` for required
+human input. Do not checkpoint `complete` merely because one slice passed its
+gate or because the next slice has not started. Do not ask for fresh permission
+to implement already authorized work; publication still requires explicit
+authorization. Watchers inspect durable authority, not conversational prose,
+and cannot infer remaining work after an owner declares the work complete.
 
 New workstreams have no continuation-count or total wall-time ceiling unless
 the owner explicitly chooses limits. Keep old explicit limits until an

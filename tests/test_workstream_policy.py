@@ -37,7 +37,7 @@ class WorkstreamPolicyTests(unittest.TestCase):
             checkpoint_id=name,
             decision=decision,
             summary="Durable progress",
-            next_action="Finish the accepted plan",
+            next_action=None if decision == "complete" else "Finish the accepted plan",
             ready=decision == "continue",
             **kwargs,
         )

@@ -100,6 +100,14 @@ orchestrator-engine --project-root /path/to/project check run \
 follow-up for a detached terminal result. This avoids waking an already active
 chat for a short command.
 
+Repeating `check run` for an existing ordinary local-check ID compares its
+retained requested execution, wake policy, threshold, suite fingerprint and
+wake destination. It does not re-plan against newer duration history or start
+another supervisor. The original execution and completion route are retained;
+the response reports `completion_delivery.reason_code: retained_operation`
+without running a new delivery probe. Changed request options remain a conflict.
+Measured history still determines `auto` execution for a new check ID.
+
 Run long suites through a detached check runner when available:
 
 1. Select `focused` or `full` before dispatch; do not let the check worker

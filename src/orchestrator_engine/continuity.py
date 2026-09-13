@@ -412,12 +412,10 @@ def _initialize(connection: sqlite3.Connection) -> None:
         "INSERT OR IGNORE INTO metadata(key, value) VALUES('recovery_cursor', '')"
     )
     connection.execute(
-        "INSERT OR IGNORE INTO metadata(key, value) "
-        "VALUES('recovery_work_cursor', '')"
+        "INSERT OR IGNORE INTO metadata(key, value) VALUES('recovery_work_cursor', '')"
     )
     connection.execute(
-        "INSERT OR IGNORE INTO metadata(key, value) "
-        "VALUES('recovery_reply_cursor', '')"
+        "INSERT OR IGNORE INTO metadata(key, value) VALUES('recovery_reply_cursor', '')"
     )
     _normalize_result_identities(connection)
     _backfill_handled_results(connection)
@@ -453,9 +451,7 @@ def _migrate_database_v1(connection: sqlite3.Connection) -> None:
             row[1] for row in connection.execute("PRAGMA table_info(diagnostics)")
         }
         if diagnostic_columns and "finding_digest" not in diagnostic_columns:
-            connection.execute(
-                "ALTER TABLE diagnostics ADD COLUMN finding_digest TEXT"
-            )
+            connection.execute("ALTER TABLE diagnostics ADD COLUMN finding_digest TEXT")
         if diagnostic_columns and "resolution_json" not in diagnostic_columns:
             connection.execute(
                 "ALTER TABLE diagnostics ADD COLUMN resolution_json TEXT"
@@ -861,6 +857,7 @@ def register_actor(
     role: str,
     host: str,
     target_thread_id: str | None = None,
+    codex_command: str | None = None,
     capabilities: list[str] | None = None,
     completion_delivery_mode: str | None = None,
     state_dir: str = core.DEFAULT_STATE_DIR,
@@ -875,11 +872,16 @@ def register_actor(
     )
     if target_thread_id is not None:
         target_thread_id = _id(target_thread_id, field="target_thread_id")
+    if codex_command is not None:
+        if host != "codex":
+            raise ContinuityError("codex_command is valid only for a Codex endpoint")
+        codex_command = _text(codex_command, field="codex_command", limit=4096)
     endpoint = {
         "schema_version": core.SCHEMA_VERSION,
         "kind": binding.BINDING_KIND,
         "host": host,
         **({"target_thread_id": target_thread_id} if target_thread_id else {}),
+        **({"codex_command": codex_command} if codex_command else {}),
     }
     try:
         binding.validate_binding(endpoint)
@@ -993,9 +995,10 @@ def register_actor(
                 (actor_id,),
             ).fetchall():
                 work = _require_work(connection, request["work_id"])
-                if _effective_explicit_stop(
-                    connection, work=work, actor_id=actor_id
-                ) is not None:
+                if (
+                    _effective_explicit_stop(connection, work=work, actor_id=actor_id)
+                    is not None
+                ):
                     continue
                 reply_activation = _create_activation(
                     connection,
@@ -1015,9 +1018,10 @@ def register_actor(
                 "SELECT * FROM works WHERE owner_actor=? AND mode!='complete'",
                 (actor_id,),
             ).fetchall():
-                if _effective_explicit_stop(
-                    connection, work=work, actor_id=actor_id
-                ) is not None:
+                if (
+                    _effective_explicit_stop(connection, work=work, actor_id=actor_id)
+                    is not None
+                ):
                     continue
                 if work["mode"] == "continue":
                     _create_activation(
@@ -1334,7 +1338,6 @@ def request_send(
     now = core.utc_now()
     with _database(project_root, state_dir=state_dir, write=True) as connection:
         work = _require_work(connection, work_id)
-        _assert_mutable_work(work)
         sender = _require_actor(connection, sender_actor)
         recipient = _require_actor(connection, recipient_actor)
         return_row = _require_actor(connection, return_actor)
@@ -1378,6 +1381,7 @@ def request_send(
             response = _request_dict(existing)
             response["idempotent"] = True
         else:
+            _assert_mutable_work(work)
             del sender
             obligation_id = None
             if requires_reply:
@@ -1439,9 +1443,12 @@ def request_send(
                 manifest.append(f"obligation:{obligation_id}")
                 assignment_generation = 1
             activation_id = None
-            if _effective_explicit_stop(
-                connection, work=work, actor_id=recipient_actor
-            ) is None:
+            if (
+                _effective_explicit_stop(
+                    connection, work=work, actor_id=recipient_actor
+                )
+                is None
+            ):
                 activation_id = _create_activation(
                     connection,
                     work=work,
@@ -1608,9 +1615,12 @@ def request_respond(
                 )
                 work = _require_work(connection, request["work_id"])
                 reply_activation = None
-                if _effective_explicit_stop(
-                    connection, work=work, actor_id=request["return_actor"]
-                ) is None:
+                if (
+                    _effective_explicit_stop(
+                        connection, work=work, actor_id=request["return_actor"]
+                    )
+                    is None
+                ):
                     reply_activation = _create_activation(
                         connection,
                         work=work,
@@ -1686,8 +1696,7 @@ def request_handle(
             or activation["reason"] != "request_reply"
             or request["reply_activation_id"] != activation_id
             or int(activation["endpoint_generation"]) != int(actor["generation"])
-            or f"request:{request_id}"
-            not in _decode(activation["manifest_json"], [])
+            or f"request:{request_id}" not in _decode(activation["manifest_json"], [])
         ):
             raise ContinuityError(
                 "request reply requires its current claimed activation"
@@ -1792,14 +1801,13 @@ def assignment_checkpoint(
             obligation_id=obligation_id,
             actor_id=actor_id,
             sources=ledger_sources,
+            previous_sources=previous_sources,
             handled_results=handled_results,
             reprocess_results=reprocess_results,
         )
         if mode == "paused":
             generation = int(obligation["generation"])
-            _revoke_obligation_activations(
-                connection, obligation_id=obligation_id
-            )
+            _revoke_obligation_activations(connection, obligation_id=obligation_id)
         else:
             generation = int(obligation["generation"]) + 1
             connection.execute(
@@ -1808,9 +1816,7 @@ def assignment_checkpoint(
                        claimed_generation=NULL WHERE obligation_id=?""",
                 (generation, obligation_id),
             )
-            _revoke_obligation_activations(
-                connection, obligation_id=obligation_id
-            )
+            _revoke_obligation_activations(connection, obligation_id=obligation_id)
         connection.execute(
             """INSERT INTO assignment_checkpoints(
                    obligation_id, assignment_generation, revision, mode, summary,
@@ -1841,9 +1847,7 @@ def assignment_checkpoint(
             (now, obligation_id),
         )
         work = _require_work(connection, obligation["work_id"])
-        stopped = _effective_explicit_stop(
-            connection, work=work, actor_id=actor_id
-        )
+        stopped = _effective_explicit_stop(connection, work=work, actor_id=actor_id)
         next_activation = None
         if mode == "continue" and stopped is None:
             next_activation = _create_activation(
@@ -1865,9 +1869,7 @@ def assignment_checkpoint(
                 state_dir=state_dir,
             )
             if stopped is None:
-                next_activation = _evaluate_assignment_wait(
-                    connection, obligation_id
-                )
+                next_activation = _evaluate_assignment_wait(connection, obligation_id)
     publication = _publish_or_raise(project_root, state_dir=state_dir)
     return {
         "obligation_id": obligation_id,
@@ -2030,9 +2032,7 @@ def set_recovery_control(
                     (core.utc_now(), activation["activation_id"]),
                 )
         else:
-            _rearm_scope_routes(
-                connection, scope_kind=scope_kind, scope_id=scope_id
-            )
+            _rearm_scope_routes(connection, scope_kind=scope_kind, scope_id=scope_id)
     publication = _publish_or_raise(project_root, state_dir=state_dir)
     return {
         "scope_kind": scope_kind,
@@ -2124,9 +2124,7 @@ def resolve_obligation(
                     obligation_id,
                 ),
             )
-            _revoke_obligation_activations(
-                connection, obligation_id=obligation_id
-            )
+            _revoke_obligation_activations(connection, obligation_id=obligation_id)
             _record_result(
                 connection,
                 source_key=f"obligation:{obligation_id}",
@@ -2196,6 +2194,8 @@ def checkpoint(
         raise ContinuityError("reprocessed results are valid only in waiting mode")
     if mode == "continue" and not next_action:
         raise ContinuityError("continue mode requires next_action")
+    if mode == "complete" and next_action:
+        raise ContinuityError("complete mode cannot retain next_action; use continue")
     if delay_seconds < 0 or delay_seconds > 3600:
         raise ContinuityError("delay_seconds must be between 0 and 3600")
     now = core.utc_now()
@@ -2237,9 +2237,7 @@ def checkpoint(
             (now, work_id),
         )
         if mode == "complete":
-            _revoke_product_activations_on_complete(
-                connection, work_id=work_id
-            )
+            _revoke_product_activations_on_complete(connection, work_id=work_id)
         else:
             _revoke_owner_control_activations(
                 connection, work_id=work_id, actor_id=actor_id
@@ -2258,6 +2256,9 @@ def checkpoint(
                 sources=sources,
                 handled_results=handled_results,
                 reprocess_results=reprocess_results,
+            )
+            _record_replay_decisions(
+                connection, work_id, revision, handled_results, reprocess_results
             )
             connection.execute(
                 """INSERT INTO waits(
@@ -2284,9 +2285,10 @@ def checkpoint(
                 sources=sources,
                 state_dir=state_dir,
             )
-            if _effective_explicit_stop(
-                connection, work=updated, actor_id=actor_id
-            ) is None:
+            if (
+                _effective_explicit_stop(connection, work=updated, actor_id=actor_id)
+                is None
+            ):
                 activation = _evaluate_wait(connection, work_id)
         else:
             _persist_handled_results(
@@ -2295,10 +2297,19 @@ def checkpoint(
                 actor_id=actor_id,
                 handled_results=handled_results,
             )
+            _record_replay_decisions(connection, work_id, revision, handled_results, [])
+            if mode == "complete":
+                connection.execute(
+                    "DELETE FROM metadata WHERE key=?", (f"pending_replays:{work_id}",)
+                )
             connection.execute("DELETE FROM waits WHERE work_id=?", (work_id,))
-            if mode == "continue" and _effective_explicit_stop(
-                connection, work=updated, actor_id=actor_id
-            ) is None:
+            if (
+                mode == "continue"
+                and _effective_explicit_stop(
+                    connection, work=updated, actor_id=actor_id
+                )
+                is None
+            ):
                 activation = _create_activation(
                     connection,
                     work=updated,
@@ -2347,19 +2358,21 @@ def transfer(
                WHERE work_id=?""",
             (to_actor, reason, core.utc_now(), work_id),
         )
-        connection.execute(
-            """UPDATE activations SET status='revoked'
-               WHERE work_id=? AND status IN ('pending','published')""",
-            (work_id,),
+        _revoke_owner_control_activations(
+            connection, work_id=work_id, actor_id=from_actor
         )
         updated = _require_work(connection, work_id)
-        activation = _create_activation(
-            connection,
-            work=updated,
-            actor_id=to_actor,
-            reason="ownership_transferred",
-            manifest=[],
-        )
+        activation = None
+        if _effective_explicit_stop(
+            connection, work=updated, actor_id=to_actor
+        ) is None:
+            activation = _create_activation(
+                connection,
+                work=updated,
+                actor_id=to_actor,
+                reason="ownership_transferred",
+                manifest=[],
+            )
     _publish_or_raise(project_root, state_dir=state_dir)
     return {
         **status(project_root, work_id=work_id, state_dir=state_dir),
@@ -2391,9 +2404,7 @@ def claim(
             raise ContinuityError("activation endpoint generation is stale")
         if int(activation["control_epoch"]) != expected_epoch:
             raise ContinuityError("activation control epoch is stale")
-        stopped = _effective_explicit_stop(
-            connection, work=work, actor_id=actor_id
-        )
+        stopped = _effective_explicit_stop(connection, work=work, actor_id=actor_id)
         if stopped:
             raise ContinuityError(f"actor continuation is stopped: {stopped}")
         manifest = _decode(activation["manifest_json"], [])
@@ -2466,16 +2477,12 @@ def claim(
                     or source_activation is None
                     or source_activation["status"] != "claimed"
                 ):
-                    raise ContinuityError(
-                        "request reply recovery is no longer current"
-                    )
+                    raise ContinuityError("request reply recovery is no longer current")
         if is_recovery and not is_reply_recovery:
             stopped = (
                 _effective_explicit_stop(connection, work=work, actor_id=actor_id)
                 if is_communication_assignment
-                else _effective_recovery_stop(
-                    connection, work=work, actor_id=actor_id
-                )
+                else _effective_recovery_stop(connection, work=work, actor_id=actor_id)
             )
             if stopped:
                 raise ContinuityError(f"recovery is stopped: {stopped}")
@@ -2623,13 +2630,15 @@ def observe_signal(
             waiting = connection.execute("SELECT work_id FROM waits").fetchall()
             for row in waiting:
                 work = _require_work(connection, row["work_id"])
-                if _effective_explicit_stop(
-                    connection, work=work, actor_id=work["owner_actor"]
-                ) is None:
+                if (
+                    _effective_explicit_stop(
+                        connection, work=work, actor_id=work["owner_actor"]
+                    )
+                    is None
+                ):
                     _evaluate_wait(connection, row["work_id"])
             assignment_waits = connection.execute(
-                "SELECT obligation_id FROM assignment_checkpoints "
-                "WHERE mode='waiting'"
+                "SELECT obligation_id FROM assignment_checkpoints WHERE mode='waiting'"
             ).fetchall()
             for row in assignment_waits:
                 obligation = connection.execute(
@@ -2639,11 +2648,14 @@ def observe_signal(
                 if obligation is None:
                     continue
                 work = _require_work(connection, obligation["work_id"])
-                if _effective_explicit_stop(
-                    connection,
-                    work=work,
-                    actor_id=obligation["assignee_actor"],
-                ) is None:
+                if (
+                    _effective_explicit_stop(
+                        connection,
+                        work=work,
+                        actor_id=obligation["assignee_actor"],
+                    )
+                    is None
+                ):
                     _evaluate_assignment_wait(connection, row["obligation_id"])
     if changed:
         _publish_or_raise(project_root, state_dir=state_dir)
@@ -2781,9 +2793,12 @@ def reconcile(
         )
         for row in waits:
             work = _require_work(connection, row["work_id"])
-            if _effective_explicit_stop(
-                connection, work=work, actor_id=work["owner_actor"]
-            ) is None:
+            if (
+                _effective_explicit_stop(
+                    connection, work=work, actor_id=work["owner_actor"]
+                )
+                is None
+            ):
                 _evaluate_wait(connection, row["work_id"])
         for row in assignment_waits:
             obligation = connection.execute(
@@ -2793,9 +2808,12 @@ def reconcile(
             if obligation is None:
                 continue
             work = _require_work(connection, obligation["work_id"])
-            if _effective_explicit_stop(
-                connection, work=work, actor_id=obligation["assignee_actor"]
-            ) is None:
+            if (
+                _effective_explicit_stop(
+                    connection, work=work, actor_id=obligation["assignee_actor"]
+                )
+                is None
+            ):
                 _evaluate_assignment_wait(connection, row["obligation_id"])
         _reconcile_request_deliveries(connection)
         recovery = _reconcile_recovery(connection)
@@ -2881,9 +2899,7 @@ def self_check(
                 else "request_reply"
             )
             actor_id = request[
-                "recipient_actor"
-                if reason == "request_message"
-                else "return_actor"
+                "recipient_actor" if reason == "request_message" else "return_actor"
             ]
             pointer = request[
                 "request_activation_id"
@@ -2891,16 +2907,20 @@ def self_check(
                 else "reply_activation_id"
             ]
             work = _require_work(connection, request["work_id"])
-            if _effective_explicit_stop(
-                connection, work=work, actor_id=actor_id
-            ) is not None:
+            if (
+                _effective_explicit_stop(connection, work=work, actor_id=actor_id)
+                is not None
+            ):
                 continue
-            if _active_current_activation(
-                connection,
-                activation_id=pointer,
-                actor_id=actor_id,
-                reason=reason,
-            ) is None:
+            if (
+                _active_current_activation(
+                    connection,
+                    activation_id=pointer,
+                    actor_id=actor_id,
+                    reason=reason,
+                )
+                is None
+            ):
                 findings.append(
                     {
                         "code": f"{reason}_delivery_missing",
@@ -2915,6 +2935,39 @@ def self_check(
             findings.append(
                 {"code": "assignment_dependency_cycle", "obligation_ids": cycle}
             )
+        for obligation in connection.execute(
+            """SELECT o.* FROM obligations o
+               LEFT JOIN requests r ON r.obligation_id=o.obligation_id
+               LEFT JOIN assignment_checkpoints a ON a.obligation_id=o.obligation_id
+               WHERE o.status='open' AND o.claimed_at IS NULL
+                 AND r.request_id IS NULL AND a.obligation_id IS NULL"""
+        ).fetchall():
+            work = _require_work(connection, obligation["work_id"])
+            actor_id = obligation["assignee_actor"]
+            if work["mode"] == "complete" or _effective_explicit_stop(
+                connection, work=work, actor_id=actor_id
+            ) is not None:
+                continue
+            actor = connection.execute(
+                "SELECT active FROM actors WHERE actor_id=?", (actor_id,)
+            ).fetchone()
+            if actor is None or not actor["active"]:
+                continue
+            if _active_obligation_activation(
+                connection,
+                obligation=obligation,
+                reasons={"obligation_assigned", "obligation_reminder"},
+            ) is None:
+                findings.append({
+                    "code": "obligation_assignment_delivery_missing",
+                    "work_id": work["work_id"],
+                    "obligation_id": obligation["obligation_id"],
+                })
+                if repair:
+                    _rearm_obligation_route(
+                        connection, work=work, obligation=obligation,
+                        request=None, assignment=None,
+                    )
         waits = connection.execute("SELECT * FROM waits").fetchall()
         for row in waits:
             sources = _decode(row["sources_json"], [])
@@ -2976,8 +3029,19 @@ def self_check(
                                 event_id=None,
                                 data=observation["data"],
                             )
-            for activation in connection.execute(
-                """SELECT activation_id, manifest_json FROM activations
+            work = _require_work(connection, row["work_id"])
+            satisfied = _wait_satisfied(connection, row["work_id"])
+            manifest = (
+                _wait_result_manifest(connection, row["work_id"]) if satisfied else []
+            )
+            route = (
+                _wait_completion_route(connection, work, manifest)
+                if satisfied
+                else None
+            )
+            claimed_activations = list(
+                connection.execute(
+                    """SELECT activation_id, manifest_json FROM activations
                    WHERE work_id=? AND reason='wait_satisfied'
                      AND status='claimed'
                      AND work_revision=(SELECT revision FROM works WHERE work_id=?)
@@ -2986,8 +3050,21 @@ def self_check(
                          SELECT generation FROM actors
                          WHERE actor_id=(SELECT owner_actor FROM works WHERE work_id=?)
                      )""",
-                (row["work_id"], row["work_id"], row["work_id"], row["work_id"]),
-            ).fetchall():
+                    (row["work_id"], row["work_id"], row["work_id"], row["work_id"]),
+                ).fetchall()
+            )
+            if (
+                route is not None
+                and route["reason"] == "request_reply"
+                and route["status"] == "claimed"
+            ):
+                claimed_activations.append(
+                    {
+                        "activation_id": route["activation_id"],
+                        "manifest_json": _json(manifest),
+                    }
+                )
+            for activation in claimed_activations:
                 unhandled = [
                     outcome_id
                     for outcome_id in _decode(activation["manifest_json"], [])
@@ -3002,27 +3079,15 @@ def self_check(
                             "outcome_ids": unhandled,
                         }
                     )
-            if _wait_satisfied(connection, row["work_id"]):
-                work = _require_work(connection, row["work_id"])
-                if _effective_explicit_stop(
-                    connection, work=work, actor_id=work["owner_actor"]
-                ) is not None:
+            if satisfied:
+                if (
+                    _effective_explicit_stop(
+                        connection, work=work, actor_id=work["owner_actor"]
+                    )
+                    is not None
+                ):
                     continue
-                active = connection.execute(
-                    """SELECT 1 FROM activations
-                       WHERE work_id=? AND actor_id=? AND reason='wait_satisfied'
-                         AND status IN ('pending','published','claimed')
-                         AND work_revision=? AND control_epoch=?
-                         AND endpoint_generation=?""",
-                    (
-                        row["work_id"],
-                        work["owner_actor"],
-                        work["revision"],
-                        work["control_epoch"],
-                        _require_actor(connection, work["owner_actor"])["generation"],
-                    ),
-                ).fetchone()
-                if active is None:
+                if route is None:
                     findings.append(
                         {
                             "code": "satisfied_wait_not_activated",
@@ -3076,11 +3141,14 @@ def self_check(
             )
             if satisfied:
                 work = _require_work(connection, obligation["work_id"])
-                if _effective_explicit_stop(
-                    connection,
-                    work=work,
-                    actor_id=obligation["assignee_actor"],
-                ) is not None:
+                if (
+                    _effective_explicit_stop(
+                        connection,
+                        work=work,
+                        actor_id=obligation["assignee_actor"],
+                    )
+                    is not None
+                ):
                     continue
                 activation = _active_assignment_wait_activation(
                     connection, obligation=obligation
@@ -3113,9 +3181,12 @@ def self_check(
                     )
             else:
                 work = _require_work(connection, row["work_id"])
-                if _effective_explicit_stop(
-                    connection, work=work, actor_id=row["owner_actor"]
-                ) is not None:
+                if (
+                    _effective_explicit_stop(
+                        connection, work=work, actor_id=row["owner_actor"]
+                    )
+                    is not None
+                ):
                     continue
                 route = connection.execute(
                     """SELECT 1 FROM activations
@@ -3290,9 +3361,7 @@ def entry_packet(
             "SELECT * FROM notes WHERE work_id=?", (work["work_id"],)
         ).fetchone()
         request_ids = sorted(
-            value.split(":", 1)[1]
-            for value in manifest
-            if value.startswith("request:")
+            value.split(":", 1)[1] for value in manifest if value.startswith("request:")
         )
         if request_ids:
             marks = ",".join("?" for _ in request_ids)
@@ -3318,8 +3387,7 @@ def entry_packet(
             ).fetchall()
             response_total = int(
                 connection.execute(
-                    f"SELECT COUNT(*) FROM responses "
-                    f"WHERE request_id IN ({marks})",
+                    f"SELECT COUNT(*) FROM responses WHERE request_id IN ({marks})",
                     tuple(request_ids),
                 ).fetchone()[0]
             )
@@ -3388,8 +3456,7 @@ def entry_packet(
         "action_contract": {
             "request_terminal_reply": "continuity request-respond --kind terminal",
             "assignment_progress": (
-                "continuity assignment-checkpoint "
-                "[--handled-result OUTCOME_ID]"
+                "continuity assignment-checkpoint [--handled-result OUTCOME_ID]"
             ),
             "reply_handling": "continuity request-handle",
             "recovery_semantics": (
@@ -3480,11 +3547,7 @@ def status(
             ((work_id,) if work_id else ()),
         ).fetchall()
         source_keys = sorted(
-            {
-                source
-                for wait in waits
-                for source in _decode(wait["sources_json"], [])
-            }
+            {source for wait in waits for source in _decode(wait["sources_json"], [])}
         )
         if source_keys:
             marks = ",".join("?" for _ in source_keys)
@@ -3499,8 +3562,7 @@ def status(
                 ),
             ).fetchall()
             result_total = connection.execute(
-                f"SELECT COUNT(*) AS count FROM results "
-                f"WHERE source_key IN ({marks})",
+                f"SELECT COUNT(*) AS count FROM results WHERE source_key IN ({marks})",
                 tuple(source_keys),
             ).fetchone()["count"]
         else:
@@ -3524,14 +3586,10 @@ def status(
             request_conditions.append("request_id>?")
             request_arguments.append(request_cursor)
         request_where = (
-            " WHERE " + " AND ".join(request_conditions)
-            if request_conditions
-            else ""
+            " WHERE " + " AND ".join(request_conditions) if request_conditions else ""
         )
         requests = connection.execute(
-            "SELECT * FROM requests"
-            + request_where
-            + " ORDER BY request_id LIMIT ?",
+            "SELECT * FROM requests" + request_where + " ORDER BY request_id LIMIT ?",
             (*request_arguments, request_limit + 1),
         ).fetchall()
         request_total = connection.execute(
@@ -3549,8 +3607,7 @@ def status(
             ).fetchall()
             response_total = int(
                 connection.execute(
-                    f"SELECT COUNT(*) FROM responses "
-                    f"WHERE request_id IN ({marks})",
+                    f"SELECT COUNT(*) FROM responses WHERE request_id IN ({marks})",
                     tuple(request_page_ids),
                 ).fetchone()[0]
             )
@@ -3675,9 +3732,7 @@ def _message_value(
             "text": text,
             "content_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
         }
-    reference = _text(
-        message_ref, field="message_ref", limit=MAX_RESULT_REF_LENGTH
-    )
+    reference = _text(message_ref, field="message_ref", limit=MAX_RESULT_REF_LENGTH)
     return {"kind": "reference", **_result_reference(project_root, reference)}
 
 
@@ -3687,9 +3742,7 @@ def _message_reference(message: dict[str, Any]) -> dict[str, str]:
         return {"reference": f"inline:sha256:{digest}", "digest": digest}
     return {
         "reference": str(message["reference"]),
-        "digest": str(
-            message.get("content_sha256") or message.get("reference_sha256")
-        ),
+        "digest": str(message.get("content_sha256") or message.get("reference_sha256")),
     }
 
 
@@ -3747,11 +3800,9 @@ def _assert_current_assignment_claim(
 ) -> sqlite3.Row:
     if obligation["assignee_actor"] != actor_id:
         raise ContinuityError("only the assigned actor may update the assignment")
-    if (
-        obligation["claimed_activation_id"] != activation_id
-        or int(obligation["claimed_generation"] or 0)
-        != int(obligation["generation"])
-    ):
+    if obligation["claimed_activation_id"] != activation_id or int(
+        obligation["claimed_generation"] or 0
+    ) != int(obligation["generation"]):
         raise ContinuityError("operation requires the current claimed assignment")
     activation = connection.execute(
         "SELECT * FROM activations WHERE activation_id=?", (activation_id,)
@@ -3827,9 +3878,7 @@ def _assignment_dependency_cycles(connection: sqlite3.Connection) -> list[list[s
             continue
         path: list[str] = [root]
         state[root] = 1
-        frames: list[tuple[str, Iterator[str]]] = [
-            (root, iter(sorted(graph[root])))
-        ]
+        frames: list[tuple[str, Iterator[str]]] = [(root, iter(sorted(graph[root])))]
         while frames:
             node, dependencies = frames[-1]
             try:
@@ -3849,8 +3898,7 @@ def _assignment_dependency_cycles(connection: sqlite3.Connection) -> list[list[s
             elif dependency_state == 1:
                 cycle = path[path.index(dependency) :]
                 rotations = [
-                    tuple(cycle[index:] + cycle[:index])
-                    for index in range(len(cycle))
+                    tuple(cycle[index:] + cycle[:index]) for index in range(len(cycle))
                 ]
                 cycles.add(min(rotations))
     return [list(cycle) for cycle in sorted(cycles)]
@@ -3901,6 +3949,12 @@ def _next_handled_results(
     reprocess_results: list[str],
 ) -> set[str]:
     selected_sources = set(sources)
+    prior_wait = connection.execute(
+        "SELECT sources_json FROM waits WHERE work_id=?", (work_id,)
+    ).fetchone()
+    handled_sources = selected_sources | set(
+        _decode(prior_wait["sources_json"], []) if prior_wait else []
+    )
     previous = {
         str(row["outcome_id"])
         for row in connection.execute(
@@ -3927,20 +3981,29 @@ def _next_handled_results(
             "unknown managed result identity: " + ", ".join(sorted(missing))
         )
     acknowledged = set(previous)
+    reply_outcomes = _claimed_reply_outcomes(connection, work_id, actor_id)
     for outcome_id in handled_results:
-        if by_id[outcome_id] not in selected_sources:
+        if (
+            by_id[outcome_id] not in handled_sources
+            and outcome_id not in reply_outcomes
+        ):
             raise ContinuityError("handled result is outside the current wait")
         claimed = False
         for row in connection.execute(
-            """SELECT manifest_json FROM activations
+            """SELECT manifest_json, work_revision, endpoint_generation FROM activations
                WHERE work_id=? AND actor_id=? AND reason='wait_satisfied'
                  AND status='claimed'""",
             (work_id, actor_id),
         ).fetchall():
-            if outcome_id in _decode(row["manifest_json"], []):
+            if (
+                outcome_id in _decode(row["manifest_json"], [])
+                and _replay_claim_allowed(
+                    connection, work_id, actor_id, outcome_id, row
+                )
+            ):
                 claimed = True
                 break
-        if not claimed:
+        if not claimed and outcome_id not in reply_outcomes:
             raise ContinuityError(
                 "handled result requires a claimed activation containing it"
             )
@@ -3974,13 +4037,14 @@ def _next_assignment_handled_results(
     sources: list[str],
     handled_results: list[str],
     reprocess_results: list[str],
+    previous_sources: list[str] | None = None,
 ) -> set[str]:
     selected_sources = set(sources)
+    acknowledgement_sources = selected_sources | set(previous_sources or [])
     previous = {
         str(row["outcome_id"])
         for row in connection.execute(
-            "SELECT outcome_id FROM assignment_handled_results "
-            "WHERE obligation_id=?",
+            "SELECT outcome_id FROM assignment_handled_results WHERE obligation_id=?",
             (obligation_id,),
         ).fetchall()
     }
@@ -4015,7 +4079,7 @@ def _next_assignment_handled_results(
     ]
     acknowledged = set(previous)
     for outcome_id in handled_results:
-        if by_id[outcome_id] not in selected_sources:
+        if by_id[outcome_id] not in acknowledgement_sources:
             raise ContinuityError("handled result is outside the assignment wait")
         if not any(outcome_id in manifest for manifest in claimed_manifests):
             raise ContinuityError(
@@ -4072,17 +4136,19 @@ def _persist_handled_results(
         raise ContinuityError(
             "unknown managed result identity: " + ", ".join(sorted(missing))
         )
-    claimed_manifests = [
-        set(_decode(row["manifest_json"], []))
-        for row in connection.execute(
-            """SELECT manifest_json FROM activations
+    claimed_activations = connection.execute(
+            """SELECT manifest_json, work_revision, endpoint_generation FROM activations
                WHERE work_id=? AND actor_id=? AND reason='wait_satisfied'
                  AND status='claimed'""",
             (work_id, actor_id),
         ).fetchall()
-    ]
+    reply_outcomes = _claimed_reply_outcomes(connection, work_id, actor_id)
     for outcome_id in handled_results:
-        if not any(outcome_id in manifest for manifest in claimed_manifests):
+        if outcome_id not in reply_outcomes and not any(
+            outcome_id in _decode(row["manifest_json"], [])
+            and _replay_claim_allowed(connection, work_id, actor_id, outcome_id, row)
+            for row in claimed_activations
+        ):
             raise ContinuityError(
                 "handled result requires a claimed activation containing it"
             )
@@ -4458,9 +4524,7 @@ def _assignment_wait_satisfied(
     ready_sources = {str(row["source_key"]) for row in rows}
     handled = set(_decode(checkpoint_row["handled_json"], []))
     unhandled = [
-        str(row["outcome_id"])
-        for row in rows
-        if row["outcome_id"] not in handled
+        str(row["outcome_id"]) for row in rows if row["outcome_id"] not in handled
     ]
     satisfied = (
         bool(unhandled)
@@ -4513,8 +4577,7 @@ def _evaluate_assignment_wait(
         obligation is None
         or obligation["status"] != "open"
         or checkpoint_row is None
-        or int(checkpoint_row["assignment_generation"])
-        != int(obligation["generation"])
+        or int(checkpoint_row["assignment_generation"]) != int(obligation["generation"])
     ):
         return None
     if not _assignment_continuation_allowed(connection, obligation=obligation):
@@ -4522,9 +4585,7 @@ def _evaluate_assignment_wait(
     satisfied, manifest_results = _assignment_wait_satisfied(connection, obligation_id)
     if not satisfied:
         return None
-    active = _active_assignment_wait_activation(
-        connection, obligation=obligation
-    )
+    active = _active_assignment_wait_activation(connection, obligation=obligation)
     if active is not None:
         return str(active["activation_id"])
     return _create_activation(
@@ -4543,10 +4604,13 @@ def _assignment_continuation_allowed(
     work = _require_work(connection, obligation["work_id"])
     if work["mode"] != "complete":
         return True
-    return connection.execute(
-        "SELECT 1 FROM requests WHERE obligation_id=?",
-        (obligation["obligation_id"],),
-    ).fetchone() is not None
+    return (
+        connection.execute(
+            "SELECT 1 FROM requests WHERE obligation_id=?",
+            (obligation["obligation_id"],),
+        ).fetchone()
+        is not None
+    )
 
 
 def _effective_explicit_stop(
@@ -4581,8 +4645,10 @@ def _revoke_manifest_activations(
     marker: str,
     reasons: set[str] | None = None,
 ) -> None:
-    query = "SELECT activation_id, reason, manifest_json FROM activations " \
+    query = (
+        "SELECT activation_id, reason, manifest_json FROM activations "
         "WHERE status IN ('pending','published')"
+    )
     for activation in connection.execute(query).fetchall():
         if reasons is not None and activation["reason"] not in reasons:
             continue
@@ -4609,9 +4675,7 @@ def _resolve_recovery_incidents_for_manifest(
             "SELECT manifest_json FROM activations WHERE activation_id=?",
             (incident["activation_id"],),
         ).fetchone()
-        if activation is None or marker not in _decode(
-            activation["manifest_json"], []
-        ):
+        if activation is None or marker not in _decode(activation["manifest_json"], []):
             continue
         connection.execute(
             "UPDATE recovery_incidents SET status='resolved', updated_at=? "
@@ -4661,10 +4725,13 @@ def _revoke_product_activations_on_complete(
         if not communication:
             obligation_id = _manifest_value(manifest, "obligation:")
             if obligation_id is not None:
-                communication = connection.execute(
-                    "SELECT 1 FROM requests WHERE obligation_id=?",
-                    (obligation_id,),
-                ).fetchone() is not None
+                communication = (
+                    connection.execute(
+                        "SELECT 1 FROM requests WHERE obligation_id=?",
+                        (obligation_id,),
+                    ).fetchone()
+                    is not None
+                )
         if communication:
             continue
         connection.execute(
@@ -4724,10 +4791,8 @@ def _current_obligation_claim(
     connection: sqlite3.Connection, *, obligation: sqlite3.Row
 ) -> sqlite3.Row | None:
     activation_id = obligation["claimed_activation_id"]
-    if (
-        activation_id is None
-        or int(obligation["claimed_generation"] or 0)
-        != int(obligation["generation"])
+    if activation_id is None or int(obligation["claimed_generation"] or 0) != int(
+        obligation["generation"]
     ):
         return None
     actor = _require_actor(connection, obligation["assignee_actor"])
@@ -4755,30 +4820,22 @@ def _rearm_obligation_route(
     """Restore one current-endpoint route without reviving completed product work."""
 
     actor_id = str(obligation["assignee_actor"])
-    if _effective_explicit_stop(
-        connection, work=work, actor_id=actor_id
-    ) is not None:
+    if _effective_explicit_stop(connection, work=work, actor_id=actor_id) is not None:
         return None
     if work["mode"] == "complete" and request is None:
         return None
     marker = f"obligation:{obligation['obligation_id']}"
-    request_marker = (
-        [f"request:{request['request_id']}"] if request is not None else []
-    )
+    request_marker = [f"request:{request['request_id']}"] if request is not None else []
     if assignment is not None:
         mode = str(assignment["mode"])
         if mode == "waiting":
             return _evaluate_assignment_wait(connection, obligation["obligation_id"])
         if mode == "paused":
-            current_claim = _current_obligation_claim(
-                connection, obligation=obligation
-            )
+            current_claim = _current_obligation_claim(connection, obligation=obligation)
             if current_claim is not None:
                 return str(current_claim["activation_id"])
         reason = (
-            "assignment_continue"
-            if mode == "continue"
-            else "assignment_paused_control"
+            "assignment_continue" if mode == "continue" else "assignment_paused_control"
         )
         active = _active_obligation_activation(
             connection, obligation=obligation, reasons={reason}
@@ -4852,16 +4909,20 @@ def _reconcile_request_deliveries(
             actor_id = str(request["return_actor"])
             pointer = request["reply_activation_id"]
             reason = "request_reply"
-        if _effective_explicit_stop(
-            connection, work=work, actor_id=actor_id
-        ) is not None:
+        if (
+            _effective_explicit_stop(connection, work=work, actor_id=actor_id)
+            is not None
+        ):
             continue
-        if _active_current_activation(
-            connection,
-            activation_id=pointer,
-            actor_id=actor_id,
-            reason=reason,
-        ) is not None:
+        if (
+            _active_current_activation(
+                connection,
+                activation_id=pointer,
+                actor_id=actor_id,
+                reason=reason,
+            )
+            is not None
+        ):
             continue
         if reason == "request_message" and request["obligation_id"] is not None:
             assignment = connection.execute(
@@ -4937,9 +4998,10 @@ def _rearm_scope_routes(
     for work in works:
         _reconcile_request_deliveries(connection, work_id=work["work_id"])
         owner = str(work["owner_actor"])
-        if work["mode"] != "complete" and _effective_explicit_stop(
-            connection, work=work, actor_id=owner
-        ) is None:
+        if (
+            work["mode"] != "complete"
+            and _effective_explicit_stop(connection, work=work, actor_id=owner) is None
+        ):
             if work["mode"] == "continue":
                 owner_endpoint_generation = int(
                     _require_actor(connection, owner)["generation"]
@@ -4974,9 +5036,10 @@ def _rearm_scope_routes(
             (work["work_id"],),
         ).fetchall():
             assignee = str(obligation["assignee_actor"])
-            if _effective_explicit_stop(
-                connection, work=work, actor_id=assignee
-            ) is not None:
+            if (
+                _effective_explicit_stop(connection, work=work, actor_id=assignee)
+                is not None
+            ):
                 continue
             assignment = connection.execute(
                 "SELECT * FROM assignment_checkpoints WHERE obligation_id=?",
@@ -5111,9 +5174,9 @@ def _reconcile_recovery(connection: sqlite3.Connection) -> dict[str, Any]:
             )
         )
         try:
-            due = datetime.fromisoformat(
-                transition.replace("Z", "+00:00")
-            ) + timedelta(seconds=float(obligation["interval_seconds"]))
+            due = datetime.fromisoformat(transition.replace("Z", "+00:00")) + timedelta(
+                seconds=float(obligation["interval_seconds"])
+            )
             due_is_future = due > now
         except (TypeError, ValueError):
             suppressed.append(
@@ -5137,9 +5200,10 @@ def _reconcile_recovery(connection: sqlite3.Connection) -> dict[str, Any]:
             )
             continue
         capability_level = str(capability["sequential_queue_processing"])
-        safe = capability_level == "supported" or capability.get(
-            "terminal_turn_observation"
-        ) == "supported"
+        safe = (
+            capability_level == "supported"
+            or capability.get("terminal_turn_observation") == "supported"
+        )
         cause = "unconfirmed_checkpoint_or_response"
         identity = {
             "work_id": obligation["work_id"],
@@ -5301,9 +5365,7 @@ def _reconcile_recovery(connection: sqlite3.Connection) -> dict[str, Any]:
             connection, work=work, actor_id=request["return_actor"]
         )
         if stopped:
-            suppressed.append(
-                {"request_id": request["request_id"], "reason": stopped}
-            )
+            suppressed.append({"request_id": request["request_id"], "reason": stopped})
             continue
         try:
             due = datetime.fromisoformat(
@@ -5332,9 +5394,10 @@ def _reconcile_recovery(connection: sqlite3.Connection) -> dict[str, Any]:
             )
             continue
         capability_level = str(capability["sequential_queue_processing"])
-        safe = capability_level == "supported" or capability.get(
-            "terminal_turn_observation"
-        ) == "supported"
+        safe = (
+            capability_level == "supported"
+            or capability.get("terminal_turn_observation") == "supported"
+        )
         cause = "unconfirmed_reply_handling"
         identity = {
             "work_id": request["work_id"],
@@ -5354,9 +5417,7 @@ def _reconcile_recovery(connection: sqlite3.Connection) -> dict[str, Any]:
                 next_due = datetime.fromisoformat(
                     str(incident["next_inspection_at"]).replace("Z", "+00:00")
                 )
-                waiting_not_due = (
-                    incident["status"] == "waiting" and next_due > now
-                )
+                waiting_not_due = incident["status"] == "waiting" and next_due > now
             except (TypeError, ValueError):
                 connection.execute(
                     "UPDATE recovery_incidents SET status='invalid', updated_at=? "
@@ -5461,12 +5522,28 @@ def _reconcile_recovery(connection: sqlite3.Connection) -> dict[str, Any]:
                        WHERE candidate.work_id=w.work_id
                          AND candidate.actor_id=w.owner_actor
                          AND candidate.status='claimed'
-                         AND candidate.work_revision=w.revision
-                         AND candidate.control_epoch=w.control_epoch
                          AND candidate.endpoint_generation=a.generation
-                         AND candidate.reason IN (
-                           'continue_checkpoint','wait_satisfied',
-                           'ownership_transferred')
+                         AND (
+                           (candidate.work_revision=w.revision
+                            AND candidate.control_epoch=w.control_epoch
+                            AND candidate.reason IN (
+                              'continue_checkpoint','wait_satisfied',
+                              'ownership_transferred'))
+                           OR (candidate.reason='request_reply'
+                               AND EXISTS (
+                                 SELECT 1 FROM metadata m
+                                 WHERE m.key='reply_wait_owner:' || w.work_id
+                                   AND m.value=w.revision || ':' || w.control_epoch
+                                     || ':' || a.generation
+                                     || ':' || candidate.activation_id
+                               ) AND EXISTS (
+                                 SELECT 1 FROM requests r
+                                 WHERE r.reply_activation_id=candidate.activation_id
+                                   AND r.work_id=w.work_id
+                                   AND r.return_actor=w.owner_actor
+                                   AND r.status='handled'
+                               ))
+                         )
                        ORDER BY candidate.claimed_at DESC,
                                 candidate.activation_id DESC LIMIT 1)
                      WHERE w.mode IN ('continue','waiting')"""
@@ -5488,8 +5565,7 @@ def _reconcile_recovery(connection: sqlite3.Connection) -> dict[str, Any]:
         ).fetchall()
     next_work_cursor = str(work_rows[-1]["work_id"]) if work_rows else work_cursor
     connection.execute(
-        "INSERT OR REPLACE INTO metadata(key, value) "
-        "VALUES('recovery_work_cursor', ?)",
+        "INSERT OR REPLACE INTO metadata(key, value) VALUES('recovery_work_cursor', ?)",
         (next_work_cursor,),
     )
     for work_row in work_rows:
@@ -5523,9 +5599,10 @@ def _reconcile_recovery(connection: sqlite3.Connection) -> dict[str, Any]:
             )
             continue
         capability_level = str(capability["sequential_queue_processing"])
-        safe = capability_level == "supported" or capability.get(
-            "terminal_turn_observation"
-        ) == "supported"
+        safe = (
+            capability_level == "supported"
+            or capability.get("terminal_turn_observation") == "supported"
+        )
         cause = "unconfirmed_owner_checkpoint"
         identity = {
             "work_id": work_row["work_id"],
@@ -5678,6 +5755,35 @@ def _evaluate_wait(connection: sqlite3.Connection, work_id: str) -> str | None:
     work = _require_work(connection, work_id)
     if work["mode"] != "waiting":
         return None
+    manifest = _wait_result_manifest(connection, work_id)
+    active = _wait_completion_route(connection, work, manifest)
+    if active is not None:
+        if active["reason"] == "request_reply":
+            identity = _reply_wait_owner_identity(
+                connection, work, active["activation_id"]
+            )
+            connection.execute(
+                "INSERT OR REPLACE INTO metadata(key, value) VALUES(?,?)",
+                (f"reply_wait_owner:{work_id}", identity),
+            )
+        return str(active["activation_id"])
+    return _create_activation(
+        connection,
+        work=work,
+        actor_id=work["owner_actor"],
+        reason="wait_satisfied",
+        manifest=manifest,
+    )
+
+
+def _reply_wait_owner_identity(
+    connection: sqlite3.Connection, work: sqlite3.Row, activation_id: str
+) -> str:
+    generation = _require_actor(connection, work["owner_actor"])["generation"]
+    return f"{work['revision']}:{work['control_epoch']}:{generation}:{activation_id}"
+
+
+def _wait_result_manifest(connection: sqlite3.Connection, work_id: str) -> list[str]:
     wait = connection.execute(
         "SELECT * FROM waits WHERE work_id=?", (work_id,)
     ).fetchone()
@@ -5700,15 +5806,23 @@ def _evaluate_wait(connection: sqlite3.Connection, work_id: str) -> str | None:
             continue
         available.append(str(row["outcome_id"]))
         included_sources.add(str(row["source_key"]))
-    manifest = available[:1] if wait["mode"] == "any" else available
+    return available[:1] if wait["mode"] == "any" else available
+
+
+def _wait_completion_route(
+    connection: sqlite3.Connection,
+    work: sqlite3.Row,
+    manifest: list[str],
+) -> sqlite3.Row | None:
+    # An explicit replay already has its own current wait activation. Prefer it.
     active = connection.execute(
-        """SELECT activation_id FROM activations
+        """SELECT * FROM activations
            WHERE work_id=? AND actor_id=? AND reason='wait_satisfied'
              AND status IN ('pending','published','claimed')
              AND work_revision=? AND control_epoch=?
              AND endpoint_generation=?""",
         (
-            work_id,
+            work["work_id"],
             work["owner_actor"],
             work["revision"],
             work["control_epoch"],
@@ -5716,13 +5830,102 @@ def _evaluate_wait(connection: sqlite3.Connection, work_id: str) -> str | None:
         ),
     ).fetchone()
     if active is not None:
-        return active["activation_id"]
-    return _create_activation(
-        connection,
-        work=work,
-        actor_id=work["owner_actor"],
-        reason="wait_satisfied",
-        manifest=manifest,
+        return active
+    if set(manifest) & set(_pending_replays(connection, work["work_id"])):
+        return None
+    # Communication survives owner checkpoints, but only the pinned current
+    # reply and exact outcome coverage can own this product wait decision.
+    for reply in _current_reply_activations(
+        connection, work["work_id"], work["owner_actor"]
+    ):
+        if manifest and set(manifest).issubset(
+            set(_decode(reply["manifest_json"], []))
+        ):
+            return reply
+    return None
+
+
+def _current_reply_activations(
+    connection: sqlite3.Connection,
+    work_id: str,
+    actor_id: str,
+    *,
+    claimed: bool = False,
+) -> list[sqlite3.Row]:
+    return connection.execute(
+        """SELECT x.* FROM activations x
+           JOIN requests r ON r.reply_activation_id=x.activation_id
+           JOIN actors a ON a.actor_id=x.actor_id AND a.active=1
+           WHERE x.work_id=? AND x.actor_id=? AND r.work_id=x.work_id
+             AND r.return_actor=x.actor_id AND r.status IN ('reply_ready','handled')
+             AND x.reason='request_reply' AND x.endpoint_generation=a.generation
+             AND x.status IN ('pending','published','claimed')
+             AND (?=0 OR x.status='claimed') ORDER BY x.created_at,x.activation_id""",
+        (work_id, actor_id, int(claimed)),
+    ).fetchall()
+
+
+def _claimed_reply_outcomes(
+    connection: sqlite3.Connection, work_id: str, actor_id: str
+) -> set[str]:
+    outcomes: set[str] = set()
+    for reply in _current_reply_activations(
+        connection, work_id, actor_id, claimed=True
+    ):
+        request = connection.execute(
+            "SELECT obligation_id FROM requests WHERE reply_activation_id=?",
+            (reply["activation_id"],),
+        ).fetchone()
+        for outcome in _decode(reply["manifest_json"], []):
+            if (
+                connection.execute(
+                    "SELECT 1 FROM results WHERE outcome_id=? AND source_key=?",
+                    (outcome, f"obligation:{request['obligation_id']}"),
+                ).fetchone()
+                is not None
+            ):
+                outcomes.add(outcome)
+    return outcomes - set(_pending_replays(connection, work_id))
+
+
+def _pending_replays(connection: sqlite3.Connection, work_id: str) -> dict[str, int]:
+    row = connection.execute(
+        "SELECT value FROM metadata WHERE key=?", (f"pending_replays:{work_id}",)
+    ).fetchone()
+    value = _decode(row["value"], {}) if row else {}
+    if not isinstance(value, dict) or any(
+        not isinstance(outcome, str) or type(revision) is not int or revision < 1
+        for outcome, revision in value.items()
+    ):
+        raise ContinuityError("invalid durable replay decisions")
+    return value
+
+
+def _record_replay_decisions(
+    connection: sqlite3.Connection, work_id: str, revision: int,
+    handled: list[str], reprocess: list[str],
+) -> None:
+    pending = _pending_replays(connection, work_id)
+    identities = _resolve_outcome_aliases(connection, set(handled) | set(reprocess))
+    for outcome in handled:
+        pending.pop(identities[outcome], None)
+    for outcome in reprocess:
+        pending[identities[outcome]] = revision
+    connection.execute(
+        "INSERT OR REPLACE INTO metadata(key, value) VALUES(?,?)",
+        (f"pending_replays:{work_id}", _json(pending)),
+    )
+
+
+def _replay_claim_allowed(
+    connection: sqlite3.Connection, work_id: str, actor_id: str,
+    outcome_id: str, activation: sqlite3.Row,
+) -> bool:
+    requested_revision = _pending_replays(connection, work_id).get(outcome_id)
+    return requested_revision is None or (
+        activation["work_revision"] >= requested_revision
+        and activation["endpoint_generation"]
+        == _require_actor(connection, actor_id)["generation"]
     )
 
 
@@ -5798,9 +6001,7 @@ def _schedule_obligation_activations(
     actor_id: str,
     obligation: sqlite3.Row,
 ) -> str | None:
-    if _effective_explicit_stop(
-        connection, work=work, actor_id=actor_id
-    ) is not None:
+    if _effective_explicit_stop(connection, work=work, actor_id=actor_id) is not None:
         return None
     manifest = [f"obligation:{obligation['obligation_id']}"]
     assignment = _create_activation(

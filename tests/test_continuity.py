@@ -8,6 +8,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -39,6 +40,132 @@ class ContinuityTests(unittest.TestCase):
             owner_actor="sol",
             objective="Ship the accepted package",
         )
+
+    def test_actor_retains_explicit_codex_launcher_in_request_route(self) -> None:
+        continuity.register_actor(
+            self.root,
+            actor_id="astra",
+            role="review",
+            host="codex",
+            target_thread_id="thread-astra",
+            codex_command="/synthetic/desktop/codex.exe",
+            completion_delivery_mode="off",
+        )
+        self.start()
+        request = continuity.request_send(
+            self.root,
+            work_id="WORK-1",
+            request_id="LAUNCHER-1",
+            idempotency_key="LAUNCHER-1",
+            sender_actor="sol",
+            recipient_actor="astra",
+            return_actor="sol",
+            message="Inspect the route",
+        )
+        state = continuity.status(self.root, work_id="WORK-1")
+        activation = next(
+            item
+            for item in state["activations"]
+            if item["activation_id"] == request["request_activation_id"]
+        )
+        self.assertEqual(
+            activation["wake_target"]["codex_command"],
+            "/synthetic/desktop/codex.exe",
+        )
+
+    def test_non_codex_actor_rejects_codex_launcher(self) -> None:
+        with self.assertRaisesRegex(continuity.ContinuityError, "only for a Codex"):
+            continuity.register_actor(
+                self.root,
+                actor_id="other",
+                role="review",
+                host="vscode",
+                codex_command="codex.exe",
+                completion_delivery_mode="off",
+            )
+
+    def test_request_reply_owns_matching_typed_wait_completion(self) -> None:
+        self.start()
+        sent = continuity.request_send(
+            self.root,
+            work_id="WORK-1",
+            request_id="SINGLE-REPLY",
+            idempotency_key="SINGLE-REPLY",
+            sender_actor="sol",
+            recipient_actor="astra",
+            return_actor="sol",
+            message="Inspect",
+            requires_reply=True,
+            required=True,
+            max_reminders=0,
+        )
+        continuity.checkpoint(
+            self.root,
+            work_id="WORK-1",
+            actor_id="sol",
+            expected_revision=1,
+            mode="waiting",
+            summary="Awaiting reply",
+            wait_on=[f"obligation:{sent['obligation_id']}"],
+        )
+        continuity.claim(
+            self.root,
+            activation_id=sent["request_activation_id"],
+            actor_id="astra",
+            expected_epoch=1,
+        )
+        continuity.request_respond(
+            self.root,
+            request_id="SINGLE-REPLY",
+            response_id="SINGLE-RESULT",
+            actor_id="astra",
+            activation_id=sent["request_activation_id"],
+            kind="terminal",
+            terminal_status="completed",
+            content="Accepted",
+        )
+        continuity.reconcile(self.root)
+        active = [
+            item
+            for item in continuity.status(self.root)["activations"]
+            if item["actor_id"] == "sol"
+            and item["status"] in {"pending", "published", "claimed"}
+        ]
+        self.assertEqual(len(active), 1)
+        self.assertEqual(active[0]["reason"], "request_reply")
+        reply = active[0]
+        continuity.claim(
+            self.root,
+            activation_id=reply["activation_id"],
+            actor_id="sol",
+            expected_epoch=2,
+        )
+        continuity.request_handle(
+            self.root,
+            request_id="SINGLE-REPLY",
+            actor_id="sol",
+            activation_id=reply["activation_id"],
+        )
+        outcome = continuity.status(self.root)["managed_results"][0]["outcome_id"]
+        next_wait = continuity.checkpoint(
+            self.root,
+            work_id="WORK-1",
+            actor_id="sol",
+            expected_revision=2,
+            mode="waiting",
+            summary="Next independent check",
+            wait_on=["check:NEXT"],
+            handled_results=[outcome],
+        )
+        self.assertIsNone(next_wait["activation_id"])
+        self.finish_check("NEXT")
+        current = continuity.status(self.root)
+        new_wait = next(
+            item
+            for item in current["activations"]
+            if item["reason"] == "wait_satisfied" and item["work_revision"] == 3
+        )
+        self.assertNotIn(outcome, new_wait["manifest"])
 
     def finish_check(self, check_id: str) -> None:
         directory = local_checks.check_dir(
@@ -206,6 +333,22 @@ class ContinuityTests(unittest.TestCase):
                 mode="complete",
                 summary="Done",
             )
+
+    def test_complete_rejects_next_action_without_mutating_work(self) -> None:
+        self.start()
+        with self.assertRaisesRegex(continuity.ContinuityError, "use continue"):
+            continuity.checkpoint(
+                self.root,
+                work_id="WORK-1",
+                actor_id="sol",
+                expected_revision=1,
+                mode="complete",
+                summary="Slice finished",
+                next_action="Implement the next accepted slice",
+            )
+        work = continuity.status(self.root, work_id="WORK-1")["works"][0]
+        self.assertEqual(work["revision"], 1)
+        self.assertNotEqual(work["mode"], "complete")
 
     def test_stale_revision_and_completed_work_are_immutable(self) -> None:
         self.start()
@@ -386,17 +529,13 @@ class ContinuityTests(unittest.TestCase):
         self.register("sol", "implementation", "thread-sol-2")
         report = continuity.status(self.root)
         current = [
-            item
-            for item in report["activations"]
-            if item["reason"] == "wait_satisfied"
+            item for item in report["activations"] if item["reason"] == "wait_satisfied"
         ]
         replacement = next(item for item in current if item["status"] == "published")
 
         self.assertEqual(len(current), 2)
         self.assertEqual(replacement["endpoint_generation"], 2)
-        self.assertEqual(
-            replacement["wake_target"]["target_thread_id"], "thread-sol-2"
-        )
+        self.assertEqual(replacement["wake_target"]["target_thread_id"], "thread-sol-2")
         continuity.claim(
             self.root,
             activation_id=replacement["activation_id"],
@@ -744,7 +883,10 @@ class ContinuityTests(unittest.TestCase):
                     result["event_id"],
                     "f" * 64,
                     json.dumps(result["observed_facts"], sort_keys=True),
-                    "2026-09-12T23:59:59Z",
+                    (
+                        datetime.fromisoformat(result["recorded_at"])
+                        + timedelta(seconds=1)
+                    ).isoformat(),
                 ),
             )
             connection.execute(
@@ -790,6 +932,145 @@ class ContinuityTests(unittest.TestCase):
         self.assertEqual(normalized_activation["manifest"], [result["outcome_id"]])
         self.assertEqual(alias_target, result["outcome_id"])
         self.assertEqual(handled, result["outcome_id"])
+
+    def test_transfer_preserves_current_ordinary_assignment_routes(self):
+        self.register("successor", "implementation", "thread-successor")
+        for case in ("unclaimed", "claimed", "waiting", "stopped"):
+            with self.subTest(case=case):
+                work_id = "TRANSFER-" + case
+                obligation_id = "O-" + case
+                self.start(work_id)
+                opened = continuity.open_obligation(
+                    self.root, work_id=work_id, obligation_id=obligation_id,
+                    requester_actor="sol", assignee_actor="astra", resume_actor="sol",
+                    summary="Ordinary assignment", max_reminders=0,
+                )
+                revision = 1
+                if case == "claimed":
+                    continuity.claim(
+                        self.root, activation_id=opened["activation_id"],
+                        actor_id="astra", expected_epoch=1,
+                    )
+                if case == "waiting":
+                    continuity.checkpoint(
+                        self.root, work_id=work_id, actor_id="sol",
+                        expected_revision=1, mode="waiting",
+                        summary="Wait for assignee",
+                        wait_on=["obligation:" + obligation_id],
+                    )
+                    revision = 2
+                if case == "stopped":
+                    continuity.set_recovery_control(
+                        self.root, scope_kind="work", scope_id=work_id,
+                        state="stopped", actor_id="sol", reason="Explicit stop",
+                    )
+                transferred = continuity.transfer(
+                    self.root, work_id=work_id, from_actor="sol", to_actor="successor",
+                    expected_revision=revision, reason="Fenced writer handoff",
+                    fenced=True,
+                )
+                continuity.reconcile(self.root)
+                continuity.self_check(self.root, repair=True)
+                state = continuity.status(self.root, work_id=work_id)
+                routes = [
+                    x for x in state["activations"]
+                    if x["actor_id"] == "astra"
+                    and x["status"] in {"pending", "published", "claimed"}
+                ]
+                if case == "stopped":
+                    self.assertEqual(routes, [])
+                    self.assertIsNone(transferred["activation_id"])
+                    continuity.set_recovery_control(
+                        self.root, scope_kind="work", scope_id=work_id,
+                        state="armed", actor_id="successor", reason="Explicit resume",
+                    )
+                    state = continuity.status(self.root, work_id=work_id)
+                    routes = [x for x in state["activations"]
+                              if x["actor_id"] == "astra"
+                              and x["status"] in {"pending", "published", "claimed"}]
+                self.assertEqual(len(routes), 1)
+                self.assertEqual(routes[0]["assignment_generation"], 1)
+                continuity.claim(
+                    self.root, activation_id=routes[0]["activation_id"],
+                    actor_id="astra",
+                    expected_epoch=routes[0]["control_epoch"],
+                )
+
+    def test_self_check_repairs_missing_ordinary_assignment_route_once(self):
+        self.start()
+        opened = continuity.open_obligation(
+            self.root, work_id="WORK-1", obligation_id="ORDINARY",
+            requester_actor="sol", assignee_actor="astra", resume_actor="sol",
+            summary="Assignment", max_reminders=0,
+        )
+        with sqlite3.connect(continuity.database_path(self.root)) as connection:
+            connection.execute(
+                "UPDATE activations SET status='revoked' WHERE activation_id=?",
+                (opened["activation_id"],),
+            )
+        self.assertIn(
+            "obligation_assignment_delivery_missing",
+            [x["code"] for x in continuity.self_check(self.root)["findings"]],
+        )
+        continuity.self_check(self.root, repair=True)
+        repaired = continuity.self_check(self.root, repair=True)
+        self.assertNotIn(
+            "obligation_assignment_delivery_missing",
+            [x["code"] for x in repaired["findings"]],
+        )
+        routes = [x for x in continuity.status(self.root)["activations"]
+                  if x["actor_id"] == "astra" and x["status"] == "published"]
+        self.assertEqual(len(routes), 1)
+
+    def test_initial_route_repair_ignores_checkpointed_assignments(self) -> None:
+        self.start()
+        for mode in ["waiting", "continue", "paused"]:
+            with self.subTest(mode=mode):
+                obligation_id = "CHECKPOINT-" + mode
+                opened = continuity.open_obligation(
+                    self.root, work_id="WORK-1", obligation_id=obligation_id,
+                    requester_actor="sol", assignee_actor="astra",
+                    resume_actor="sol", summary="Legitimate checkpoint",
+                    max_reminders=0,
+                )
+                continuity.claim(
+                    self.root, activation_id=opened["activation_id"],
+                    actor_id="astra", expected_epoch=1,
+                )
+                directory = local_checks.check_dir(
+                    self.root, "RUNNING", state_dir=core.DEFAULT_STATE_DIR
+                )
+                core.atomic_json(directory / "check.json", {
+                    "schema_version": 1, "kind": local_checks.CHECK_KIND,
+                    "check_id": "RUNNING", "status": "running",
+                })
+                continuity.assignment_checkpoint(
+                    self.root, obligation_id=obligation_id, actor_id="astra",
+                    activation_id=opened["activation_id"], expected_revision=0,
+                    mode=mode, summary="Checkpoint remains authoritative",
+                    wait_on=["check:RUNNING"] if mode == "waiting" else None,
+                    next_action="Next step" if mode == "continue" else None,
+                )
+                if mode == "paused":
+                    self.register("astra", "review", "thread-astra-rebound")
+                before = continuity.status(self.root)
+                for repair in [False, True, True]:
+                    checked = continuity.self_check(self.root, repair=repair)
+                    self.assertNotIn(
+                        "obligation_assignment_delivery_missing",
+                        [item["code"] for item in checked["findings"]],
+                    )
+                after = continuity.status(self.root)
+                def routes(state):
+                    return [
+                        (a["activation_id"], a["reason"], a["status"])
+                        for a in state["activations"]
+                        if "obligation:" + obligation_id in a["manifest"]
+                    ]
+                self.assertEqual(routes(after), routes(before))
+                self.assertEqual(
+                    after["assignment_checkpoints"], before["assignment_checkpoints"]
+                )
 
     def test_transfer_fences_old_activation(self) -> None:
         self.start()
@@ -1009,9 +1290,7 @@ class ContinuityTests(unittest.TestCase):
 
         first = continuity.self_check(self.root, repair=True)
         self.assertEqual(first["finding_count"], 1)
-        diagnostic_id = continuity.status(self.root)["diagnostics"][0][
-            "diagnostic_id"
-        ]
+        diagnostic_id = continuity.status(self.root)["diagnostics"][0]["diagnostic_id"]
         continuity.resolve_diagnostic(
             self.root,
             diagnostic_id=diagnostic_id,
@@ -1459,8 +1738,9 @@ class ContinuityTests(unittest.TestCase):
             ),
         )
         for operation in operations:
-            with self.subTest(operation=operation), self.assertRaisesRegex(
-                continuity.ContinuityError, "immutable"
+            with (
+                self.subTest(operation=operation),
+                self.assertRaisesRegex(continuity.ContinuityError, "immutable"),
             ):
                 operation()
 
@@ -1871,9 +2151,7 @@ class ContinuityTests(unittest.TestCase):
         current = continuity.status(self.root, work_id="WORK-1")
         obligation = current["obligations"][0]
         assignment = current["assignment_checkpoints"][0]
-        self.assertEqual(
-            assignment["assignment_generation"], obligation["generation"]
-        )
+        self.assertEqual(assignment["assignment_generation"], obligation["generation"])
         active_request_replays = [
             item
             for item in current["activations"]
@@ -1881,6 +2159,65 @@ class ContinuityTests(unittest.TestCase):
             and item["status"] in {"pending", "published"}
         ]
         self.assertEqual(active_request_replays, [])
+
+    def test_assignment_acknowledges_previous_wait_while_changing_source(self):
+        self.start()
+        opened = continuity.open_obligation(
+            self.root, work_id="WORK-1", obligation_id="PIPELINE",
+            requester_actor="sol", assignee_actor="astra", resume_actor="sol",
+            summary="Two-check pipeline", max_reminders=0,
+        )
+        continuity.claim(
+            self.root, activation_id=opened["activation_id"],
+            actor_id="astra", expected_epoch=1,
+        )
+        continuity.assignment_checkpoint(
+            self.root, obligation_id="PIPELINE", actor_id="astra",
+            activation_id=opened["activation_id"], expected_revision=0,
+            mode="waiting", summary="First check", wait_on=["check:FIRST"],
+        )
+        self.finish_check("FIRST")
+        continuity.checkpoint(
+            self.root, work_id="WORK-1", actor_id="sol", expected_revision=1,
+            mode="waiting", summary="Unrelated owner wait", wait_on=["check:FOREIGN"],
+        )
+        self.finish_check("FOREIGN")
+        state = continuity.status(self.root)
+        activation = next(x for x in state["activations"]
+                          if x["reason"] == "assignment_wait_satisfied"
+                          and x["status"] == "published")
+        outcome = next(x for x in activation["manifest"] if x.startswith("result-"))
+        foreign = next(x["outcome_id"] for x in state["managed_results"]
+                       if x["source_key"] == "check:FOREIGN")
+        continuity.claim(
+            self.root, activation_id=activation["activation_id"], actor_id="astra",
+            expected_epoch=activation["control_epoch"],
+        )
+        kwargs = dict(
+            obligation_id="PIPELINE", actor_id="astra",
+            activation_id=activation["activation_id"], expected_revision=1,
+            mode="waiting", summary="Second check", wait_on=["check:SECOND"],
+        )
+        with self.assertRaisesRegex(continuity.ContinuityError, "outside"):
+            continuity.assignment_checkpoint(
+                self.root, **kwargs, handled_results=[foreign]
+            )
+        with self.assertRaisesRegex(continuity.ContinuityError, "outside"):
+            continuity.assignment_checkpoint(
+                self.root, **kwargs, reprocess_results=[outcome]
+            )
+        checkpoint = continuity.assignment_checkpoint(
+            self.root, **kwargs, handled_results=[outcome]
+        )
+        self.assertEqual(checkpoint["assignment_revision"], 2)
+        assignment = continuity.status(self.root)["assignment_checkpoints"][0]
+        self.assertEqual(assignment["sources"], ["check:SECOND"])
+        self.finish_check("SECOND")
+        manifests = [x["manifest"] for x in continuity.status(self.root)["activations"]
+                     if x["reason"] == "assignment_wait_satisfied"
+                     and x["status"] == "published"]
+        self.assertEqual(len(manifests), 1)
+        self.assertNotIn(outcome, manifests[0])
 
     def test_assignment_wait_and_recovery_are_scoped_and_deduplicated(self) -> None:
         continuity.configure_recovery(
@@ -1991,9 +2328,7 @@ class ContinuityTests(unittest.TestCase):
         repeated = continuity.reconcile(self.root)
         self.assertEqual(repeated["recovery"]["queued"], [])
         recovery_activation = recovered["recovery"]["queued"][0]
-        packet = continuity.entry_packet(
-            self.root, activation_id=recovery_activation
-        )
+        packet = continuity.entry_packet(self.root, activation_id=recovery_activation)
         self.assertEqual(packet["activation"]["reason"], "assignment_recovery")
         self.assertIn("unconfirmed", packet["recovery_incidents"][0]["cause"])
         continuity.claim(
@@ -2100,9 +2435,7 @@ class ContinuityTests(unittest.TestCase):
                 connection.execute(
                     "CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
                 )
-                connection.execute(
-                    "INSERT INTO metadata VALUES('schema_version','99')"
-                )
+                connection.execute("INSERT INTO metadata VALUES('schema_version','99')")
             with self.assertRaisesRegex(
                 continuity.ContinuityError, "unsupported continuity database schema"
             ):
@@ -2446,15 +2779,11 @@ class ContinuityTests(unittest.TestCase):
             with sqlite3.connect(path) as connection:
                 obligation_columns = {
                     row[1]
-                    for row in connection.execute(
-                        "PRAGMA table_info(obligations)"
-                    )
+                    for row in connection.execute("PRAGMA table_info(obligations)")
                 }
                 activation_columns = {
                     row[1]
-                    for row in connection.execute(
-                        "PRAGMA table_info(activations)"
-                    )
+                    for row in connection.execute("PRAGMA table_info(activations)")
                 }
                 result = connection.execute(
                     "SELECT outcome_id, source_key FROM results"
@@ -2670,9 +2999,7 @@ class ContinuityTests(unittest.TestCase):
         )
         activation = next(
             item
-            for item in continuity.status(self.root, work_id="WORK-1")[
-                "activations"
-            ]
+            for item in continuity.status(self.root, work_id="WORK-1")["activations"]
             if item["activation_id"] == reply_activation
         )
         self.assertEqual(activation["status"], "published")
@@ -2743,8 +3070,7 @@ class ContinuityTests(unittest.TestCase):
             replies.append(saved)
         with sqlite3.connect(continuity.database_path(self.root)) as connection:
             connection.execute(
-                "UPDATE activations SET claimed_at=? "
-                "WHERE activation_id IN (?,?)",
+                "UPDATE activations SET claimed_at=? WHERE activation_id IN (?,?)",
                 (
                     "2000-01-01T00:00:00+00:00",
                     replies[0]["reply_activation_id"],
@@ -2762,9 +3088,7 @@ class ContinuityTests(unittest.TestCase):
         incidents = continuity.status(self.root, work_id="WORK-1")["recovery"][
             "incidents"
         ]
-        self.assertEqual(
-            {item["status"] for item in incidents}, {"queued", "resolved"}
-        )
+        self.assertEqual({item["status"] for item in incidents}, {"queued", "resolved"})
 
     def test_two_assignment_waits_receive_distinct_activations(self) -> None:
         self.start()
@@ -3008,9 +3332,7 @@ class ContinuityTests(unittest.TestCase):
             content="Review cancelled after product completion.",
         )
         self.assertEqual(
-            continuity.status(self.root, work_id="WORK-1")["requests"][0][
-                "status"
-            ],
+            continuity.status(self.root, work_id="WORK-1")["requests"][0]["status"],
             "reply_ready",
         )
 
@@ -3211,9 +3533,9 @@ class ContinuityTests(unittest.TestCase):
             actor_id="controller",
             reason="Project resumed.",
         )
-        replacement = continuity.status(self.root, work_id="WORK-1")["requests"][
-            0
-        ]["request_activation_id"]
+        replacement = continuity.status(self.root, work_id="WORK-1")["requests"][0][
+            "request_activation_id"
+        ]
         self.assertNotEqual(replacement, reissued)
 
     def test_claimed_request_rebind_during_stop_is_rearmed_once(self) -> None:
@@ -3454,9 +3776,10 @@ class ContinuityTests(unittest.TestCase):
                 content="Optional review completed.",
             )
         self.assertEqual(
-            {item["status"] for item in continuity.status(
-                self.root, work_id="WORK-1"
-            )["requests"]},
+            {
+                item["status"]
+                for item in continuity.status(self.root, work_id="WORK-1")["requests"]
+            },
             {"reply_ready"},
         )
 
@@ -3524,9 +3847,7 @@ class ContinuityTests(unittest.TestCase):
             actor_id="requester",
             expected_epoch=first_packet["activation"]["control_epoch"],
         )
-        before = continuity.status(self.root, work_id="WORK-1")["recovery"][
-            "incidents"
-        ]
+        before = continuity.status(self.root, work_id="WORK-1")["recovery"]["incidents"]
         before_by_activation = {item["activation_id"]: item for item in before}
 
         continuity.checkpoint(
@@ -3538,9 +3859,7 @@ class ContinuityTests(unittest.TestCase):
             summary="Wait for an unrelated local check.",
             wait_on=["check:UNRELATED"],
         )
-        after = continuity.status(self.root, work_id="WORK-1")["recovery"][
-            "incidents"
-        ]
+        after = continuity.status(self.root, work_id="WORK-1")["recovery"]["incidents"]
         after_by_activation = {item["activation_id"]: item for item in after}
         self.assertEqual(after_by_activation[queued[0]]["status"], "waiting")
         self.assertEqual(

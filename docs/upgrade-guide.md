@@ -53,7 +53,7 @@ Check the installed CLI version:
 orchestrator-engine --version
 ```
 
-The current release is `1.10.0` and the durable JSON contract schema version is
+The current release is `1.11.0` and the durable JSON contract schema version is
 `1`.
 
 Upgrade from the immutable Git tag (the package is not currently published to
@@ -61,8 +61,30 @@ PyPI):
 
 ```bash
 python -m pip install --upgrade \
-  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.10.0"
+  "orchestrator-engine @ git+https://github.com/Jafa7/OrchestratorEngine.git@v1.11.0"
 ```
+
+## Version 1.11.0 continuity and feedback
+
+No durable JSON or continuity database migration is required for this version.
+Restart callback watcher services after upgrading so they use the corrected
+transfer, reply/replay and delivery-retry behavior. Retained completed work stays
+immutable; exact communication replay does not authorize new product work.
+Review and deliberately merge updated agent rules instead of overwriting local
+policy. Both workstream and continuity completion now reject a next action;
+use an explicit continuation for unfinished authorized scope.
+
+Operational feedback is opt-in. Configure a registered recipient actor and an
+explicit field allowlist before sending; local observations never send
+implicitly. See [multi-chat continuity](multi-chat-continuity.md#operational-feedback).
+For managed check waits, select continuity as the sole wake route and disable
+the check's direct notification. Default Codex delivery does not request Desktop
+focus on either transport, but this is not a guarantee about host UI selection.
+
+Optional metrics now require usage-capable sources and complete measurement
+provenance for complete token coverage. Configured check duration is a bootstrap
+estimate; successful matching history supersedes it. An explicit execution mode
+still overrides automatic planning.
 
 ## Version 1.5.0 optional metrics
 

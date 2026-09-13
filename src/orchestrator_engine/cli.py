@@ -25,6 +25,7 @@ from . import (
     host_capabilities,
     local_checks,
     operation_wait,
+    operational_feedback,
     platform_runtime,
     release_preflight,
     schemas,
@@ -1032,6 +1033,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--host", choices=sorted(binding.SUPPORTED_HOSTS), required=True
     )
     actor_register.add_argument("--target-thread-id")
+    actor_register.add_argument(
+        "--codex-command", help="Explicit launcher for this Codex actor endpoint."
+    )
     actor_register.add_argument("--capability", action="append", default=[])
     actor_register.add_argument(
         "--completion-delivery-mode",
@@ -1064,6 +1068,26 @@ def build_parser() -> argparse.ArgumentParser:
     note_update.add_argument("--expected-note-revision", type=int, required=True)
     note_update.add_argument("--text", required=True)
     note_update.add_argument("--reference", action="append", default=[])
+    feedback_config = continuity_subparsers.add_parser("feedback-config")
+    feedback_config.add_argument("--recipient-actor", required=True)
+    feedback_config.add_argument(
+        "--allow-field",
+        action="append",
+        required=True,
+        choices=sorted(operational_feedback.FIELDS),
+    )
+    feedback_record = continuity_subparsers.add_parser("feedback-record")
+    feedback_record.add_argument("--cause", required=True)
+    feedback_record.add_argument(
+        "--classification", choices=["defect", "suggestion"], required=True
+    )
+    feedback_record.add_argument("--details-json", required=True)
+    for name in ("feedback-show", "feedback-send"):
+        feedback_parser = continuity_subparsers.add_parser(name)
+        feedback_parser.add_argument("--report-id", required=True)
+        if name == "feedback-send":
+            feedback_parser.add_argument("--work-id", required=True)
+            feedback_parser.add_argument("--sender-actor", required=True)
     obligation_open = continuity_subparsers.add_parser("obligation-open")
     obligation_open.add_argument("--work-id", required=True)
     obligation_open.add_argument("--obligation-id", required=True)
@@ -1117,15 +1141,11 @@ def build_parser() -> argparse.ArgumentParser:
     request_handle.add_argument("--request-id", required=True)
     request_handle.add_argument("--actor-id", required=True)
     request_handle.add_argument("--activation-id", required=True)
-    assignment_checkpoint = continuity_subparsers.add_parser(
-        "assignment-checkpoint"
-    )
+    assignment_checkpoint = continuity_subparsers.add_parser("assignment-checkpoint")
     assignment_checkpoint.add_argument("--obligation-id", required=True)
     assignment_checkpoint.add_argument("--actor-id", required=True)
     assignment_checkpoint.add_argument("--activation-id", required=True)
-    assignment_checkpoint.add_argument(
-        "--expected-revision", type=int, required=True
-    )
+    assignment_checkpoint.add_argument("--expected-revision", type=int, required=True)
     assignment_checkpoint.add_argument(
         "--mode", choices=sorted(continuity.ASSIGNMENT_MODES), required=True
     )
@@ -1135,9 +1155,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--wait-mode", choices=sorted(continuity.WAIT_MODES), default="all"
     )
     assignment_checkpoint.add_argument("--wait-on", action="append", default=[])
-    assignment_checkpoint.add_argument(
-        "--handled-result", action="append", default=[]
-    )
+    assignment_checkpoint.add_argument("--handled-result", action="append", default=[])
     assignment_checkpoint.add_argument(
         "--reprocess-result", action="append", default=[]
     )
@@ -1184,9 +1202,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--wait-mode", choices=sorted(continuity.WAIT_MODES), default="all"
     )
     continuity_checkpoint.add_argument("--wait-on", action="append", default=[])
-    continuity_checkpoint.add_argument(
-        "--handled-result", action="append", default=[]
-    )
+    continuity_checkpoint.add_argument("--handled-result", action="append", default=[])
     continuity_checkpoint.add_argument(
         "--reprocess-result", action="append", default=[]
     )
@@ -1905,6 +1921,31 @@ def run_workstream_command(args: argparse.Namespace, root: Path) -> object:
 def run_continuity_command(args: argparse.Namespace, root: Path) -> object:
     common = {"state_dir": args.state_dir}
     command = args.continuity_command
+    if command == "feedback-config":
+        return operational_feedback.configure(
+            root,
+            recipient_actor=args.recipient_actor,
+            allowed_fields=args.allow_field,
+            **common,
+        )
+    if command == "feedback-record":
+        return operational_feedback.record(
+            root,
+            cause=args.cause,
+            classification=args.classification,
+            details=json.loads(args.details_json),
+            **common,
+        )
+    if command == "feedback-show":
+        return operational_feedback.show(root, report_id=args.report_id, **common)
+    if command == "feedback-send":
+        return operational_feedback.send(
+            root,
+            report_id=args.report_id,
+            work_id=args.work_id,
+            sender_actor=args.sender_actor,
+            **common,
+        )
     if command == "init":
         return continuity.initialize(root, **common)
     if command == "actor-register":
@@ -1914,6 +1955,7 @@ def run_continuity_command(args: argparse.Namespace, root: Path) -> object:
             role=args.role,
             host=args.host,
             target_thread_id=args.target_thread_id,
+            codex_command=args.codex_command,
             capabilities=args.capability,
             completion_delivery_mode=args.completion_delivery_mode,
             **common,

@@ -1441,6 +1441,8 @@ no arbitrary upper ceiling. Existing numeric descriptors keep their semantics.
 `continue`, `waiting_external`, `needs_user`, `blocked`, `complete` or
 `paused`. Only `continue` can emit a generic follow-up signal, and it requires
 both a concrete `next_action` and the explicit `ready` declaration.
+`complete` rejects `next_action` before any state mutation; future ideas outside
+the completed scope belong in separate project notes, not this execution field.
 `waiting_external` requires a bounded `waiting_on` operation identity and
 emits no duplicate timer wakeup.
 

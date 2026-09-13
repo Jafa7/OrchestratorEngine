@@ -131,6 +131,37 @@ class MetricsStoreTests(unittest.TestCase):
 
         self.assertIsNone(metric["value"])
         self.assertEqual(metric["details"]["unqualified_usage_records"], 1)
+        coverage = next(
+            item for item in report["metrics"] if item["metric_id"] == "MET-009"
+        )
+        self.assertEqual(coverage["value"], 0.0)
+        self.assertEqual(coverage["details"]["known_usage_attempts"], 0)
+
+    def test_usage_coverage_requires_complete_evidence_but_accepts_real_zero(self):
+        for measurement in (None, "partial", "complete"):
+            with (
+                self.subTest(measurement=measurement),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                store = MetricsStore(Path(tmp))
+                store.initialize()
+                source = store.register_source(
+                    name="usage", source_type="fixture", capabilities=["usage"]
+                )["source"]
+                data = {"execution_id": "zero-run", "total_tokens": 0}
+                if measurement is not None:
+                    data["usage_measurement_status"] = measurement
+                store.ingest([contracts.make_observation(
+                    source_id=source["source_id"], record_type="execution_attempt",
+                    data=data, observation_id="zero",
+                    observed_at="2026-09-08T10:00:00Z",
+                )])
+                values = {x["metric_id"]: x for x in build_report(store)["metrics"]}
+                complete = measurement == "complete"
+                self.assertEqual(values["MET-009"]["value"], float(complete))
+                self.assertEqual(
+                    values["MET-007"]["value"], 0.0 if complete else None
+                )
 
     def test_attempt_sequence_must_be_a_positive_integer(self) -> None:
         with self.assertRaisesRegex(

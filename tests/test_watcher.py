@@ -2748,6 +2748,45 @@ class VscodeChatTests(unittest.TestCase):
 
 
 class CodexSessionQueueTests(unittest.TestCase):
+    def test_explicit_retry_rearms_headless_ambiguity_exactly_once(self):
+        reset_fake_server("idle")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="headless-retry")
+            signal = core.inbox(root)[0]
+            record = watcher.build_deferred_record(
+                "headless-retry", signal,
+                reason="headless_delivery_ambiguous: uncertain",
+                previous={}, now=0,
+            )
+            self.assertEqual(record["reason_code"], "headless_delivery_ambiguous")
+            self.assertEqual(record["status"], watcher.DEFER_STATUS_MANUAL_REQUIRED)
+            core.atomic_json(watcher.default_state_path(root), {
+                "schema_version": 1, "kind": watcher.STATE_KIND,
+                "seen_event_ids": [], "acknowledged_events": {},
+                "deferred_events": {"headless-retry": record},
+            })
+            path = codex_app.thread_wakeup_receipt_path(root, "headless-retry")
+            core.atomic_json(path, {
+                "schema_version": 1, "kind": "CURRENT_THREAD_WAKEUP",
+                "event_id": "headless-retry", "status": "deferred",
+                "delivery_mode": "headless_app_server_turn",
+                "reason": "headless_delivery_ambiguous: uncertain",
+            })
+            def deliver():
+                return codex_app.wake_current_thread(
+                    root, signal, target_thread_id="thread-1",
+                    server_factory=FakeThreadServer,
+                    recent_activity_checker=lambda *_args, **_kwargs: None,
+                )
+            self.assertEqual(deliver()["status"], "deferred")
+            self.assertEqual(FakeThreadServer.starts, 0)
+            watcher.retry_deferred_event(root, event_id="headless-retry")
+            self.assertEqual(core.load_object(path)["status"], "retry_requested")
+            self.assertEqual(deliver()["status"], "woken")
+            self.assertEqual(deliver()["status"], "skipped")
+            self.assertEqual(FakeThreadServer.starts, 1)
+
     def test_concurrent_queue_delivery_runs_once(self) -> None:
         entered = threading.Event()
         release = threading.Event()
@@ -2925,7 +2964,7 @@ class CodexSessionQueueTests(unittest.TestCase):
         self.assertEqual(receipt["delivery_mode"], "session_queue")
         self.assertEqual(receipt["live_refresh_support"], "supported")
         self.assertEqual(receipt["queue_message_id"], "message-123")
-        self.assertNotIn("activation", receipt)
+        self.assertEqual(receipt["activation"], "not_requested")
         self.assertNotIn("activation_url", receipt)
         self.assertNotIn("ignored trailing output", receipt)
         self.assertEqual(
@@ -2962,6 +3001,7 @@ class CodexSessionQueueTests(unittest.TestCase):
 
         self.assertEqual(receipt["status"], "queued")
         self.assertEqual(receipt["queue_message_id"], "message-background")
+        self.assertEqual(receipt["activation"], "not_requested")
         activate.assert_not_called()
 
     def test_queue_timeout_is_manual_required_without_retry(self) -> None:
@@ -3134,6 +3174,28 @@ class CodexSessionQueueTests(unittest.TestCase):
 
 
 class CodexActivationTests(unittest.TestCase):
+    def test_fallback_delivery_does_not_activate_desktop_by_default(self) -> None:
+        reset_fake_server("idle")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_event(root, event_id="event-background-fallback")
+            with mock.patch.object(
+                codex_app,
+                "activate_thread_window",
+                side_effect=AssertionError("Background delivery must not focus"),
+            ) as activate:
+                receipt = codex_app.wake_bound_thread(
+                    root,
+                    core.inbox(root)[0],
+                    target_thread_id="thread-1",
+                    queue_probe=lambda *_args, **_kwargs: {"available": False},
+                    server_factory=FakeThreadServer,
+                    recent_activity_checker=lambda *_args, **_kwargs: None,
+                )
+        self.assertEqual(receipt["status"], "woken")
+        self.assertEqual(receipt["activation"], "not_requested")
+        activate.assert_not_called()
+
     def test_woken_receipt_includes_activation(self) -> None:
         reset_fake_server("idle")
         with tempfile.TemporaryDirectory() as temporary:

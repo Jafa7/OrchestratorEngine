@@ -42,7 +42,9 @@ QUOTA_REASON_MARKERS = (
     "purchase more credits",
     "try again at",
 )
-MANUAL_REQUIRED_REASON_MARKERS = ("queue_delivery_ambiguous",)
+MANUAL_REQUIRED_REASON_MARKERS = (
+    "queue_delivery_ambiguous", "headless_delivery_ambiguous",
+)
 SERVICE_KIND = "LOCAL_AI_ORCHESTRATOR_WATCHER_SERVICE"
 STATE_KIND = "LOCAL_AI_ORCHESTRATOR_WATCHER_STATE"
 ACKNOWLEDGEMENT_KIND = "LOCAL_AI_ORCHESTRATOR_WATCHER_ACKNOWLEDGEMENT"
@@ -652,8 +654,9 @@ def defer_reason_code(reason: str) -> str:
     normalized = reason.strip().lower()
     if normalized in RETRYABLE_GUARD_REASON_CODES:
         return normalized
-    if any(marker in normalized for marker in MANUAL_REQUIRED_REASON_MARKERS):
-        return "queue_delivery_ambiguous"
+    for marker in MANUAL_REQUIRED_REASON_MARKERS:
+        if marker in normalized:
+            return marker
     if any(marker in normalized for marker in QUOTA_REASON_MARKERS):
         return "quota_or_usage_limit"
     return "callback_failed"
@@ -670,6 +673,11 @@ def deferred_operator_action(status: str, reason_code: str) -> str:
             return (
                 "Inspect the target Codex task before retrying: the queue command "
                 "may have been accepted without returning an acknowledgement."
+            )
+        if reason_code == "headless_delivery_ambiguous":
+            return (
+                "Inspect the target Codex task before retrying: an App Server "
+                "turn may have started without returning an acknowledgement."
             )
         return (
             "Inspect the callback failure, read event/result/evidence if "
@@ -692,6 +700,7 @@ def build_deferred_record(
     manual_required = reason_code in {
         "quota_or_usage_limit",
         "queue_delivery_ambiguous",
+        "headless_delivery_ambiguous",
     } or (
         reason_code not in RETRYABLE_GUARD_REASON_CODES
         and attempts >= DEFER_MAX_ATTEMPTS
@@ -882,7 +891,7 @@ def retry_deferred_event(
         if delivery.get("status") == "delivery_claimed" or (
             delivery.get("status") == "deferred"
             and str(delivery.get("reason", "")).startswith(
-                "queue_delivery_ambiguous"
+                MANUAL_REQUIRED_REASON_MARKERS
             )
         ):
             delivery.update(

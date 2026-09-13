@@ -1412,6 +1412,7 @@ def _queue_current_thread_unlocked(
         "status": "queued",
         "queue_message_id": match.group("message_id"),
         "queue_acknowledged_at": core.utc_now(),
+        "activation": "not_requested",
     }
     core.atomic_json(receipt_path, receipt)
     if activator is not None:
@@ -1473,7 +1474,7 @@ def wake_current_thread(
     state_dir: str = core.DEFAULT_STATE_DIR,
     codex: str = "codex",
     server_factory=AppServer,
-    activator=activate_thread_window,
+    activator=None,
     failure_window_seconds: float = TURN_FAILURE_WINDOW_SECONDS,
     finalizer=spawn_turn_finalizer,
     recent_activity_seconds: float = THREAD_RECENT_ACTIVITY_GRACE_SECONDS,
@@ -1516,7 +1517,7 @@ def _wake_current_thread_unlocked(
     state_dir: str = core.DEFAULT_STATE_DIR,
     codex: str = "codex",
     server_factory=AppServer,
-    activator=activate_thread_window,
+    activator=None,
     failure_window_seconds: float = TURN_FAILURE_WINDOW_SECONDS,
     finalizer=spawn_turn_finalizer,
     recent_activity_seconds: float = THREAD_RECENT_ACTIVITY_GRACE_SECONDS,
@@ -1699,7 +1700,11 @@ def _wake_current_thread_unlocked(
             server.close()
 
     try:
-        activation = activator(target_thread_id)
+        activation = (
+            activator(target_thread_id)
+            if activator is not None
+            else {"activation": "not_requested"}
+        )
         receipt = {
             "schema_version": core.SCHEMA_VERSION,
             "kind": "CURRENT_THREAD_WAKEUP",

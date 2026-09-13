@@ -9,6 +9,20 @@ from orchestrator_engine import binding, core, wakeup, watcher, workstreams
 
 
 class WorkstreamTests(unittest.TestCase):
+    def test_complete_with_next_action_rejects_before_mutation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            self.start(root, workstream_id="ROADMAP-1", goal="Accepted scope")
+            before = workstreams.descriptor_path(root, "ROADMAP-1").read_bytes()
+            with self.assertRaisesRegex(workstreams.WorkstreamError, "use continue"):
+                workstreams.checkpoint_workstream(
+                    root, workstream_id="ROADMAP-1", checkpoint_id="contradiction",
+                    decision="complete", summary="Slice done", next_action="Next slice",
+                )
+            self.assertEqual(
+                workstreams.descriptor_path(root, "ROADMAP-1").read_bytes(), before
+            )
+
     def start(self, root: Path, **kwargs):
         binding.write_binding(root, host="codex", target_thread_id="thread-1")
         return workstreams.start_workstream(root, **kwargs)

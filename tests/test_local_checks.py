@@ -162,6 +162,105 @@ class LocalCheckTests(unittest.TestCase):
         self.assertEqual(plan["recommended_execution"], "detached")
         self.assertEqual(plan["reason"], "unknown_full_verification_duration")
 
+    def test_successful_history_supersedes_bootstrap_duration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root, expected_duration=120)
+            self.assertEqual(
+                local_checks.plan_check(root, suite="gate")["estimate_source"],
+                "configured",
+            )
+            result = local_checks.start_check(
+                root, check_id="MEASURED", suite="gate", execution="foreground",
+                wake_policy="never",
+            )
+            self.assertEqual(result["status"], "passed")
+            plan = local_checks.plan_check(root, suite="gate")
+            self.assertEqual(plan["estimate_source"], "successful_history_median")
+            self.assertEqual(plan["successful_history_samples"], 1)
+            self.assertLess(plan["estimated_duration_seconds"], 30)
+            self.assertEqual(plan["recommended_execution"], "foreground")
+
+    def test_auto_replay_retains_foreground_after_measured_plan_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root, expected_duration=0)
+            kwargs = dict(
+                check_id="SAME-ID", suite="gate", execution="auto",
+                wake_policy="auto", long_threshold_seconds=0.001,
+            )
+            first = local_checks.start_check(root, **kwargs)
+            self.assertEqual(first["execution"], "foreground")
+            self.assertEqual(
+                local_checks.plan_check(root, suite="gate",
+                                        long_threshold_seconds=0.001)
+                ["recommended_execution"], "detached",
+            )
+            with (
+                mock.patch.object(local_checks, "plan_check",
+                                  side_effect=AssertionError("replanned replay")),
+                mock.patch.object(platform_runtime, "require_detached_lifecycle",
+                                  side_effect=AssertionError("detached replay")),
+                mock.patch.object(local_checks.delivery_preflight, "run",
+                                  side_effect=AssertionError("new admission")),
+            ):
+                replay = local_checks.start_check(
+                    root, **kwargs, completion_delivery_mode="require-ready"
+                )
+            self.assertTrue(replay["idempotent"])
+            self.assertEqual(replay["execution"], "foreground")
+            self.assertEqual(replay["wake_policy"], "never")
+            self.assertEqual(replay["result_path"], first["result_path"])
+            for override in [
+                {"execution": "foreground"}, {"wake_policy": "never"},
+                {"long_threshold_seconds": 1},
+            ]:
+                with self.assertRaisesRegex(local_checks.LocalCheckError, "different"):
+                    local_checks.start_check(root, **(kwargs | override))
+            with mock.patch.object(
+                platform_runtime, "spawn",
+                return_value=mock.Mock(pid=os.getpid(), wait=lambda: 0),
+            ):
+                new = local_checks.start_check(
+                    root, **(kwargs | {"check_id": "NEW-ID"})
+                )
+            self.assertEqual(new["execution"], "detached")
+            write_config(root, expected_duration=0, script="print('changed')")
+            with self.assertRaisesRegex(local_checks.LocalCheckError, "different"):
+                local_checks.start_check(root, **kwargs)
+
+    def test_auto_replay_retains_running_route_after_history_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            write_config(root, expected_duration=60)
+            binding.write_binding(root, host="codex", target_thread_id="original")
+            kwargs = dict(check_id="RUNNING", suite="gate", execution="auto",
+                          wake_policy="auto")
+            with mock.patch.object(
+                platform_runtime, "spawn",
+                return_value=mock.Mock(pid=os.getpid(), wait=lambda: 0),
+            ):
+                first = local_checks.start_check(root, **kwargs)
+            path = Path(first["descriptor_path"])
+            descriptor = local_checks.load_check_descriptor(path)
+            descriptor["status"] = "running"
+            core.atomic_json(path, descriptor)
+            local_checks.start_check(root, check_id="HISTORY", suite="gate",
+                                     execution="foreground", wake_policy="never")
+            self.assertEqual(local_checks.plan_check(root, suite="gate")
+                             ["recommended_execution"], "foreground")
+            with mock.patch.object(platform_runtime, "spawn",
+                                   side_effect=AssertionError("duplicate supervisor")):
+                replay = local_checks.start_check(root, **kwargs)
+            self.assertTrue(replay["idempotent"])
+            self.assertEqual(replay["status"], "running")
+            self.assertEqual(replay["execution"], "detached")
+            self.assertEqual(replay["wake_target"], first["wake_target"])
+            self.assertEqual(replay["supervisor_pid"], first["supervisor_pid"])
+            binding.write_binding(root, host="codex", target_thread_id="replacement")
+            with self.assertRaisesRegex(local_checks.LocalCheckError, "different"):
+                local_checks.start_check(root, **kwargs)
+
     def test_foreground_pass_records_history_without_wakeup(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

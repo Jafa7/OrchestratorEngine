@@ -147,7 +147,7 @@ source.
 | `MET-006` | How much context was transferred? | Explicit byte sum | Generic source; no token conversion |
 | `MET-007` | How many provider-reported tokens were used? | Complete usage-event sum | Worker usage adapter; partial data remains partial |
 | `MET-008` | What quota remains for each account alias? | Latest explicit sample | Generic source; no provider query in core |
-| `MET-009` | What fraction of attempts has real usage? | Known usage coverage | Worker usage adapter; synthetic integration verified |
+| `MET-009` | What fraction of attempts has complete, attributable usage? | Qualified complete usage coverage | Same source-capability and provenance checks as MET-007 |
 | `MET-010` | How often did requested delivery succeed? | Delivered over terminal attempts | Event/receipt adapter; synthetic integration verified |
 | `MET-011` | Which equivalent attempts added no evidence? | Explicit/bound repetition count | Generic source; advisory classification only |
 

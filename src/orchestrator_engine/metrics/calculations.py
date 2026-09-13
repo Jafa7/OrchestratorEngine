@@ -396,6 +396,16 @@ def _sum_field(
     )
 
 
+def _qualified_usage(
+    item: dict[str, Any], usage_source_ids: set[str] | None
+) -> bool:
+    return (
+        _number(item["data"].get("total_tokens")) is not None
+        and item["data"].get("usage_measurement_status") in {"complete", "partial"}
+        and (usage_source_ids is None or item["source_id"] in usage_source_ids)
+    )
+
+
 def _tokens(
     definition: dict[str, Any],
     records: list[dict[str, Any]],
@@ -409,13 +419,7 @@ def _tokens(
     for item in attempts:
         value = _number(item["data"].get("total_tokens"))
         measurement = item["data"].get("usage_measurement_status")
-        if value is not None and (
-            measurement not in {"complete", "partial"}
-            or (
-                usage_source_ids is not None
-                and item["source_id"] not in usage_source_ids
-            )
-        ):
+        if value is not None and not _qualified_usage(item, usage_source_ids):
             unqualified += 1
             continue
         if measurement == "partial" and value is not None:
@@ -575,14 +579,15 @@ def _quota(definition: dict[str, Any], records: list[dict[str, Any]]) -> dict[st
 
 
 def _usage_coverage(
-    definition: dict[str, Any], records: list[dict[str, Any]]
+    definition: dict[str, Any], records: list[dict[str, Any]],
+    *, usage_source_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     attempts = _records(records, "execution_attempt")
     known = [
         item
         for item in attempts
-        if _number(item["data"].get("total_tokens")) is not None
-        and item["data"].get("usage_measurement_status") in {None, "complete"}
+        if _qualified_usage(item, usage_source_ids)
+        and item["data"].get("usage_measurement_status") == "complete"
     ]
     return _result(
         definition,
@@ -695,6 +700,8 @@ def calculate_metrics(
             if item["metric_id"] == "MET-001"
             else _tokens(item, records, usage_source_ids=usage_source_ids)
             if item["metric_id"] == "MET-007"
+            else _usage_coverage(item, records, usage_source_ids=usage_source_ids)
+            if item["metric_id"] == "MET-009"
             else CALCULATORS[item["metric_id"]](item, records)
         )
         for item in METRIC_DEFINITIONS

@@ -58,7 +58,39 @@ It does not transfer ownership. Claude's current endpoint is session-bound and
 cannot represent several exact concurrent Claude chats; use this flow only
 where the host capability report provides suitable addressability.
 
+When the actor's thread belongs to a different host store than the watcher's
+default CLI (for example a Desktop task addressed from WSL), pass
+`--codex-command /path/to/desktop/codex` during actor registration. This explicit
+launcher is retained in the actor endpoint and every pinned activation route;
+registration does not infer a launcher from a different actor's binding.
+
 ## Managed requests and replies
+
+When the exact pinned reply covers an owner's typed wait outcome, that reply
+owns the completion route; no duplicate `wait_satisfied` activation is emitted.
+This also applies when the reply arrives before the owner registers the wait.
+The reply's communication identity survives owner checkpoints, while its derived
+wait association is fenced to the current work revision, control epoch and actor
+endpoint generation. Diagnostics and route selection use the same coverage rule.
+An explicit result replay creates a new product wait route instead of reusing
+the old communication claim. Pending replay decisions are retained transactionally
+by canonical outcome ID and request revision. Stop/resume, endpoint rebinding,
+reconciliation and self-check repair cannot replace that route with a
+pre-replay communication claim, even when recovery is disabled. A replay is
+acknowledged only from a product claim created at or after its request revision
+at the actor's current endpoint; the original reply claim is insufficient.
+Handled outcomes clear their replay decisions; completing the work clears its
+remaining replay state. Unrelated wait outcomes still use normal reply dedup.
+
+After claiming and inspecting a reply, record `request-handle` separately and
+include its exact outcome ID with `--handled-result` in the next owner checkpoint.
+That checkpoint may wait on a different operation: an independent claimed,
+same-work reply need not have been a typed wait dependency to be acknowledged.
+Unclaimed, stale-endpoint and cross-work replies do not grant this authority.
+With recovery enabled, a handled reply that owned the current wait remains an
+owner-checkpoint recovery source until the next checkpoint. Unrelated return
+actors, stopped, paused and completed work do not gain this continuation route.
+Handling transport never establishes product acceptance.
 
 Use a managed request when the sender must know whether a reply is still owed.
 The engine never infers this from prose. `--requires-reply` atomically creates
@@ -211,6 +243,14 @@ orchestrator-engine --project-root /project continuity transfer \
 
 ## Assignment-scoped progress
 
+Fenced ownership transfer revokes superseded owner-control routes, not current
+ordinary assignee routes or pinned request communication. An open unclaimed
+ordinary obligation with no current route is reported by `self-check` and may
+be repaired once with `--repair`. Repair respects explicit stops, current actor
+endpoints and assignment generations; it does not reopen completed product work.
+This initial-route repair excludes assignments with an existing checkpoint;
+their waiting, continuation or paused-control routes remain authoritative.
+
 An assignee can checkpoint only its current claimed obligation without changing
 the requester's work owner, revision or mode. This distinguishes a legitimate
 long check from an unexplained gap and prevents one blocked review from freezing
@@ -239,6 +279,11 @@ Claiming an `assignment_wait_satisfied` activation does not acknowledge its
 outcomes. Include each processed outcome in the next assignment checkpoint;
 the assignment-scoped ledger prevents an `any` wait from replaying the same
 result:
+
+An acknowledgement may refer to the previous wait when the next checkpoint
+changes sources. It still requires a claimed activation for the same assignment;
+unrelated outcomes are rejected. `--reprocess-result` is instead an explicit
+replay decision and must refer to a source in the new wait.
 
 ```bash
 orchestrator-engine --project-root /project continuity assignment-checkpoint \
@@ -372,6 +417,93 @@ person, checkpoint `paused`; if it requires a named operation or peer, checkpoin
 by default so the current host turn can close before delivery; use
 `--delay-seconds` only when the host lifecycle requires a different bounded
 grace period.
+
+A finished implementation slice is not necessarily a finished authorized plan.
+Owners must keep the plan's continuation authority open until its accepted
+scope is complete: continue in-turn or checkpoint `continue` with a concrete
+next action. A `complete` checkpoint with `next_action` is rejected without
+state mutation. Watchers do not parse chat prose, infer pending roadmap work,
+or reopen completed work. Recovery can inspect a missing checkpoint only while
+the relevant durable work remains eligible; explicit pause and completion are
+not signs of abandonment.
+
+When continuity owns completion of a named local check, dispatch that check
+with `--wake-policy never`, verify the owner's completion channel with
+require-ready admission, then checkpoint `waiting` on `check:EXACT-CHECK-ID`
+before ending the turn. Reconciliation observes the retained terminal result
+and publishes the managed completion activation. Do not also enable a direct
+check wakeup: those two routes would notify the same owner twice. Without a
+managed wait, use the operation's documented direct completion route instead.
+
+Codex delivery does not request Desktop focus by default, on either the live
+queue or the legacy App Server fallback. Successful receipts record
+`activation: not_requested`; an explicitly supplied adapter activator remains
+opt-in. This describes engine behavior, not a guarantee that the host app never
+changes its selected task. If focus changes with a `not_requested` receipt,
+retain the event ID, delivery mode and app version for host-side investigation.
+
+## Operational feedback
+
+`continuity feedback-record` retains a local observation without sending a
+message or changing workflow authority. Use a stable `--cause` signature and
+`--classification defect|suggestion`. `--details-json` accepts nonempty strings:
+`observation`, `expected`, `actual`, `impact` are required; `hypothesis`,
+`version`, `platform`, `identifiers`, `evidence`, `reproduction`, `workaround`
+are optional. Keep observed facts separate from hypotheses. No investigation,
+full log collection or product change is required to report an operational
+problem. The caller selects and sanitizes all content; this is not a redaction
+engine. Never include secrets or private adopter plans.
+
+An exact repeated send of retained communication remains idempotent after its
+product work completes, including recovery from a publication failure. This
+returns retained delivery state without new product authority; a new request
+against completed work and a conflicting replay identity are still rejected.
+
+Reports are bounded to 8,000 bytes per observation and 64 distinct observations
+per cause/classification. Further evidence sets `truncated: true`; identical
+observations do not rewrite the report. Different observations of the same cause
+supplement one report without generating another notification. These are local
+reporting artifacts under `continuity/feedback`, not a second work database.
+There is no automatic age cleanup: retain reports for operator audit and remove
+them only after their managed request and fallback obligations have been handled.
+
+Before export, an operator must explicitly register the destination actor and
+authorize a field allowlist:
+
+```bash
+orchestrator-engine continuity feedback-config --recipient-actor engine-maintainer \
+  --allow-field observation --allow-field expected --allow-field actual --allow-field impact
+orchestrator-engine continuity feedback-send --report-id feedback-EXAMPLE \
+  --work-id WORK-EXAMPLE --sender-actor implementer
+orchestrator-engine continuity feedback-show --report-id feedback-EXAMPLE
+```
+
+Use the actual report ID returned by `feedback-record`. The destination is an
+explicit project-local actor endpoint, not an automatically discovered external
+project. A different project's developer can be configured as an endpoint only
+with explicit adopter permission and an appropriate minimal evidence allowlist.
+No other project's state or private documentation is opened or modified.
+
+The first send freezes one allowlisted snapshot into an existing managed FYI
+request. It excludes the private cause signature, local artifact paths and later
+supplements. Subsequent sends recover that same identity and pinned route rather
+than generating repeated wakeups; changing the owner or work is rejected.
+`submitted` means retained by continuity, not delivered, read or accepted.
+Stop controls still suppress activations. A later explicit evidence handoff is
+an operator decision, not a periodic scan notification.
+
+If the managed route fails, the report remains visible with
+`fallback_required`. Inspect continuity diagnostics and use `self-check --repair`
+or repeat the same `feedback-send` after repair. An explicit host-tool/operator
+fallback is allowed only after checking whether the original outbox request was
+retained; avoid a second competing delivery route. The report never schedules an
+AI poller or a new daemon. It cannot recover a stopped watcher by itself.
+
+Feedback is FYI by default: no reply debt, reminder, automatic implementation,
+commit or release. Continue independently authorized work. If a specific answer
+blocks continuation, create a separate managed `request-send --requires-reply`
+with a named dependency and typed wait; do not turn every report into a blocking
+review. Receiving or triaging feedback is not product acceptance.
 
 ## Current boundary
 

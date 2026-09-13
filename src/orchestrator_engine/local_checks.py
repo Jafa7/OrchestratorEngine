@@ -298,12 +298,12 @@ def plan_check(
     history = load_history(project, state_dir=state_dir)
     samples = duration_samples(history, str(spec["fingerprint"]))
     expected = spec["expected_duration_seconds"]
-    if expected is not None:
-        estimate = float(expected)
-        source = "configured"
-    elif samples:
+    if samples:
         estimate = float(statistics.median(samples))
         source = "successful_history_median"
+    elif expected is not None:
+        estimate = float(expected)
+        source = "configured"
     else:
         estimate = None
         source = "unknown"
@@ -713,6 +713,70 @@ def supervisor_command(
     ]
 
 
+def _replay_check(
+    project: Path,
+    *,
+    path: Path,
+    spec: dict[str, Any],
+    execution: str,
+    wake_policy: str,
+    long_threshold_seconds: float,
+    wake_target: dict[str, Any] | None,
+    completion_delivery_mode: str | None,
+    state_dir: str,
+) -> dict[str, Any]:
+    existing = load_check_descriptor(path)
+    retained_execution = existing.get("execution")
+    if retained_execution not in {"foreground", "detached"}:
+        raise LocalCheckError(f"invalid retained check execution: {path}")
+    retained_policy = resolved_wake_policy(wake_policy, retained_execution)
+    if wake_target is not None:
+        if retained_policy == "never":
+            raise LocalCheckError(
+                "an explicit wake target requires a wake-enabled policy"
+            )
+        try:
+            binding.validate_wake_target(wake_target)
+        except binding.BindingError as error:
+            raise LocalCheckError(str(error)) from error
+    else:
+        wake_target = capture_wake_target(
+            project, state_dir=state_dir, wake_policy=retained_policy
+        )
+    if not (
+        existing.get("suite") == spec["suite"]
+        and existing.get("fingerprint") == spec["fingerprint"]
+        and existing.get("requested_execution", retained_execution) == execution
+        and existing.get("requested_wake_policy", existing.get("wake_policy"))
+        == wake_policy
+        and existing.get("long_threshold_seconds", DEFAULT_LONG_THRESHOLD_SECONDS)
+        == float(long_threshold_seconds)
+        and existing.get("wake_policy") == retained_policy
+        and binding.same_wake_destination(existing.get("wake_target"), wake_target)
+    ):
+        raise LocalCheckError(
+            f"check already exists with different options: {existing.get('check_id')}"
+        )
+    try:
+        mode = delivery_preflight.resolve_mode(
+            project, requested=completion_delivery_mode, state_dir=state_dir
+        )
+        verification.claim_check_owner(
+            project, operation_id=existing["check_id"],
+            operation_type="local_check", state_dir=state_dir,
+        )
+    except (
+        delivery_preflight.DeliveryPreflightError,
+        verification.VerificationError,
+    ) as error:
+        raise LocalCheckError(str(error)) from error
+    return delivery_preflight.attach(
+        {**existing, "descriptor_path": str(path), "idempotent": True},
+        {"mode": mode, "status": "not_checked", "reason_code": "retained_operation",
+         "point_in_time": True},
+    )
+
+
 def start_check(
     project_root: Path,
     *,
@@ -744,6 +808,20 @@ def start_check(
             long_threshold_seconds=long_threshold_seconds,
             wake_target=wake_target,
             completion_delivery_mode=completion_delivery_mode,
+        )
+    if wake_policy not in WAKE_POLICIES:
+        raise LocalCheckError(f"unsupported wake policy: {wake_policy}")
+    if long_threshold_seconds <= 0:
+        raise LocalCheckError("long threshold must be positive")
+    directory = check_dir(project, check_id, state_dir=state_dir)
+    path = directory / "check.json"
+    requested_wake_target = wake_target
+    if path.exists():
+        return _replay_check(
+            project, path=path, spec=spec, execution=execution,
+            wake_policy=wake_policy, long_threshold_seconds=long_threshold_seconds,
+            wake_target=requested_wake_target,
+            completion_delivery_mode=completion_delivery_mode, state_dir=state_dir,
         )
     plan = plan_check(
         project,
@@ -786,8 +864,6 @@ def start_check(
         delivery_preflight.enforce(completion_delivery)
     except delivery_preflight.DeliveryPreflightError as error:
         raise LocalCheckError(str(error)) from error
-    directory = check_dir(project, check_id, state_dir=state_dir)
-    path = directory / "check.json"
     try:
         verification.claim_check_owner(
             project,
@@ -818,22 +894,11 @@ def start_check(
         descriptor["wake_target"] = wake_target
     directory.mkdir(parents=True, exist_ok=True)
     if not core.claim_json(path, descriptor):
-        existing = load_check_descriptor(path)
-        if (
-            existing.get("suite") == suite
-            and existing.get("fingerprint") == spec["fingerprint"]
-            and existing.get("execution") == selected_execution
-            and existing.get("wake_policy") == selected_wake_policy
-            and binding.same_wake_destination(
-                existing.get("wake_target"), wake_target
-            )
-        ):
-            return delivery_preflight.attach(
-                {**existing, "descriptor_path": str(path), "idempotent": True},
-                completion_delivery,
-            )
-        raise LocalCheckError(
-            f"check already exists with different options: {check_id}"
+        return _replay_check(
+            project, path=path, spec=spec, execution=execution,
+            wake_policy=wake_policy, long_threshold_seconds=long_threshold_seconds,
+            wake_target=requested_wake_target,
+            completion_delivery_mode=completion_delivery_mode, state_dir=state_dir,
         )
     if selected_execution == "foreground":
         result = supervise_check(project, check_id=check_id, state_dir=state_dir)

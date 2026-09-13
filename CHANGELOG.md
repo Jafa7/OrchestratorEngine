@@ -4,10 +4,48 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-09-13
+
+- Added opt-in operational feedback with explicit destination and field
+  allowlists, bounded local observations, cause-based coalescing and frozen FYI
+  snapshots sent through the existing continuity outbox. Feedback grants no
+  product, Git or publication authority; retained sends remain idempotent after
+  product completion without suggesting a competing fallback delivery.
+- Preserved pinned reply completion across early and late replies, independent
+  acknowledgement and owner recovery. Explicit result replay decisions now
+  survive stop/resume and endpoint rebinding; pre-replay claims cannot consume
+  a pending replay, and diagnostics share the same completion-route predicate.
+- Preserved ordinary assignee routes across fenced ownership transfer and added
+  deterministic self-check diagnosis and repair for missing unclaimed routes,
+  without bypassing explicit stop controls or assignment generations.
+- Allowed an assignee to acknowledge a claimed result from its previous wait
+  while moving to a different wait source. Foreign outcomes remain rejected,
+  and explicit replay remains scoped to the new wait.
+- Made persisted headless delivery ambiguity require operator action, like live
+  queue ambiguity. Explicit retry rearms either transport once; uncertain
+  delivery still blocks automatic retransmission.
+- Aligned token coverage with token-accounting capability and measurement
+  provenance. Unknown or partial usage is not complete coverage; a verified
+  zero remains a real measurement and shared quota remains separate.
+- Made successful matching duration history supersede bootstrap check estimates,
+  while retaining explicit execution overrides and resource-managed dispatch.
+  Same-ID check replays compare retained requested options before planning, so
+  newer history cannot change an existing operation's execution or wake route.
+- Removed implicit Desktop activation from the legacy App Server fallback and
+  made successful delivery receipts record `activation: not_requested` by
+  default. Explicit adapter activation remains opt-in; host UI behavior is not
+  guaranteed by this receipt.
+- Rejected contradictory `complete` checkpoints with a next action in both
+  continuity and workstreams. Clarified accepted-plan continuation and the
+  single managed wake route for checks, avoiding duplicate direct notifications.
+- Retained an explicit Codex launcher in actor routes for host-local delivery.
+  Existing durable JSON schema version 1 and continuity database schema version
+  3 remain unchanged.
+
 ## [1.10.0] - 2026-09-12
 
 - Kept acknowledged Codex session-queue wakeups in the background so watcher
-  delivery no longer changes the user's active window or task. Explicit host
+  delivery no longer requests a change to the active window or task. Explicit host
   actions can still open a task when requested.
 - Added an opt-in transactional multi-chat continuity authority with dynamic
   actor endpoints, fenced work ownership, explicit peer obligations, typed

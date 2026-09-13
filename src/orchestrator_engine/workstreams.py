@@ -672,6 +672,8 @@ def checkpoint_workstream(
         raise WorkstreamError("continue requires explicit --ready")
     if decision == "continue" and normalized_next is None:
         raise WorkstreamError("continue requires --next-action")
+    if decision == "complete" and normalized_next is not None:
+        raise WorkstreamError("complete cannot retain next_action; use continue")
     if decision != "continue" and ready:
         raise WorkstreamError("--ready is only valid with decision continue")
     if decision == "waiting_external" and normalized_waiting_on is None:
