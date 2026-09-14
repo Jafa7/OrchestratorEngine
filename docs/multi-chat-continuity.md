@@ -201,6 +201,17 @@ operation artifacts and is independent of whether the watcher has already seen
 the corresponding transport signal. `all` waits activate after every source is
 retained; `any` waits activate on the first unhandled result.
 
+A `ci` wait also completes for inspection when its monitor has a validated
+terminal observation failure while the verification result remains `unknown`.
+The descriptor, result, evidence and retained terminal event must agree on the
+operation and final observation; event artifact hashes must verify. This does
+not establish remote CI success or failure. The entry packet marks the result
+as `inspection` with `remote_outcome: unknown`. Inspect it, acknowledge its
+outcome ID and explicitly bind any replacement monitor in a new checkpoint.
+Running monitors, missing terminal evidence and inconsistent artifacts do not
+satisfy this retained-source path. No direct operation wakeup is needed when
+continuity owns completion delivery (`--wake-policy never`).
+
 Claiming an activation is only an execution fence; it does not acknowledge that
 the result was processed. After inspecting the result, persist a new waiting
 checkpoint with its outcome identity:

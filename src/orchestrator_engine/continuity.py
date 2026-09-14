@@ -4211,6 +4211,89 @@ def _artifact_fact(path: Path) -> dict[str, Any]:
     }
 
 
+def _retained_ci_inspection(
+    project: Path,
+    identity: str,
+    descriptor: dict[str, Any],
+    result: dict[str, Any],
+    *,
+    result_path: Path,
+    evidence_path: Path,
+    state_dir: str,
+) -> dict[str, Any]:
+    from . import github_actions
+
+    result_path = result_path.expanduser().resolve()
+    evidence_path = evidence_path.expanduser().resolve()
+    monitor_status = descriptor.get("status")
+    remote = result.get("github_actions")
+    if (
+        descriptor.get("monitor_id") != identity
+        or descriptor.get("source_kind") != github_actions.SOURCE_KIND
+        or not isinstance(monitor_status, str)
+        or monitor_status not in github_actions.TERMINAL_MONITOR_STATUSES
+        or result.get("check_id") != identity
+        or not isinstance(remote, dict)
+        or remote.get("monitor_status") != monitor_status
+        or not isinstance(descriptor.get("finished_at"), str)
+        or not descriptor["finished_at"]
+        or result.get("finished_at") != descriptor["finished_at"]
+    ):
+        raise ContinuityError("CI inspection requires a matching terminal monitor")
+    evidence = core.load_object(evidence_path)
+    if (
+        not core.is_supported_schema_version(evidence.get("schema_version"))
+        or evidence.get("kind") != github_actions.EVIDENCE_KIND
+        or evidence.get("monitor_id") != identity
+        or evidence.get("source_kind") != github_actions.SOURCE_KIND
+        or evidence.get("monitor_status") != monitor_status
+        or evidence.get("finished_at") != descriptor["finished_at"]
+        or evidence.get("ci_conclusion") != remote.get("conclusion")
+        or descriptor.get("ci_conclusion") != remote.get("conclusion")
+        or evidence.get("expected_head_sha") != descriptor.get("expected_head_sha")
+        or any(
+            descriptor.get(key) != evidence.get(key)
+            or descriptor.get(key) != remote.get(key)
+            for key in ("hostname", "repository", "run_id")
+        )
+    ):
+        raise ContinuityError("CI inspection evidence does not match the monitor")
+    # Monitor finality permits inspection, never acceptance of unknown remote CI.
+    expected_status = github_actions.event_status(evidence)
+    if github_actions.verification_status(evidence) != "unknown":
+        raise ContinuityError("CI inspection outcome is inconsistent with unknown")
+    event_value = descriptor.get("event_path")
+    if not isinstance(event_value, str):
+        raise ContinuityError("CI inspection requires a retained terminal event")
+    event_path = Path(event_value).expanduser().resolve()
+    event = core.verify_terminal_event(event_path)
+    if (
+        event_path
+        != (
+            core.state_root(project, state_dir=state_dir)
+            / "events"
+            / f"{event['event_id']}.json"
+        ).resolve()
+        or event.get("kind") != "ORCHESTRATOR_TERMINAL"
+        or event.get("project_id") != core.project_id(project)
+        or event.get("source_kind") != github_actions.SOURCE_KIND
+        or event.get("operation_id") != identity
+        or event.get("terminal_status") != expected_status
+        or Path(event["result_path"]).expanduser().resolve() != result_path
+        or Path(event["evidence_path"]).expanduser().resolve() != evidence_path
+    ):
+        raise ContinuityError("CI inspection event does not match the operation")
+    return {
+        "event": _artifact_fact(event_path),
+        "observation": {
+            "purpose": "inspection",
+            "monitor_status": monitor_status,
+            "verification_status": "unknown",
+            "remote_outcome": "unknown",
+        },
+    }
+
+
 def _retained_source_observation(
     project_root: Path,
     source_key: str,
@@ -4226,6 +4309,7 @@ def _retained_source_observation(
     expected_result_kind: str
     expected_descriptor_kind: str
     try:
+        inspection: dict[str, Any] = {}
         if kind == "worker":
             from . import workers
 
@@ -4330,17 +4414,35 @@ def _retained_source_observation(
             terminal_status = "completed"
         else:
             verification_status = result.get("status")
-            if verification_status not in {
+            if kind == "ci" and verification_status == "unknown":
+                inspection = _retained_ci_inspection(
+                    project,
+                    identity,
+                    descriptor,
+                    result,
+                    result_path=result_path,
+                    evidence_path=evidence_path,
+                    state_dir=state_dir,
+                )
+                terminal_status = github_actions.event_status(
+                    {
+                        "monitor_status": descriptor["status"],
+                        "ci_conclusion": descriptor.get("ci_conclusion"),
+                    }
+                )
+            elif verification_status not in {
                 "passed",
                 "failed",
                 "errored",
                 "cancelled",
             }:
                 raise ContinuityError("verification result is not terminal")
-            terminal_status = (
-                "completed" if verification_status == "passed" else "failed"
-            )
+            else:
+                terminal_status = (
+                    "completed" if verification_status == "passed" else "failed"
+                )
         facts = {
+            **inspection,
             "result": _artifact_fact(result_path),
             "descriptor": _artifact_fact(descriptor_path),
             "applicability": {

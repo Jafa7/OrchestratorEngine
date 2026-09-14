@@ -12,7 +12,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
-from orchestrator_engine import cli, continuity, core, local_checks, watcher
+from orchestrator_engine import (
+    cli,
+    continuity,
+    core,
+    github_actions,
+    local_checks,
+    watcher,
+)
 
 
 class ContinuityTests(unittest.TestCase):
@@ -424,7 +431,6 @@ class ContinuityTests(unittest.TestCase):
             handled_results=first["manifest"],
         )
         self.assertEqual(continuity.reconcile(self.root)["published"], [])
-
         continuity.observe_signal(
             self.root,
             {
@@ -1610,6 +1616,377 @@ class ContinuityTests(unittest.TestCase):
             )
             self.assertEqual(activation["status"], "published")
             self.assertEqual(result["source_observations"][0]["state"], "terminal")
+
+    def terminal_ci(
+        self,
+        identity: str = "CI-UNKNOWN",
+        *,
+        status: str = "unavailable",
+        conclusion: str | None = None,
+        state_dir: str = core.DEFAULT_STATE_DIR,
+    ) -> dict:
+        directory = github_actions.monitor_dir_for(
+            self.root, identity, state_dir=state_dir
+        )
+        directory.mkdir(parents=True)
+        descriptor = {
+            "schema_version": 1,
+            "kind": github_actions.MONITOR_KIND,
+            "source_kind": github_actions.SOURCE_KIND,
+            "monitor_id": identity,
+            "monitor_dir": str(directory),
+            "hostname": "github.com",
+            "repository": "Example/Project",
+            "run_id": 123,
+            "attempt": 1,
+            "expected_head_sha": "a" * 40,
+            "wake_policy": "never",
+            "created_at": core.utc_now(),
+        }
+        return github_actions.finalize_monitor(
+            self.root,
+            descriptor,
+            {"monitor_status": status, "ci_conclusion": conclusion},
+            state_dir=state_dir,
+            started_at=core.utc_now(),
+            duration_seconds=0,
+        )
+
+    def ci_assignment_with_state_alias(self, state_dir: str) -> None:
+        continuity.start_work(
+            self.root, work_id="ALIAS-WORK", owner_actor="sol",
+            objective="Inspect retained CI", state_dir=state_dir,
+        )
+        request = continuity.request_send(
+            self.root, work_id="ALIAS-WORK", request_id="ALIAS-REQUEST",
+            idempotency_key="ALIAS-REQUEST", sender_actor="sol",
+            recipient_actor="astra", return_actor="sol", message="Inspect CI",
+            requires_reply=True, max_reminders=0, state_dir=state_dir,
+        )
+        continuity.claim(
+            self.root, activation_id=request["request_activation_id"],
+            actor_id="astra", expected_epoch=1, state_dir=state_dir,
+        )
+        continuity.assignment_checkpoint(
+            self.root, obligation_id=request["obligation_id"], actor_id="astra",
+            activation_id=request["request_activation_id"], expected_revision=0,
+            mode="waiting", summary="Await CI", wait_on=["ci:CI-ALIAS"],
+            state_dir=state_dir,
+        )
+        self.terminal_ci("CI-ALIAS", state_dir=state_dir)
+        continuity.reconcile(self.root, state_dir=state_dir)
+        state = continuity.status(self.root, state_dir=state_dir)
+        current = next(
+            a for a in state["activations"]
+            if a["reason"] == "assignment_wait_satisfied"
+        )
+        continuity.claim(
+            self.root, activation_id=current["activation_id"], actor_id="astra",
+            expected_epoch=1, state_dir=state_dir,
+        )
+        packet = continuity.entry_packet(
+            self.root, activation_id=current["activation_id"], state_dir=state_dir,
+        )
+        observed = packet["managed_results"][0]
+        self.assertEqual(observed["status"], "unavailable")
+        self.assertEqual(observed["observed_facts"]["observation"]["remote_outcome"],
+                         "unknown")
+        next_wait = continuity.assignment_checkpoint(
+            self.root, obligation_id=request["obligation_id"], actor_id="astra",
+            activation_id=current["activation_id"], expected_revision=1,
+            mode="waiting", summary="Inspect failure and bind new monitor",
+            wait_on=["ci:CI-REPLACEMENT"], handled_results=[observed["outcome_id"]],
+            state_dir=state_dir,
+        )
+        self.assertIsNone(next_wait["activation_id"])
+
+    def test_retained_ci_unknown_noncanonical_state_restores_assignment(self) -> None:
+        self.ci_assignment_with_state_alias(".orchestrator/../.orchestrator")
+
+    def test_retained_ci_unknown_symlinked_state_restores_assignment(self) -> None:
+        try:
+            (self.root / "state-alias").symlink_to(
+                self.root / ".orchestrator", target_is_directory=True,
+            )
+        except (OSError, NotImplementedError):
+            self.skipTest("directory symlinks unavailable")
+        self.ci_assignment_with_state_alias("state-alias")
+
+    def test_retained_ci_unknown_wakes_owner_for_inspection_once(self) -> None:
+        final = self.terminal_ci()
+        self.assertEqual(core.inbox(self.root), [])
+        self.start()
+        result = continuity.checkpoint(
+            self.root,
+            work_id="WORK-1",
+            actor_id="sol",
+            expected_revision=1,
+            mode="waiting",
+            summary="Inspect CI",
+            wait_on=["ci:CI-UNKNOWN"],
+        )
+        activation = result["activation_id"]
+        packet = continuity.entry_packet(self.root, activation_id=activation)
+        observed = packet["managed_results"][0]
+        self.assertEqual(observed["status"], "unavailable")
+        self.assertEqual(
+            observed["observed_facts"]["observation"],
+            {
+                "purpose": "inspection",
+                "monitor_status": "unavailable",
+                "verification_status": "unknown",
+                "remote_outcome": "unknown",
+            },
+        )
+        self.assertEqual(
+            core.load_object(Path(final["result_path"]))["status"], "unknown"
+        )
+        self.assertEqual(continuity.reconcile(self.root)["published"], [])
+        event = core.load_object(Path(final["event_path"]))
+        self.assertFalse(continuity.observe_signal(self.root, {
+            **event, "kind": "ORCHESTRATOR_FOLLOWUP_SIGNAL",
+        }))
+        continuity.claim(
+            self.root,
+            activation_id=activation,
+            actor_id="sol",
+            expected_epoch=2,
+        )
+        continuity.checkpoint(
+            self.root,
+            work_id="WORK-1",
+            actor_id="sol",
+            expected_revision=2,
+            mode="waiting",
+            summary="Failure inspected; await replacement",
+            wait_on=["ci:CI-REPLACEMENT"],
+            handled_results=[observed["outcome_id"]],
+        )
+        self.assertEqual(continuity.reconcile(self.root)["published"], [])
+        replacement = self.terminal_ci(
+            "CI-REPLACEMENT",
+            status="completed",
+            conclusion="success",
+        )
+        ready = continuity.reconcile(self.root)
+        self.assertEqual(len(ready["published"]), 1)
+        self.assertEqual(
+            core.load_object(Path(replacement["result_path"]))["status"], "passed"
+        )
+
+    def test_retained_ci_unknown_restores_current_assignment_claim(self) -> None:
+        self.start()
+        request = continuity.request_send(
+            self.root,
+            work_id="WORK-1",
+            request_id="CI-REPAIR",
+            idempotency_key="CI-REPAIR",
+            sender_actor="sol",
+            recipient_actor="astra",
+            return_actor="sol",
+            message="Inspect CI",
+            requires_reply=True,
+            max_reminders=0,
+        )
+        continuity.claim(
+            self.root,
+            activation_id=request["request_activation_id"],
+            actor_id="astra",
+            expected_epoch=1,
+        )
+        continuity.assignment_checkpoint(
+            self.root,
+            obligation_id=request["obligation_id"],
+            actor_id="astra",
+            activation_id=request["request_activation_id"],
+            expected_revision=0,
+            mode="waiting",
+            summary="Await CI",
+            wait_on=["ci:CI-UNKNOWN"],
+        )
+        self.terminal_ci()
+        continuity.reconcile(self.root)
+        current = next(
+            a
+            for a in continuity.status(self.root)["activations"]
+            if a["reason"] == "assignment_wait_satisfied"
+        )
+        packet = continuity.entry_packet(
+            self.root, activation_id=current["activation_id"]
+        )
+        outcome = packet["managed_results"][0]["outcome_id"]
+        continuity.claim(
+            self.root,
+            activation_id=current["activation_id"],
+            actor_id="astra",
+            expected_epoch=1,
+        )
+        next_wait = continuity.assignment_checkpoint(
+            self.root,
+            obligation_id=request["obligation_id"],
+            actor_id="astra",
+            activation_id=current["activation_id"],
+            expected_revision=1,
+            mode="waiting",
+            summary="Replace failed observer",
+            wait_on=["ci:CI-NEW"],
+            handled_results=[outcome],
+        )
+        self.assertIsNone(next_wait["activation_id"])
+        self.assertEqual(continuity.reconcile(self.root)["published"], [])
+        with self.assertRaisesRegex(continuity.ContinuityError, "current claimed"):
+            continuity.assignment_checkpoint(
+                self.root,
+                obligation_id=request["obligation_id"],
+                actor_id="astra",
+                activation_id=current["activation_id"],
+                expected_revision=2,
+                mode="continue",
+                summary="Stale",
+                next_action="Must not execute",
+            )
+
+    def test_retained_ci_unknown_accepts_only_terminal_observation_statuses(
+        self,
+    ) -> None:
+        for status in github_actions.TERMINAL_MONITOR_STATUSES:
+            with self.subTest(status=status):
+                identity = "CI-" + status
+                self.terminal_ci(identity, status=status)
+                observation = continuity._retained_source_observation(
+                    self.root,
+                    f"ci:{identity}",
+                    state_dir=core.DEFAULT_STATE_DIR,
+                )
+                self.assertEqual(observation["state"], "terminal")
+                if status != "cancelled":
+                    self.assertEqual(
+                        observation["data"]["observation"]["remote_outcome"], "unknown"
+                    )
+
+    def test_retained_ci_unknown_rejects_incomplete_or_mismatched_artifacts(
+        self,
+    ) -> None:
+        for failure in [
+            "missing_event",
+            "missing_evidence",
+            "missing_result",
+            "hash_mismatch",
+            "running",
+            "future_schema",
+            "wrong_id",
+            "wrong_event",
+            "wrong_result",
+            "wrong_finality",
+            "false_success",
+            "wrong_scope",
+        ]:
+            with self.subTest(failure=failure):
+                identity = "CI-" + failure
+                final = self.terminal_ci(identity)
+                descriptor_path = Path(final["monitor_dir"]) / "monitor.json"
+                result_path = Path(final["result_path"])
+                evidence_path = Path(final["evidence_path"])
+                if failure == "missing_event":
+                    Path(final["event_path"]).unlink()
+                elif failure == "missing_evidence":
+                    evidence_path.unlink()
+                elif failure == "missing_result":
+                    result_path.unlink()
+                elif failure == "hash_mismatch":
+                    evidence_path.write_text(evidence_path.read_text() + " ")
+                elif failure == "running":
+                    core.atomic_json(descriptor_path, {**final, "status": "running"})
+                elif failure == "future_schema":
+                    core.atomic_json(descriptor_path, {**final, "schema_version": 2})
+                elif failure == "wrong_id":
+                    core.atomic_json(descriptor_path, {**final, "monitor_id": "OTHER"})
+                elif failure == "wrong_event":
+                    event_path = Path(final["event_path"])
+                    event = core.load_object(event_path)
+                    core.atomic_json(event_path, {**event, "operation_id": "OTHER"})
+                elif failure == "wrong_result":
+                    result = core.load_object(result_path)
+                    core.atomic_json(result_path, {**result, "check_id": "OTHER"})
+                elif failure == "wrong_finality":
+                    core.atomic_json(
+                        descriptor_path, {**final, "finished_at": "different"}
+                    )
+                elif failure == "false_success":
+                    core.atomic_json(
+                        descriptor_path, {**final, "ci_conclusion": "success"}
+                    )
+                elif failure == "wrong_scope":
+                    core.atomic_json(
+                        descriptor_path, {**final, "repository": "Other/Project"}
+                    )
+                observation = continuity._retained_source_observation(
+                    self.root,
+                    f"ci:{identity}",
+                    state_dir=core.DEFAULT_STATE_DIR,
+                )
+                self.assertEqual(
+                    observation["state"],
+                    "pending" if failure == "missing_result" else "invalid",
+                )
+
+    def test_retained_ci_unknown_does_not_bypass_paused_owner(self) -> None:
+        self.start()
+        continuity.checkpoint(
+            self.root,
+            work_id="WORK-1",
+            actor_id="sol",
+            expected_revision=1,
+            mode="waiting",
+            summary="Await CI",
+            wait_on=["ci:CI-UNKNOWN"],
+        )
+        continuity.checkpoint(
+            self.root,
+            work_id="WORK-1",
+            actor_id="sol",
+            expected_revision=2,
+            mode="paused",
+            summary="Human input required",
+        )
+        self.terminal_ci()
+        self.assertEqual(continuity.reconcile(self.root)["published"], [])
+        state = continuity.status(self.root, work_id="WORK-1")
+        self.assertFalse(
+            any(a["reason"] == "wait_satisfied" for a in state["activations"])
+        )
+
+    def test_retained_ci_unknown_respects_stop_and_endpoint_fences(self) -> None:
+        self.start()
+        continuity.checkpoint(
+            self.root, work_id="WORK-1", actor_id="sol", expected_revision=1,
+            mode="waiting", summary="Await CI", wait_on=["ci:CI-UNKNOWN"],
+        )
+        continuity.set_recovery_control(
+            self.root, scope_kind="work", scope_id="WORK-1", state="stopped",
+            actor_id="sol", reason="Explicit stop",
+        )
+        self.terminal_ci()
+        self.assertEqual(continuity.reconcile(self.root)["published"], [])
+        continuity.set_recovery_control(
+            self.root, scope_kind="work", scope_id="WORK-1", state="armed",
+            actor_id="sol", reason="Explicit resume",
+        )
+        old = next(a for a in continuity.status(self.root)["activations"]
+                   if a["reason"] == "wait_satisfied")
+        self.register("sol", "implementation", "thread-sol-rebound")
+        with self.assertRaisesRegex(continuity.ContinuityError, "stale|revoked"):
+            continuity.claim(
+                self.root, activation_id=old["activation_id"], actor_id="sol",
+                expected_epoch=2,
+            )
+        current = [
+            a for a in continuity.status(self.root)["activations"]
+            if a["reason"] == "wait_satisfied"
+            and a["status"] in {"pending", "published"}
+        ]
+        self.assertEqual(len(current), 1)
+        self.assertEqual(current[0]["endpoint_generation"], 2)
 
     def test_pause_and_rebind_invalidate_old_claim_authority(self) -> None:
         self.start()

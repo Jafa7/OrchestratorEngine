@@ -4,7 +4,7 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
-## [1.11.0] - 2026-09-13
+## [1.11.0] - 2026-09-14
 
 - Added opt-in operational feedback with explicit destination and field
   allowlists, bounded local observations, cause-based coalescing and frozen FYI
@@ -21,6 +21,10 @@ All notable changes to OrchestratorEngine are documented here.
 - Allowed an assignee to acknowledge a claimed result from its previous wait
   while moving to a different wait source. Foreign outcomes remain rejected,
   and explicit replay remains scoped to the new wait.
+- Let retained terminal CI observation failures satisfy continuity waits for
+  inspection without treating an unknown remote CI outcome as success. Matching
+  monitor identity, supported artifacts and terminal event hashes are required;
+  configurable state paths are compared by their resolved physical identity.
 - Made persisted headless delivery ambiguity require operator action, like live
   queue ambiguity. Explicit retry rearms either transport once; uncertain
   delivery still blocks automatic retransmission.
