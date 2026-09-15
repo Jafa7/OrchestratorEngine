@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-engine://schemas/operation-evidence",
+  "title": "Bounded native local-check evidence observation (owner contract revision 3)",
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_OPERATION_EVIDENCE",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "engine_version", "target", "source", "attempt", "candidate", "operation", "snapshot", "completeness", "artifacts", "errors", "omissions", "diagnostics_truncated"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "ORCHESTRATOR_OPERATION_EVIDENCE"},
+    "engine_version": {"type": "string", "minLength": 1, "maxLength": 64},
+    "target": {"$ref": "#/$defs/target"},
+    "source": {
+      "type": "object", "additionalProperties": false, "required": ["project_id", "identity_state"],
+      "properties": {
+        "project_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 256, "x-max-utf8-bytes": 256, "pattern": "^[^\u0000-\u001f\u007f-\u009f]*$"},
+        "identity_state": {"enum": ["retained", "unknown", "mismatch"]}
+      },
+      "allOf": [
+        {"if": {"properties": {"identity_state": {"const": "unknown"}}}, "then": {"properties": {"project_id": {"const": null}}}},
+        {"if": {"properties": {"identity_state": {"const": "retained"}}}, "then": {"properties": {"project_id": {"type": "string"}}}}
+      ]
+    },
+    "attempt": {
+      "type": "object", "additionalProperties": false, "required": ["identity", "retry_of", "state"],
+      "properties": {"identity": {"const": null}, "retry_of": {"const": null}, "state": {"const": "unknown"}}
+    },
+    "candidate": {
+      "type": "object", "additionalProperties": false, "required": ["identity", "provenance", "state"],
+      "properties": {"identity": {"const": null}, "provenance": {"const": null}, "state": {"const": "unknown"}}
+    },
+    "operation": {
+      "type": "object", "additionalProperties": false, "required": ["status", "terminal", "finished_at"],
+      "properties": {
+        "status": {"enum": ["starting", "running", "passed", "failed", "errored", "cancelled", "unknown"]},
+        "terminal": {"type": ["boolean", "null"]},
+        "finished_at": {"anyOf": [{"const": null}, {"$ref": "#/$defs/time"}]}
+      },
+      "allOf": [
+        {"if": {"properties": {"status": {"const": "unknown"}}}, "then": {"properties": {"terminal": {"const": null}}}},
+        {"if": {"properties": {"status": {"enum": ["starting", "running"]}}}, "then": {"properties": {"terminal": {"const": false}}}},
+        {"if": {"properties": {"status": {"enum": ["passed", "failed", "errored", "cancelled"]}}}, "then": {"properties": {"terminal": {"const": true}}}}
+      ]
+    },
+    "snapshot": {
+      "type": "object", "additionalProperties": false, "required": ["observed_at", "consistency"],
+      "properties": {"observed_at": {"$ref": "#/$defs/time"}, "consistency": {"enum": ["stable", "changed", "unsealed", "unknown"]}}
+    },
+    "completeness": {"enum": ["complete", "partial", "unavailable", "unsupported"]},
+    "artifacts": {
+      "type": "array", "maxItems": 3,
+      "prefixItems": [
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "result"}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "evidence"}, "retained": {"maxItems": 1, "items": {"properties": {"basis": {"const": "terminal_event"}}}}}}]},
+        {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "event"}, "retained": {"maxItems": 0}}}]}
+      ],
+      "items": false
+    },
+    "errors": {"$ref": "#/$defs/diagnostics"},
+    "omissions": {"$ref": "#/$defs/diagnostics"},
+    "diagnostics_truncated": {"type": "boolean"}
+  },
+  "allOf": [
+    {"if": {"properties": {"completeness": {"const": "unsupported"}}}, "then": {"properties": {"artifacts": {"maxItems": 0}}}, "else": {"properties": {"target": {"properties": {"kind": {"const": "check"}}}, "artifacts": {"minItems": 3}}}},
+    {"if": {"properties": {"completeness": {"const": "complete"}}}, "then": {"properties": {"snapshot": {"properties": {"consistency": {"const": "stable"}}}, "artifacts": {"items": {"properties": {"presence": {"const": "present"}}}}, "omissions": {"maxItems": 0}, "diagnostics_truncated": {"const": false}}}},
+    {
+      "if": {"properties": {"diagnostics_truncated": {"const": true}}},
+      "then": {"anyOf": [
+        {"properties": {"errors": {"contains": {"properties": {"code": {"const": "diagnostics_truncated"}}}}}},
+        {"properties": {"omissions": {"contains": {"properties": {"code": {"const": "diagnostics_truncated"}}}}}}
+      ]},
+      "else": {"properties": {
+        "errors": {"items": {"properties": {"code": {"not": {"const": "diagnostics_truncated"}}}}},
+        "omissions": {"items": {"properties": {"code": {"not": {"const": "diagnostics_truncated"}}}}}
+      }}
+    }
+  ],
+  "$defs": {
+    "target": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "operation_id"],
+      "properties": {"kind": {"enum": ["worker", "check", "ci", "pr"]}, "operation_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", "not": {"pattern": "[^A-Za-z0-9_.-]"}}}
+    },
+    "time": {"type": "string", "format": "date-time", "maxLength": 40, "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?(?:Z|\\+00:00)$", "not": {"pattern": "[\\r\\n]"}},
+    "digest": {"type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[0-9a-f]{64}$"},
+    "binding": {
+      "type": "object", "additionalProperties": false, "required": ["sha256", "basis"],
+      "properties": {"sha256": {"$ref": "#/$defs/digest"}, "basis": {"enum": ["check_evidence", "terminal_event"]}}
+    },
+    "artifact": {
+      "type": "object", "additionalProperties": false, "required": ["role", "presence", "observed", "retained", "integrity"],
+      "properties": {
+        "role": {"enum": ["result", "evidence", "event"]},
+        "presence": {"enum": ["present", "missing", "unreadable", "budget_limited"]},
+        "observed": {"anyOf": [{"const": null}, {"type": "object", "additionalProperties": false, "required": ["sha256", "size_bytes"], "properties": {"sha256": {"$ref": "#/$defs/digest"}, "size_bytes": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}}}]},
+        "retained": {
+          "type": "array", "maxItems": 2, "uniqueItems": true, "items": {"$ref": "#/$defs/binding"},
+          "allOf": [{"if": {"minItems": 2}, "then": {"prefixItems": [{"properties": {"basis": {"const": "check_evidence"}}}, {"properties": {"basis": {"const": "terminal_event"}}}]}}]
+        },
+        "integrity": {"enum": ["matched", "mismatch", "observed_only", "unavailable"]}
+      },
+      "allOf": [
+        {"if": {"properties": {"presence": {"const": "present"}}}, "then": {"properties": {"observed": {"type": "object"}, "integrity": {"enum": ["matched", "mismatch", "observed_only"]}}}, "else": {"properties": {"observed": {"const": null}, "integrity": {"const": "unavailable"}}}},
+        {"if": {"properties": {"integrity": {"enum": ["matched", "mismatch"]}}}, "then": {"properties": {"retained": {"minItems": 1}}}},
+        {"if": {"properties": {"integrity": {"const": "observed_only"}}}, "then": {"properties": {"retained": {"maxItems": 0}}}}
+      ]
+    },
+    "diagnostics": {
+      "type": "array", "maxItems": 16, "uniqueItems": true,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["code"],
+        "properties": {
+          "code": {"enum": ["target_missing", "artifact_missing", "artifact_unreadable", "read_budget_exceeded", "invalid_json", "unsupported_schema", "unsupported_producer", "unsupported_value", "identity_mismatch", "path_outside_state", "digest_mismatch", "conflicting_retained_bindings", "publication_incomplete", "snapshot_changed", "diagnostics_truncated", "metadata_missing"]},
+          "artifact_role": {"enum": ["result", "evidence", "event"]}
+        }
+      }
+    }
+  }
+}

@@ -1072,6 +1072,9 @@ Recommended path layout:
 
 Local checks, GitHub Actions monitors and pull-request monitors share the
 legacy-compatible `.orchestrator/checks/<operation_id>/` result namespace.
+The read-only [operation evidence contract](operation-evidence.md) exposes
+bounded native local-check metadata and retained digest bindings without logs
+or product-acceptance authority.
 Before writing there, each operation atomically claims `operation-owner.json`.
 Reusing one ID across different operation types fails closed instead of
 overwriting an earlier verification result and invalidating its event hash.

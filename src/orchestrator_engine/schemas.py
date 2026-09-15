@@ -28,6 +28,7 @@ SCHEMA_NAMES = (
     "binding",
     "wake-target",
     "verification-result",
+    "operation-evidence",
     "check-operation-owner",
     "watcher-state",
     "followup-terminal-event",

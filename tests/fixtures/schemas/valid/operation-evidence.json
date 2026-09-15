@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_OPERATION_EVIDENCE",
+  "engine_version": "1.11.0",
+  "target": {"kind": "worker", "operation_id": "sample-1"},
+  "source": {"project_id": null, "identity_state": "unknown"},
+  "attempt": {"identity": null, "retry_of": null, "state": "unknown"},
+  "candidate": {"identity": null, "provenance": null, "state": "unknown"},
+  "operation": {"status": "unknown", "terminal": null, "finished_at": null},
+  "snapshot": {"observed_at": "2026-09-14T00:00:00Z", "consistency": "unknown"},
+  "completeness": "unsupported",
+  "artifacts": [],
+  "errors": [],
+  "omissions": [{"code": "unsupported_producer"}],
+  "diagnostics_truncated": false
+}

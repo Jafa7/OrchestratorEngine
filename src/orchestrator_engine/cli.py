@@ -24,6 +24,7 @@ from . import (
     github_pull_requests,
     host_capabilities,
     local_checks,
+    operation_evidence,
     operation_wait,
     operational_feedback,
     platform_runtime,
@@ -378,6 +379,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     operation_subparsers = operation.add_subparsers(
         dest="operation_command", required=True
+    )
+    operation_evidence_parser = operation_subparsers.add_parser(
+        "evidence", help="Read bounded metadata for one retained native local check."
+    )
+    operation_evidence_parser.add_argument(
+        "--target", required=True, type=operation_evidence.target_argument
     )
     operation_status_parser = operation_subparsers.add_parser(
         "status",
@@ -1715,6 +1722,11 @@ def main(argv: list[str] | None = None) -> int:
                 raise core.OrchestratorError(
                     "operation commands require exactly one project root"
                 )
+            if args.operation_command == "evidence":
+                print_json(operation_evidence.operation_evidence(
+                    roots[0], target=args.target, state_dir=args.state_dir
+                ))
+                return 0
             if args.operation_command == "status":
                 output = operation_wait.operation_wait_snapshot(
                     roots[0],
