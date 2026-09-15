@@ -351,10 +351,10 @@ def relative_path(path: Path, project_root: Path) -> str:
     return str(path.resolve().relative_to(project_root.resolve()))
 
 
-def terminate_process(process: subprocess.Popen[str]) -> None:
+def terminate_process(process: subprocess.Popen[str]) -> str:
     if os.name == "nt" and hasattr(process, "runtime_identity"):
-        platform_runtime.stop_owned(process, reason="check_cleanup")
-        return
+        stopped = platform_runtime.stop_owned(process, reason="check_cleanup")
+        return "gone" if stopped.get("exited") else "unknown"
     if hasattr(os, "killpg"):
         with contextlib.suppress(OSError, ProcessLookupError):
             os.killpg(process.pid, signal.SIGTERM)
@@ -364,12 +364,12 @@ def terminate_process(process: subprocess.Popen[str]) -> None:
     deadline = time.monotonic() + 1.0
     while (
         hasattr(os, "killpg")
-        and worker_lease.process_group_state(process.pid) == "alive"
+        and worker_lease.raw_process_group_state(process.pid) != "gone"
         and time.monotonic() < deadline
     ):
         time.sleep(0.05)
     if hasattr(os, "killpg"):
-        if worker_lease.process_group_state(process.pid) == "alive":
+        if worker_lease.raw_process_group_state(process.pid) != "gone":
             with contextlib.suppress(OSError, ProcessLookupError):
                 os.killpg(process.pid, signal.SIGKILL)
     elif process.poll() is None:
@@ -378,6 +378,9 @@ def terminate_process(process: subprocess.Popen[str]) -> None:
     if process.poll() is None:
         with contextlib.suppress(subprocess.TimeoutExpired):
             process.wait(timeout=1)
+    if hasattr(os, "killpg"):
+        return worker_lease.process_group_state(process.pid)
+    return "gone" if process.poll() is not None else "unknown"
 
 
 def record_active_command(

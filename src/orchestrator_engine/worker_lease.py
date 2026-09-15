@@ -230,37 +230,43 @@ def pid_state(pid: object) -> dict[str, Any]:
     return {"state": "alive", "identity_verified": False, "observed": observed}
 
 
-def process_group_state(pgid: object, identity: object = None) -> str:
-    """Return alive, gone or unknown without signalling a process group."""
+def raw_process_group_state(pgid: object) -> str:
+    """Return raw POSIX process-group existence without inspecting members."""
 
     if not isinstance(pgid, int) or isinstance(pgid, bool) or pgid <= 0:
         return "unknown"
     if os.name == "nt":
+        return "unknown"
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return "gone"
+    except (PermissionError, OSError):
+        return "unknown"
+    return "alive"
+
+
+def process_group_state(pgid: object, identity: object = None) -> str:
+    """Return alive, gone or unknown without signalling a process group."""
+
+    if os.name == "nt":
+        if not isinstance(pgid, int) or isinstance(pgid, bool) or pgid <= 0:
+            return "unknown"
         from . import runtime_windows
 
         if not isinstance(identity, dict) or identity.get("pid") != pgid:
             return "unknown"
         return runtime_windows.job_state(identity)
-    try:
-        os.killpg(pgid, 0)
-    except ProcessLookupError:
-        return "gone"
-    except PermissionError:
-        return "unknown"
-    except OSError:
-        return "unknown"
+    raw_state = raw_process_group_state(pgid)
+    if raw_state != "alive":
+        return raw_state
     if sys.platform.startswith("linux"):
         execution_state = linux_process_group_execution_state(pgid)
         if execution_state != "gone":
             return execution_state
         # Fence the `/proc` observation against group disappearance or reuse.
-        try:
-            os.killpg(pgid, 0)
-        except ProcessLookupError:
-            return "gone"
-        except (PermissionError, OSError):
-            return "unknown"
-        return "gone"
+        fenced_state = raw_process_group_state(pgid)
+        return "gone" if fenced_state in {"alive", "gone"} else "unknown"
     return "alive"
 
 

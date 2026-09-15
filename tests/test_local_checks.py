@@ -49,6 +49,37 @@ def write_config(
 
 
 class LocalCheckTests(unittest.TestCase):
+    @unittest.skipUnless(hasattr(os, "killpg"), "requires POSIX process groups")
+    def test_terminate_escalates_when_group_membership_is_unknown(self) -> None:
+        process = mock.Mock(pid=77)
+        process.poll.return_value = None
+        process.wait.side_effect = local_checks.subprocess.TimeoutExpired(
+            cmd=["worker"], timeout=1
+        )
+
+        with (
+            mock.patch.object(local_checks.os, "killpg") as killpg,
+            mock.patch.object(
+                local_checks.worker_lease,
+                "raw_process_group_state",
+                return_value="alive",
+            ),
+            mock.patch.object(
+                local_checks.worker_lease,
+                "process_group_state",
+                return_value="unknown",
+            ),
+            mock.patch.object(local_checks.time, "monotonic", side_effect=[0.0, 2.0]),
+        ):
+            cleanup_state = local_checks.terminate_process(process)
+
+        self.assertEqual(cleanup_state, "unknown")
+        self.assertEqual(
+            killpg.call_args_list,
+            [mock.call(77, signal.SIGTERM), mock.call(77, signal.SIGKILL)],
+        )
+        process.wait.assert_called_once_with(timeout=1)
+
     def test_delivery_require_ready_rejects_before_check_descriptor(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
