@@ -10,13 +10,14 @@ import queue
 import re
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
-from . import core, host_capabilities, platform_runtime, wakeup
+from . import core, host_capabilities, platform_runtime, wakeup, worker_lease
 
 
 class CodexAppError(RuntimeError):
@@ -183,6 +184,8 @@ def _diagnostic_process_group_alive(process_group: int) -> bool:
         return False
     except (PermissionError, OSError):
         return True
+    if sys.platform.startswith("linux"):
+        return worker_lease.linux_process_group_execution_state(process_group) != "gone"
     return True
 
 

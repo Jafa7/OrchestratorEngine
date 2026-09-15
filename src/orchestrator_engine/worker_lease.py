@@ -33,7 +33,9 @@ DEFAULT_LEASE_EXPIRY_SECONDS = DEFAULT_LEASE_INTERVAL_SECONDS * LEASE_EXPIRY_FAC
 # time) identifies one process for the life of the machine.
 PROC_STAT_STARTTIME_INDEX = 19
 BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
+PROC_ROOT = Path("/proc")
 ZOMBIE_STATE = "Z"
+NON_EXECUTING_PROCESS_STATES = frozenset({"X", "Z"})
 
 WORKER_STOP_GRACE_SECONDS = 10.0
 WORKER_STOP_TIMEOUT_SECONDS = 10.0
@@ -247,7 +249,121 @@ def process_group_state(pgid: object, identity: object = None) -> str:
         return "unknown"
     except OSError:
         return "unknown"
+    if sys.platform.startswith("linux"):
+        execution_state = linux_process_group_execution_state(pgid)
+        if execution_state != "gone":
+            return execution_state
+        # Fence the `/proc` observation against group disappearance or reuse.
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return "gone"
+        except (PermissionError, OSError):
+            return "unknown"
+        return "gone"
     return "alive"
+
+
+def linux_process_group_execution_state(
+    pgid: int, *, proc_root: Path = PROC_ROOT
+) -> str:
+    """Classify whether a Linux process group still has executable members.
+
+    Raw process-group existence remains the authority for sending signals.
+    This observation is only used to confirm cleanup: a group containing only
+    zombies cannot execute work, while incomplete process-table evidence must
+    remain unknown and therefore fail closed.
+    """
+
+    first_state, first_members = _linux_process_group_snapshot(pgid, proc_root)
+    if first_state != "gone":
+        return first_state
+    second_state, second_members = _linux_process_group_snapshot(pgid, proc_root)
+    if second_state != "gone":
+        return second_state
+    if first_members != second_members:
+        return "unknown"
+    return "gone" if first_members else "unknown"
+
+
+def _linux_process_group_snapshot(
+    pgid: int, proc_root: Path
+) -> tuple[str, frozenset[tuple[int, int, int]]]:
+    """Take one fresh membership snapshot, including non-leader threads."""
+
+    members: set[tuple[int, int, int]] = set()
+    uncertain = False
+    try:
+        entries = list(proc_root.iterdir())
+    except OSError:
+        return "unknown", frozenset()
+    for entry in entries:
+        if not entry.name.isascii() or not entry.name.isdecimal():
+            continue
+        try:
+            leader = _linux_proc_stat((entry / "stat").read_bytes())
+        except (FileNotFoundError, ProcessLookupError):
+            # The PID was present in this snapshot but disappeared before its
+            # process group could be excluded. Treat the observation as raced.
+            uncertain = True
+            continue
+        except (OSError, ValueError):
+            uncertain = True
+            continue
+        if leader[1] != pgid:
+            continue
+        try:
+            tasks = list((entry / "task").iterdir())
+        except (FileNotFoundError, ProcessLookupError):
+            uncertain = True
+            continue
+        except OSError:
+            uncertain = True
+            continue
+        if not tasks:
+            uncertain = True
+            continue
+        for task in tasks:
+            if not task.name.isascii() or not task.name.isdecimal():
+                uncertain = True
+                continue
+            try:
+                state, member_pgid, start_ticks = _linux_proc_stat(
+                    (task / "stat").read_bytes()
+                )
+            except (FileNotFoundError, ProcessLookupError):
+                uncertain = True
+                continue
+            except (OSError, ValueError):
+                uncertain = True
+                continue
+            if member_pgid != pgid:
+                uncertain = True
+                continue
+            members.add((int(entry.name), int(task.name), start_ticks))
+            if state not in NON_EXECUTING_PROCESS_STATES:
+                return "alive", frozenset(members)
+    if uncertain:
+        return "unknown", frozenset(members)
+    return "gone", frozenset(members)
+
+
+def _linux_proc_stat(raw: bytes) -> tuple[str, int, int]:
+    """Parse only ASCII fields after comm, which may contain arbitrary bytes."""
+
+    _, separator, tail = raw.rpartition(b") ")
+    if not separator:
+        raise ValueError("missing proc stat suffix")
+    fields = tail.split()
+    try:
+        state = fields[0].decode("ascii")
+        process_group = int(fields[2])
+        start_ticks = int(fields[PROC_STAT_STARTTIME_INDEX])
+    except (IndexError, UnicodeError, ValueError) as error:
+        raise ValueError("invalid proc stat suffix") from error
+    if len(state) != 1:
+        raise ValueError("invalid proc state")
+    return state, process_group, start_ticks
 
 
 def lease_path(task_dir: Path) -> Path:

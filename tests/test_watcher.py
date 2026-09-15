@@ -208,9 +208,7 @@ class WatcherTests(unittest.TestCase):
             watcher_state = watcher.load_state(state)
 
         self.assertEqual(scan["new_count"], 0)
-        self.assertNotIn(
-            emitted["event"]["event_id"], watcher_state["seen_event_ids"]
-        )
+        self.assertNotIn(emitted["event"]["event_id"], watcher_state["seen_event_ids"])
 
     def test_notify_writes_durable_notification(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -407,14 +405,9 @@ class WatcherTests(unittest.TestCase):
                 )
                 watcher_state = watcher.load_state(state)
                 deferred = watcher_state["deferred_events"]["event-network"]
-                if (
-                    deferred["status"]
-                    != watcher.DEFER_STATUS_MANUAL_REQUIRED
-                ):
+                if deferred["status"] != watcher.DEFER_STATUS_MANUAL_REQUIRED:
                     scoped_key = watcher.signal_state_key(root, "event-network")
-                    watcher_state["deferred_signals"][scoped_key][
-                        "retry_after_at"
-                    ] = 0
+                    watcher_state["deferred_signals"][scoped_key]["retry_after_at"] = 0
                     core.atomic_json(state, watcher_state)
             after_limit = watcher.scan_once(
                 [root],
@@ -1090,9 +1083,7 @@ class WatcherTests(unittest.TestCase):
             service["state_path"].endswith("watcher-codex-callback-state.json")
         )
         self.assertTrue(
-            service["heartbeat_path"].endswith(
-                "watcher-codex-callback-heartbeat.json"
-            )
+            service["heartbeat_path"].endswith("watcher-codex-callback-heartbeat.json")
         )
         self.assertEqual(service["host_filter"], ["codex"])
         self.assertIn("--host", FakePopen.command)
@@ -1246,9 +1237,9 @@ class WatcherTests(unittest.TestCase):
                     "schema_version": 1,
                     "kind": "LOCAL_AI_ORCHESTRATOR_WATCHER_HEARTBEAT",
                     "pid": 7777,
-                    "checked_at": (
-                        datetime.now(UTC) - timedelta(minutes=10)
-                    ).isoformat(timespec="milliseconds"),
+                    "checked_at": (datetime.now(UTC) - timedelta(minutes=10)).isoformat(
+                        timespec="milliseconds"
+                    ),
                 },
             )
             status = watcher.service_status(
@@ -1483,9 +1474,7 @@ class WatcherTests(unittest.TestCase):
     def test_ensure_service_inherits_stopped_service_settings(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
-            service_file = watcher.default_callback_service_path(
-                root, host="codex"
-            )
+            service_file = watcher.default_callback_service_path(root, host="codex")
             state_path = root / ".orchestrator" / "custom-state.json"
             core.atomic_json(
                 service_file,
@@ -1521,9 +1510,7 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(start.call_args.kwargs["interval_seconds"], 9)
         self.assertEqual(start.call_args.kwargs["state_path"], state_path)
         self.assertEqual(start.call_args.kwargs["action"], "callback")
-        self.assertEqual(
-            start.call_args.kwargs["target_thread_id"], "thread-stored"
-        )
+        self.assertEqual(start.call_args.kwargs["target_thread_id"], "thread-stored")
 
     def test_ensure_service_treats_concurrent_start_as_success(self) -> None:
         statuses = iter(({"status": "crashed"}, {"status": "running", "pid": 43}))
@@ -1998,9 +1985,9 @@ class WatcherTests(unittest.TestCase):
     def test_heartbeat_age_never_goes_negative(self) -> None:
         age = watcher.heartbeat_age_seconds(
             {
-                "checked_at": (
-                    datetime.now(UTC) + timedelta(seconds=5)
-                ).isoformat(timespec="milliseconds")
+                "checked_at": (datetime.now(UTC) + timedelta(seconds=5)).isoformat(
+                    timespec="milliseconds"
+                )
             }
         )
         self.assertEqual(age, 0.0)
@@ -2172,9 +2159,7 @@ class ServiceDiagnosticsTests(unittest.TestCase):
                 [root],
                 process_checker=lambda _pid: False,
             )
-        self.assertTrue(
-            any("wrong chat" in warning for warning in status["warnings"])
-        )
+        self.assertTrue(any("wrong chat" in warning for warning in status["warnings"]))
 
     def test_status_warns_for_unverified_legacy_process_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2220,6 +2205,21 @@ class FakeCompleted:
 
 
 class CodexDiagnosticTests(unittest.TestCase):
+    def test_diagnostic_group_treats_unknown_as_alive_and_zombies_as_gone(
+        self,
+    ) -> None:
+        with (
+            mock.patch.object(codex_app.os, "killpg"),
+            mock.patch.object(codex_app.sys, "platform", "linux"),
+            mock.patch.object(
+                worker_lease,
+                "linux_process_group_execution_state",
+                side_effect=["unknown", "gone"],
+            ),
+        ):
+            self.assertTrue(codex_app._diagnostic_process_group_alive(77))
+            self.assertFalse(codex_app._diagnostic_process_group_alive(77))
+
     def test_doctor_json_returns_redacted_summary(self) -> None:
         commands: list[list[str]] = []
         provider_output = json.dumps(
@@ -2329,9 +2329,7 @@ class CodexDiagnosticTests(unittest.TestCase):
         )
         self.assertEqual(result["problem_checks"], [])
         self.assertEqual(result["context_limited_checks_truncated"], 0)
-        self.assertEqual(
-            result["context_limited_check_status_counts"]["fail"], 1
-        )
+        self.assertEqual(result["context_limited_check_status_counts"]["fail"], 1)
         self.assertNotIn("sensitive", json.dumps(result))
         self.assertEqual(codex_app.codex_diagnostic_exit_code(result), 0)
 
@@ -2386,9 +2384,7 @@ class CodexDiagnosticTests(unittest.TestCase):
         result = codex_app.diagnose_codex_host(
             runner=lambda *_args, **_kwargs: FakeCompleted(
                 returncode=1,
-                stdout=json.dumps(
-                    {"overallStatus": "fail", "checks": checks}
-                ),
+                stdout=json.dumps({"overallStatus": "fail", "checks": checks}),
             )
         )
 
@@ -2508,9 +2504,7 @@ class CodexDiagnosticTests(unittest.TestCase):
                     {
                         "codexVersion": "/private/version/path",
                         "overallStatus": "warning",
-                        "checks": {
-                            "/private/check/path": {"status": "warning"}
-                        },
+                        "checks": {"/private/check/path": {"status": "warning"}},
                     }
                 )
             )
@@ -2542,9 +2536,7 @@ class CodexDiagnosticTests(unittest.TestCase):
             self.assertNotIn("capture_output", kwargs)
             self.assertNotIn("text", kwargs)
             kwargs["stdout"].write(
-                json.dumps(
-                    {"overallStatus": "ok", "checks": {}}
-                ).encode("utf-8")
+                json.dumps({"overallStatus": "ok", "checks": {}}).encode("utf-8")
             )
             kwargs["stderr"].write(b"bounded warning")
             process = mock.Mock(pid=12345)
@@ -2581,9 +2573,7 @@ class CodexDiagnosticTests(unittest.TestCase):
             )
             launcher.chmod(0o755)
 
-            result = codex_app.diagnose_codex_host(
-                str(launcher), timeout_seconds=0.1
-            )
+            result = codex_app.diagnose_codex_host(str(launcher), timeout_seconds=0.1)
             time.sleep(1.0)
 
             self.assertEqual(result["status"], "timeout")
@@ -2636,12 +2626,11 @@ class CodexDiagnosticTests(unittest.TestCase):
         ]
         for expected, failure in cases:
             with self.subTest(status=expected):
+
                 def runner(*_args, failure=failure, **_kwargs):
                     raise failure
 
-                result = codex_app.diagnose_codex_host(
-                    runner=runner
-                )
+                result = codex_app.diagnose_codex_host(runner=runner)
                 self.assertEqual(result["status"], expected)
 
         result = codex_app.diagnose_codex_host(
@@ -2755,30 +2744,46 @@ class CodexSessionQueueTests(unittest.TestCase):
             write_event(root, event_id="headless-retry")
             signal = core.inbox(root)[0]
             record = watcher.build_deferred_record(
-                "headless-retry", signal,
+                "headless-retry",
+                signal,
                 reason="headless_delivery_ambiguous: uncertain",
-                previous={}, now=0,
+                previous={},
+                now=0,
             )
             self.assertEqual(record["reason_code"], "headless_delivery_ambiguous")
             self.assertEqual(record["status"], watcher.DEFER_STATUS_MANUAL_REQUIRED)
-            core.atomic_json(watcher.default_state_path(root), {
-                "schema_version": 1, "kind": watcher.STATE_KIND,
-                "seen_event_ids": [], "acknowledged_events": {},
-                "deferred_events": {"headless-retry": record},
-            })
+            core.atomic_json(
+                watcher.default_state_path(root),
+                {
+                    "schema_version": 1,
+                    "kind": watcher.STATE_KIND,
+                    "seen_event_ids": [],
+                    "acknowledged_events": {},
+                    "deferred_events": {"headless-retry": record},
+                },
+            )
             path = codex_app.thread_wakeup_receipt_path(root, "headless-retry")
-            core.atomic_json(path, {
-                "schema_version": 1, "kind": "CURRENT_THREAD_WAKEUP",
-                "event_id": "headless-retry", "status": "deferred",
-                "delivery_mode": "headless_app_server_turn",
-                "reason": "headless_delivery_ambiguous: uncertain",
-            })
+            core.atomic_json(
+                path,
+                {
+                    "schema_version": 1,
+                    "kind": "CURRENT_THREAD_WAKEUP",
+                    "event_id": "headless-retry",
+                    "status": "deferred",
+                    "delivery_mode": "headless_app_server_turn",
+                    "reason": "headless_delivery_ambiguous: uncertain",
+                },
+            )
+
             def deliver():
                 return codex_app.wake_current_thread(
-                    root, signal, target_thread_id="thread-1",
+                    root,
+                    signal,
+                    target_thread_id="thread-1",
                     server_factory=FakeThreadServer,
                     recent_activity_checker=lambda *_args, **_kwargs: None,
                 )
+
             self.assertEqual(deliver()["status"], "deferred")
             self.assertEqual(FakeThreadServer.starts, 0)
             watcher.retry_deferred_event(root, event_id="headless-retry")

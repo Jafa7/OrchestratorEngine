@@ -11,6 +11,159 @@ from orchestrator_engine import core, platform_runtime, worker_lease, workers
 
 
 class WorkerLeaseTests(unittest.TestCase):
+    @staticmethod
+    def _write_proc_stat(
+        root: Path,
+        pid: int,
+        pgid: int,
+        state: str,
+        comm: str | bytes,
+        *,
+        tid: int | None = None,
+    ) -> None:
+        directory = root / str(pid)
+        directory.mkdir(exist_ok=True)
+        task_id = pid if tid is None else tid
+        task = directory / "task" / str(task_id)
+        task.mkdir(parents=True, exist_ok=True)
+        name = comm.encode("utf-8") if isinstance(comm, str) else comm
+        suffix = [state.encode("ascii"), b"1", str(pgid).encode("ascii")]
+        suffix.extend([b"1"] * 16)
+        suffix.append(str(1000 + task_id).encode("ascii"))
+        raw = str(task_id).encode("ascii") + b" (" + name + b") " + b" ".join(suffix)
+        (task / "stat").write_bytes(raw)
+        if task_id == pid:
+            (directory / "stat").write_bytes(raw)
+
+    def test_linux_group_execution_state_distinguishes_zombies_and_survivors(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_proc_stat(root, 101, 77, "Z", "завершённый ) child")
+            self._write_proc_stat(root, 102, 77, "X", "dead")
+            self.assertEqual(
+                worker_lease.linux_process_group_execution_state(77, proc_root=root),
+                "gone",
+            )
+            self._write_proc_stat(root, 103, 77, "S", "survivor")
+            self.assertEqual(
+                worker_lease.linux_process_group_execution_state(77, proc_root=root),
+                "alive",
+            )
+
+    def test_linux_group_checks_nonleader_threads_and_snapshot_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_proc_stat(root, 101, 77, "Z", "leader")
+            self._write_proc_stat(root, 101, 77, "S", "worker", tid=102)
+            self.assertEqual(
+                worker_lease.linux_process_group_execution_state(77, proc_root=root),
+                "alive",
+            )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_proc_stat(root, 101, 77, "Z", "first")
+            original = worker_lease._linux_process_group_snapshot
+            calls = 0
+
+            def snapshot(pgid, proc_root):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    self._write_proc_stat(root, 102, 77, "Z", "late")
+                return original(pgid, proc_root)
+
+            with mock.patch.object(
+                worker_lease, "_linux_process_group_snapshot", side_effect=snapshot
+            ):
+                self.assertEqual(
+                    worker_lease.linux_process_group_execution_state(
+                        77, proc_root=root
+                    ),
+                    "unknown",
+                )
+
+    def test_linux_group_ignores_non_utf8_comm_for_unrelated_group(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_proc_stat(root, 101, 77, "Z", "target")
+            self._write_proc_stat(root, 201, 999, "S", b"truncated-\xe2")
+            self.assertEqual(
+                worker_lease.linux_process_group_execution_state(77, proc_root=root),
+                "gone",
+            )
+
+    def test_linux_group_fails_closed_when_listed_pid_disappears(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_proc_stat(root, 101, 77, "Z", "target")
+            (root / "102").mkdir()
+            self.assertEqual(
+                worker_lease.linux_process_group_execution_state(77, proc_root=root),
+                "unknown",
+            )
+
+    def test_linux_group_fails_closed_on_empty_candidate_task_list(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_proc_stat(root, 101, 77, "Z", "target")
+            task_stat = root / "101" / "task" / "101" / "stat"
+            task_stat.unlink()
+            task_stat.parent.rmdir()
+            self.assertEqual(
+                worker_lease.linux_process_group_execution_state(77, proc_root=root),
+                "unknown",
+            )
+
+    def test_linux_group_execution_state_fails_closed_on_incomplete_observation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_proc_stat(root, 101, 77, "Z", "zombie")
+            (root / "102").mkdir()
+            (root / "102" / "stat").write_text("malformed", encoding="utf-8")
+            self.assertEqual(
+                worker_lease.linux_process_group_execution_state(77, proc_root=root),
+                "unknown",
+            )
+
+    def test_process_group_state_uses_execution_membership_after_raw_existence(
+        self,
+    ) -> None:
+        with (
+            mock.patch.object(os, "killpg") as kill_group,
+            mock.patch.object(
+                worker_lease,
+                "linux_process_group_execution_state",
+                return_value="gone",
+            ),
+            mock.patch.object(worker_lease.sys, "platform", "linux"),
+        ):
+            self.assertEqual(worker_lease.process_group_state(77), "gone")
+        self.assertEqual(
+            kill_group.call_args_list, [mock.call(77, 0), mock.call(77, 0)]
+        )
+
+        with (
+            mock.patch.object(os, "killpg"),
+            mock.patch.object(
+                worker_lease,
+                "linux_process_group_execution_state",
+                return_value="unknown",
+            ),
+            mock.patch.object(worker_lease.sys, "platform", "linux"),
+        ):
+            self.assertEqual(worker_lease.process_group_state(77), "unknown")
+        with tempfile.TemporaryDirectory() as temporary:
+            self.assertEqual(
+                worker_lease.linux_process_group_execution_state(
+                    77, proc_root=Path(temporary)
+                ),
+                "unknown",
+            )
+
     def test_process_identity_permission_error_is_unknown(self) -> None:
         recorded = {
             "source": worker_lease.IDENTITY_SOURCE,
