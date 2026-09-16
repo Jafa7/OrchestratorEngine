@@ -233,6 +233,88 @@ Checks retain their existing verification-result contract and operation owner.
 The check reaper and supervisor refuse to take ownership away from the resource
 authority. Cancel through `resource cancel` using its request UUID.
 
+## Typed release-upgrade adapter
+
+A repository that must verify one exact previous release against one captured
+candidate may register a `release-upgrade` recipe. This is a closed typed
+adapter contract, not another arbitrary command surface. The recipe has no
+`stages`, `commands`, cleanup argv or caller-supplied provider options:
+
+```json
+{
+  "kind": "release-upgrade",
+  "inputs": ["tools/release", "database/migrations", "tests/upgrade"],
+  "needs": [{"resource": "local-test-database", "mode": "exclusive"}],
+  "adapter": "tools/release/upgrade_adapter.py",
+  "previous_boundary": "20260101010101",
+  "fixtures": ["tests/upgrade/fixture.sql"],
+  "pre_assertions": ["tests/upgrade/assert_previous.sql"],
+  "post_assertions": ["tests/upgrade/assert_candidate.sql"],
+  "readbacks": ["tests/upgrade/types.txt", "tests/upgrade/checks.sql"],
+  "timeout_seconds": 900
+}
+```
+
+Every path is relative, must be covered by `inputs`, must resolve to a regular
+captured file and is SHA-256 pinned before admission. The recipe must provide
+exactly one resource selector in explicit `exclusive` mode; that selector may
+name a registered bundle. The authority compiles the recipe to one internal
+stage, so stack preparation, previous-boundary reset, fixture load, candidate
+migration and all readbacks remain under one lease.
+
+The runner invokes only this fixed argv:
+
+```text
+PYTHON CAPTURED_ADAPTER RELEASE_UPGRADE_INPUT.json RELEASE_UPGRADE_RESULT.json
+```
+
+The first JSON file conforms to the packaged `release-upgrade-input` schema. It
+binds the authority, native request and stage epoch, recipe digest, aggregate
+candidate input-manifest digest, exact previous boundary and every adapter,
+fixture, assertion and readback path digest. The adapter must write the second
+file using the packaged `release-upgrade-result` schema. Results contain an
+ordered prefix of these phases:
+
+1. `stack_start`
+2. `reset_previous`
+3. `fixture_load`
+4. `pre_assertions`
+5. `migrate_candidate`
+6. `post_assertions`
+7. `type_readback`
+8. `check_readback`
+
+A passing result requires all eight phases with zero exit codes. A failed result
+ends at the failed phase. Each phase may retain bounded named evidence digests.
+The engine preserves the adapter process's actual exit code separately, checks
+the result bindings and phase consistency, and stores the input and result
+paths, hashes and sizes in normal resource evidence. Missing, oversized,
+symlinked, malformed or mismatched output fails the stage even when the adapter
+process exits zero.
+
+Provider behavior remains in the repository-owned adapter. For example, an
+adapter for a local database CLI must itself use only the requested local
+instance and reject linked, remote, explicit database-URL and seed-expansion
+modes. The engine never accepts such options through this contract, but it does
+not inspect or sandbox trusted same-user adapter code. Register and review the
+adapter together with its fixtures and assertions.
+
+Submit it through the existing resource or first-class check path:
+
+```text
+orchestrator-engine --project-root PROJECT resource submit \
+  --recipe release-upgrade --id RELEASE-CANDIDATE-001 --wake-policy never
+
+orchestrator-engine --project-root PROJECT check run \
+  --suite release-upgrade --check-id RELEASE-CANDIDATE-001 \
+  --wake-policy never
+```
+
+The recipe name is adopter-selected; `release-upgrade` above is illustrative.
+Use a retained resource input contract when submission is delayed. Replay keeps
+the existing request only when the registered recipe and captured input hashes
+still match exactly.
+
 Manual launchers and check suites should submit the same registered recipe.
 Do not enqueue a resource-dependent public launcher from inside a scope that
 already holds that resource. Internal commands receive

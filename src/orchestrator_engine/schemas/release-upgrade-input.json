@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-engine://schemas/release-upgrade-input",
+  "title": "Producer-owned release upgrade adapter input",
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_RELEASE_UPGRADE_INPUT",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "operation", "authority", "request", "stage", "epoch", "recipe_digest", "candidate_digest", "previous_boundary", "adapter", "fixtures", "pre_assertions", "post_assertions", "readbacks", "contract_digest"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "ORCHESTRATOR_RELEASE_UPGRADE_INPUT"},
+    "operation": {"const": "release-upgrade"},
+    "authority": {"type": "string", "minLength": 1, "maxLength": 160},
+    "request": {"type": "string", "minLength": 1, "maxLength": 160},
+    "stage": {"type": "string", "minLength": 1, "maxLength": 160},
+    "epoch": {"type": "integer", "minimum": 1},
+    "recipe_digest": {"$ref": "#/$defs/digest"},
+    "candidate_digest": {"$ref": "#/$defs/digest"},
+    "previous_boundary": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$"},
+    "adapter": {"$ref": "#/$defs/input"},
+    "fixtures": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"$ref": "#/$defs/input"}},
+    "pre_assertions": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"$ref": "#/$defs/input"}},
+    "post_assertions": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"$ref": "#/$defs/input"}},
+    "readbacks": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"$ref": "#/$defs/input"}},
+    "contract_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"},
+        "sha256": {"$ref": "#/$defs/digest"}
+      }
+    }
+  }
+}

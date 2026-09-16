@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 from socketserver import TCPServer
 
-from . import core, platform_runtime, worker_lease
+from . import core, platform_runtime, resource_adapters, worker_lease
 from .resource_queue import (
     OWNING,
     Ledger,
@@ -118,6 +118,12 @@ def _private_atomic_json(path, value):
 
 
 def command_contract(command):
+    if (
+        isinstance(command, dict)
+        and command.get("kind") == resource_adapters.RELEASE_UPGRADE_KIND
+    ):
+        resource_adapters.validate_compiled_command(command)
+        return
     if not isinstance(command, dict):
         raise ResourceError("command must be an object")
     argv = command.get("argv")
@@ -147,6 +153,9 @@ def validate_config(config):
         if not root.is_dir():
             raise ResourceError("project root must be a directory")
         for recipe in project["recipes"].values():
+            if recipe.get("kind") == resource_adapters.RELEASE_UPGRADE_KIND:
+                resource_adapters.normalize_release_upgrade_recipe(recipe)
+                continue
             if not isinstance(recipe.get("inputs"), list) or not recipe["inputs"]:
                 raise ResourceError("recipe must declare explicit input paths")
             for stage in recipe["stages"]:
@@ -572,7 +581,7 @@ class Authority:
         workspace = self.directory / "snapshots" / str(uuid.uuid4())
         capture(registered["root"], workspace, actual)
         plan = {
-            "stages": recipe["stages"],
+            "stages": resource_adapters.compile_recipe(recipe),
             "contract_digest": fingerprint,
             "input_manifest": actual,
             "workspace": str(workspace),

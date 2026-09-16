@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import faulthandler
+import hashlib
 import json
 import os
 import stat
@@ -21,6 +22,7 @@ from orchestrator_engine import (
     local_checks,
     operation_wait,
     platform_runtime,
+    resource_adapters,
     resource_checks,
     resource_cli,
     resource_queue,
@@ -118,6 +120,89 @@ class QueueTests(unittest.TestCase):
                     request_id="attempt-001",
                     inputs={relative: "b" * 64},
                 )
+
+    def test_release_upgrade_result_requires_exact_binding_and_phase_semantics(self):
+        expected = {
+            "contract_digest": "a" * 64,
+            "candidate_digest": "b" * 64,
+            "previous_boundary": "20260101010101",
+        }
+        phases = [
+            {
+                "name": name,
+                "status": "passed",
+                "exit_code": 0,
+                "evidence": [],
+            }
+            for name in resource_adapters.RELEASE_UPGRADE_PHASES
+        ]
+        value = {
+            "schema_version": 1,
+            "kind": resource_adapters.RELEASE_UPGRADE_RESULT_KIND,
+            **expected,
+            "status": "passed",
+            "phases": phases,
+        }
+        self.assertEqual(
+            resource_adapters.validate_release_upgrade_result(value, expected), value
+        )
+        with self.assertRaisesRegex(ResourceError, "candidate_digest mismatch"):
+            resource_adapters.validate_release_upgrade_result(
+                {**value, "candidate_digest": "c" * 64}, expected
+            )
+        with self.assertRaisesRegex(ResourceError, "requires every phase"):
+            resource_adapters.validate_release_upgrade_result(
+                {**value, "phases": phases[:-1]}, expected
+            )
+        with self.assertRaisesRegex(ResourceError, "end at a failed phase"):
+            resource_adapters.validate_release_upgrade_result(
+                {**value, "status": "failed"}, expected
+            )
+
+    def test_release_upgrade_rejects_symlinked_input_and_result(self):
+        target = Path(self.temp.name) / "target.json"
+        target.write_text("{}")
+        link = Path(self.temp.name) / "link.json"
+        try:
+            link.symlink_to(target)
+        except OSError as error:
+            self.skipTest(f"symlinks are unavailable: {error}")
+        with self.assertRaisesRegex(ResourceError, "must not be a symlink"):
+            resource_adapters.read_release_upgrade_result(link, {})
+
+        workspace = Path(self.temp.name) / "workspace"
+        workspace.mkdir()
+        paths = (
+            "adapter.py",
+            "fixture.sql",
+            "pre.sql",
+            "post.sql",
+            "readback.sql",
+        )
+        for relative in paths:
+            (workspace / relative).symlink_to(target)
+        command = {
+            "kind": resource_adapters.RELEASE_UPGRADE_KIND,
+            "adapter": "adapter.py",
+            "previous_boundary": "20260101010101",
+            "fixtures": ["fixture.sql"],
+            "pre_assertions": ["pre.sql"],
+            "post_assertions": ["post.sql"],
+            "readbacks": ["readback.sql"],
+        }
+        sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
+        manifest = {relative: sha256 for relative in paths}
+        with self.assertRaisesRegex(ResourceError, "path is unavailable"):
+            resource_adapters.build_release_upgrade_input(
+                command,
+                workspace=workspace,
+                manifest=manifest,
+                authority="authority",
+                request="request",
+                stage="stage",
+                epoch=1,
+                recipe_digest="a" * 64,
+            )
 
     def test_client_normalizes_direct_socket_abort(self):
         opener = mock.Mock()
@@ -696,6 +781,166 @@ class ResourceNativeTests(unittest.TestCase):
                 return report
             time.sleep(0.05)
         self.fail("resource attempt did not terminate within fixture deadline")
+
+    def release_upgrade_config(self, *, invalid_result=False):
+        tools = self.project / "tools"
+        fixtures = self.project / "fixtures"
+        assertions = self.project / "assertions"
+        tools.mkdir(exist_ok=True)
+        fixtures.mkdir(exist_ok=True)
+        assertions.mkdir(exist_ok=True)
+        (fixtures / "upgrade.sql").write_text("select 1;\n")
+        for name in ("pre.sql", "post.sql", "types.txt", "checks.sql"):
+            (assertions / name).write_text(name + "\n")
+        if invalid_result:
+            body = (
+                "from pathlib import Path\n"
+                "import sys\n"
+                "Path(sys.argv[2]).write_text('{}')\n"
+            )
+        else:
+            body = (
+                "import json, sys\n"
+                "from pathlib import Path\n"
+                "value=json.loads(Path(sys.argv[1]).read_text())\n"
+                f"names={list(resource_adapters.RELEASE_UPGRADE_PHASES)!r}\n"
+                "result={'schema_version':1,'kind':'ORCHESTRATOR_RELEASE_UPGRADE_RESULT',"
+                "'contract_digest':value['contract_digest'],"
+                "'candidate_digest':value['candidate_digest'],"
+                "'previous_boundary':value['previous_boundary'],'status':'passed',"
+                "'phases':[{'name':name,'status':'passed','exit_code':0,"
+                "'evidence':[]} for name in names]}\n"
+                "Path(sys.argv[2]).write_text(json.dumps(result))\n"
+            )
+        (tools / "release_upgrade.py").write_text(body)
+        return {
+            "resources": {"db": leaf()},
+            "projects": {
+                "sample": {
+                    "root": str(self.project),
+                    "recipes": {
+                        "upgrade": {
+                            "kind": "release-upgrade",
+                            "inputs": ["tools", "fixtures", "assertions"],
+                            "needs": [{"resource": "db", "mode": "exclusive"}],
+                            "adapter": "tools/release_upgrade.py",
+                            "previous_boundary": "20260901010101",
+                            "fixtures": ["fixtures/upgrade.sql"],
+                            "pre_assertions": ["assertions/pre.sql"],
+                            "post_assertions": ["assertions/post.sql"],
+                            "readbacks": [
+                                "assertions/types.txt",
+                                "assertions/checks.sql",
+                            ],
+                            "timeout_seconds": 10,
+                        }
+                    },
+                }
+            },
+        }
+
+    def test_release_upgrade_recipe_rejects_raw_or_uncovered_fields(self):
+        config = self.release_upgrade_config()
+        recipe = config["projects"]["sample"]["recipes"]["upgrade"]
+        with self.assertRaisesRegex(ResourceError, "unsupported.*fields"):
+            resource_service.validate_config(
+                json.loads(json.dumps(config | {
+                    "projects": {
+                        "sample": {
+                            "root": str(self.project),
+                            "recipes": {
+                                "upgrade": {**recipe, "commands": []}
+                            },
+                        }
+                    }
+                }))
+            )
+        uncovered = json.loads(json.dumps(config))
+        uncovered["projects"]["sample"]["recipes"]["upgrade"]["adapter"] = (
+            "other/adapter.py"
+        )
+        with self.assertRaisesRegex(ResourceError, "not covered"):
+            resource_service.validate_config(uncovered)
+        shared = json.loads(json.dumps(config))
+        shared["projects"]["sample"]["recipes"]["upgrade"]["needs"][0][
+            "mode"
+        ] = "shared"
+        with self.assertRaisesRegex(ResourceError, "exclusive"):
+            resource_service.validate_config(shared)
+        multiple = json.loads(json.dumps(config))
+        multiple["projects"]["sample"]["recipes"]["upgrade"]["needs"].append(
+            {"resource": "db", "mode": "exclusive"}
+        )
+        with self.assertRaisesRegex(ResourceError, "exactly one"):
+            resource_service.validate_config(multiple)
+
+    def test_release_upgrade_runs_fixed_adapter_and_retains_typed_evidence(self):
+        self.directory = Path(self.temp.name) / "release-authority"
+        initialize(self.directory, self.release_upgrade_config())
+        with self.service():
+            (self.project / ".orchestrator" / "checks.toml").write_text(
+                '[suites.upgrade]\nresource_recipe = "upgrade"\n'
+                'verification = "full"\n'
+            )
+            local_checks.start_check(
+                self.project,
+                check_id="release-upgrade-pass",
+                suite="upgrade",
+                wake_policy="never",
+            )
+            operation_wait.wait_for_operations(
+                self.project,
+                targets=["check:release-upgrade-pass"],
+                timeout_seconds=15,
+                interval_seconds=0.05,
+            )
+            descriptor = local_checks.load_check_descriptor(
+                local_checks.descriptor_path(
+                    self.project,
+                    "release-upgrade-pass",
+                    state_dir=core.DEFAULT_STATE_DIR,
+                )
+            )
+            result = core.load_object(Path(descriptor["result_path"]))
+            self.assertEqual(result["status"], "passed")
+            command = result["commands"][0]
+            self.assertEqual(command["typed_evidence"]["status"], "passed")
+            self.assertEqual(
+                command["typed_contract"]["kind"],
+                resource_adapters.RELEASE_UPGRADE_INPUT_KIND,
+            )
+            typed = core.load_object(Path(command["typed_evidence"]["path"]))
+            self.assertEqual(
+                [phase["name"] for phase in typed["phases"]],
+                list(resource_adapters.RELEASE_UPGRADE_PHASES),
+            )
+            self.assertEqual(command["argv"][0], sys.executable)
+            self.assertEqual(len(command["argv"]), 4)
+
+    def test_release_upgrade_invalid_result_fails_closed_after_zero_exit(self):
+        self.directory = Path(self.temp.name) / "invalid-release-authority"
+        initialize(self.directory, self.release_upgrade_config(invalid_result=True))
+        with self.service() as connection:
+            contract = client(connection, "recipe", {"recipe": "upgrade"})
+            result = client(
+                connection,
+                "submit",
+                {
+                    "id": "invalid-result",
+                    "recipe": "upgrade",
+                    "recipe_digest": contract["recipe_digest"],
+                    "inputs": input_manifest(self.project, contract["inputs"]),
+                },
+            )
+            report = self.await_terminal(connection, result["request"])
+            self.assertEqual(report["stages"][0]["state"], "failed")
+            evidence = core.load_object(
+                Path(report["stages"][0]["evidence"]["path"])
+            )
+            command = evidence["results"][0]
+            self.assertEqual(command["exit_code"], 0)
+            self.assertEqual(command["reason"], "invalid_typed_result")
+            self.assertEqual(command["typed_evidence"]["status"], "invalid")
 
     @unittest.skipUnless(sys.platform == "linux", "Linux mount classification")
     def test_authority_checks_resolved_symlink_mount(self):

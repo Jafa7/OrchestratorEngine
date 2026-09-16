@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-engine://schemas/release-upgrade-result",
+  "title": "Repository-owned release upgrade adapter result",
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_RELEASE_UPGRADE_RESULT",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "contract_digest", "candidate_digest", "previous_boundary", "status", "phases"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "ORCHESTRATOR_RELEASE_UPGRADE_RESULT"},
+    "contract_digest": {"$ref": "#/$defs/digest"},
+    "candidate_digest": {"$ref": "#/$defs/digest"},
+    "previous_boundary": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$"},
+    "status": {"enum": ["passed", "failed"]},
+    "phases": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "prefixItems": [
+        {"allOf": [{"$ref": "#/$defs/phase"}, {"properties": {"name": {"const": "stack_start"}}}]},
+        {"allOf": [{"$ref": "#/$defs/phase"}, {"properties": {"name": {"const": "reset_previous"}}}]},
+        {"allOf": [{"$ref": "#/$defs/phase"}, {"properties": {"name": {"const": "fixture_load"}}}]},
+        {"allOf": [{"$ref": "#/$defs/phase"}, {"properties": {"name": {"const": "pre_assertions"}}}]},
+        {"allOf": [{"$ref": "#/$defs/phase"}, {"properties": {"name": {"const": "migrate_candidate"}}}]},
+        {"allOf": [{"$ref": "#/$defs/phase"}, {"properties": {"name": {"const": "post_assertions"}}}]},
+        {"allOf": [{"$ref": "#/$defs/phase"}, {"properties": {"name": {"const": "type_readback"}}}]},
+        {"allOf": [{"$ref": "#/$defs/phase"}, {"properties": {"name": {"const": "check_readback"}}}]}
+      ],
+      "items": false
+    }
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "status", "sha256", "size_bytes"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 160},
+        "status": {"enum": ["passed", "failed"]},
+        "sha256": {"$ref": "#/$defs/digest"},
+        "size_bytes": {"type": "integer", "minimum": 0, "maximum": 8388608}
+      }
+    },
+    "phase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "status", "exit_code", "evidence"],
+      "properties": {
+        "name": {"enum": ["stack_start", "reset_previous", "fixture_load", "pre_assertions", "migrate_candidate", "post_assertions", "type_readback", "check_readback"]},
+        "status": {"enum": ["passed", "failed"]},
+        "exit_code": {"type": "integer"},
+        "evidence": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/evidence"}}
+      }
+    }
+  }
+}

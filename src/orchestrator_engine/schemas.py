@@ -48,6 +48,8 @@ SCHEMA_NAMES = (
     "local-check",
     "resource-queue",
     "resource-input-contract",
+    "release-upgrade-input",
+    "release-upgrade-result",
     "local-check-evidence",
     "check-duration-history",
     "delivery-preflight",

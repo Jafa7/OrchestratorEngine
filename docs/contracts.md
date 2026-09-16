@@ -1237,6 +1237,14 @@ authority and cannot substitute different live bytes for an unaccepted request.
 Resource capacities constrain declared resources; they introduce no default
 global worker count, daily-slice quota or model token budget.
 
+The optional typed `release-upgrade` recipe is also defined there. Its packaged
+`release-upgrade-input` schema binds one pre-dispatch candidate snapshot and
+exact previous boundary to the resource request/stage epoch. The packaged
+`release-upgrade-result` schema retains the ordered phase prefix, actual phase
+exit codes and bounded evidence digests. The runner separately preserves the
+adapter process exit code and fails closed on missing, malformed or mismatched
+typed output. Legacy command recipes remain unchanged.
+
 ## GitHub Actions exact-run monitor
 
 `ci watch` starts a local detached monitor and returns immediately. It is an

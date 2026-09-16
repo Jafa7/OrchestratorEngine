@@ -4,6 +4,12 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+- Added a provider-neutral typed `release-upgrade` resource recipe. It runs one
+  captured repository adapter under one exclusive lease, binds an exact previous
+  boundary and candidate input snapshot, rejects raw recipe commands, validates
+  ordered bounded result evidence and fails closed on missing or conflicting
+  adapter output while preserving the actual process exit code.
+
 ## [1.11.0] - 2026-09-14
 
 - Added opt-in operational feedback with explicit destination and field

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_RELEASE_UPGRADE_RESULT",
+  "contract_digest": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+  "candidate_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "previous_boundary": "20260101010101",
+  "status": "passed",
+  "phases": [
+    {"name": "stack_start", "status": "passed", "exit_code": 0, "evidence": []},
+    {"name": "reset_previous", "status": "passed", "exit_code": 0, "evidence": []},
+    {"name": "fixture_load", "status": "passed", "exit_code": 0, "evidence": []},
+    {"name": "pre_assertions", "status": "passed", "exit_code": 0, "evidence": [{"name": "previous-history", "status": "passed", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "size_bytes": 32}]},
+    {"name": "migrate_candidate", "status": "passed", "exit_code": 0, "evidence": []},
+    {"name": "post_assertions", "status": "passed", "exit_code": 0, "evidence": [{"name": "candidate-data", "status": "passed", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "size_bytes": 64}]},
+    {"name": "type_readback", "status": "passed", "exit_code": 0, "evidence": []},
+    {"name": "check_readback", "status": "passed", "exit_code": 0, "evidence": []}
+  ]
+}

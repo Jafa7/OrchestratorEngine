@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import core, platform_runtime, worker_lease, workers
+from . import core, platform_runtime, resource_adapters, worker_lease, workers
 from .resource_queue import Ledger, ResourceError
 
 
@@ -28,10 +28,37 @@ def phase_capability(stage, *, maintenance):
 
 
 def run_command(command, workspace, output, *, ledger, stage, index, cleanup=False):
-    argv = [
-        arg.replace("{python}", sys.executable).replace("{workspace}", str(workspace))
-        for arg in command["argv"]
-    ]
+    typed_input = None
+    typed_result_path = None
+    if command.get("kind") == resource_adapters.RELEASE_UPGRADE_KIND:
+        request = ledger.request(stage["request"])
+        plan = request["plan"]
+        typed_input = resource_adapters.build_release_upgrade_input(
+            command,
+            workspace=workspace,
+            manifest=plan["input_manifest"],
+            authority=ledger.get("authority"),
+            request=stage["request"],
+            stage=stage["id"],
+            epoch=stage["epoch"],
+            recipe_digest=plan["recipe_digest"],
+        )
+        input_path = output.with_name(f"release-upgrade-{index}-input.json")
+        typed_result_path = output.with_name(f"release-upgrade-{index}-result.json")
+        core.atomic_json(input_path, typed_input)
+        argv = [
+            sys.executable,
+            str(workspace / command["adapter"]),
+            str(input_path),
+            str(typed_result_path),
+        ]
+    else:
+        argv = [
+            arg.replace("{python}", sys.executable).replace(
+                "{workspace}", str(workspace)
+            )
+            for arg in command["argv"]
+        ]
     cwd = (workspace / command.get("cwd", ".")).resolve()
     if not cwd.is_relative_to(workspace.resolve()):
         raise ResourceError("command cwd escaped captured workspace")
@@ -143,6 +170,28 @@ def run_command(command, workspace, output, *, ledger, stage, index, cleanup=Fal
             "termination": stopped,
             "log": str(output),
         }
+        if typed_input is not None and typed_result_path is not None:
+            result["typed_contract"] = {
+                "kind": typed_input["kind"],
+                "path": str(input_path),
+                "sha256": core.sha256_file(input_path),
+                "contract_digest": typed_input["contract_digest"],
+            }
+            try:
+                _, evidence = resource_adapters.read_release_upgrade_result(
+                    typed_result_path, typed_input
+                )
+                result["typed_evidence"] = evidence
+                if evidence["status"] != "passed" and result["reason"] == "completed":
+                    result["reason"] = "typed_result_failed"
+            except ResourceError as error:
+                result["typed_evidence"] = {
+                    "path": str(typed_result_path),
+                    "status": "invalid",
+                    "error": str(error),
+                }
+                if result["reason"] == "completed":
+                    result["reason"] = "invalid_typed_result"
         return result
 
 

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_RELEASE_UPGRADE_INPUT",
+  "operation": "release-upgrade",
+  "authority": "authority-1",
+  "request": "request-1",
+  "stage": "stage-1",
+  "epoch": 1,
+  "recipe_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "candidate_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "previous_boundary": "20260101010101",
+  "adapter": {"path": "tools/release/adapter.py", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
+  "fixtures": [{"path": "tests/upgrade/fixture.sql", "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}],
+  "pre_assertions": [{"path": "tests/upgrade/pre.sql", "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}],
+  "post_assertions": [{"path": "tests/upgrade/post.sql", "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}],
+  "readbacks": [{"path": "tests/upgrade/readback.sql", "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}],
+  "contract_digest": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+}
