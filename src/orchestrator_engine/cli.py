@@ -386,6 +386,9 @@ def build_parser() -> argparse.ArgumentParser:
     operation_evidence_parser.add_argument(
         "--target", required=True, type=operation_evidence.target_argument
     )
+    operation_evidence_parser.add_argument(
+        "--contract-version", type=int, choices=(1, 2), default=1
+    )
     operation_status_parser = operation_subparsers.add_parser(
         "status",
         help="Print one bounded worker/check/CI/PR state snapshot.",
@@ -896,6 +899,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     check_run.add_argument("--check-id", required=True)
     check_run.add_argument("--suite", required=True)
+    check_run.add_argument(
+        "--applicability-input",
+        type=Path,
+        help="Bind a bounded producer-owned applicability declaration to this attempt.",
+    )
     check_run.add_argument(
         "--execution",
         choices=sorted(local_checks.EXECUTION_MODES),
@@ -1723,9 +1731,14 @@ def main(argv: list[str] | None = None) -> int:
                     "operation commands require exactly one project root"
                 )
             if args.operation_command == "evidence":
-                print_json(operation_evidence.operation_evidence(
-                    roots[0], target=args.target, state_dir=args.state_dir
-                ))
+                print_json(
+                    operation_evidence.operation_evidence(
+                        roots[0],
+                        target=args.target,
+                        state_dir=args.state_dir,
+                        contract_version=args.contract_version,
+                    )
+                )
                 return 0
             if args.operation_command == "status":
                 output = operation_wait.operation_wait_snapshot(
@@ -2184,6 +2197,7 @@ def run_local_check_command(args: argparse.Namespace, root: Path) -> dict:
                 if args.wake_target_file
                 else None
             ),
+            applicability_input=args.applicability_input,
         )
     if args.check_command == "supervise":
         return local_checks.supervise_check(

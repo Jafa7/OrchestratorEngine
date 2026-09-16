@@ -22,6 +22,7 @@
     "plan": {"type": "object"},
     "created_at": {"type": "string", "format": "date-time"},
     "check_dir": {"type": "string", "pattern": "^(?:/|[A-Za-z]:[\\\\/]|\\\\\\\\)"},
+    "applicability": {"$ref": "#/$defs/applicabilityMetadata"},
     "wake_target": {"$ref": "orchestrator-engine://schemas/wake-target"},
     "supervisor_pid": {"type": "integer", "minimum": 1},
     "supervisor_identity": {"type": "object"},
@@ -59,5 +60,26 @@
     "recovered_at": {"type": "string", "format": "date-time"},
     "error": {"type": "string", "maxLength": 1000}
   },
-  "additionalProperties": true
+  "additionalProperties": true,
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "applicabilityMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer_version", "attempt_id", "artifact_path", "artifact_sha256", "input_path", "input_raw_sha256", "declaration_sha256", "request_fingerprint", "source_namespace", "native_location_binding", "suite_fingerprint"],
+      "properties": {
+        "producer_version": {"const": 1},
+        "attempt_id": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+        "artifact_path": {"const": "applicability.json"},
+        "artifact_sha256": {"$ref": "#/$defs/digest"},
+        "input_path": {"const": "applicability-input.json"},
+        "input_raw_sha256": {"$ref": "#/$defs/digest"},
+        "declaration_sha256": {"$ref": "#/$defs/digest"},
+        "request_fingerprint": {"$ref": "#/$defs/digest"},
+        "source_namespace": {"$ref": "#/$defs/digest"},
+        "native_location_binding": {"$ref": "#/$defs/digest"},
+        "suite_fingerprint": {"$ref": "#/$defs/digest"}
+      }
+    }
+  }
 }

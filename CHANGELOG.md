@@ -4,6 +4,14 @@ All notable changes to OrchestratorEngine are documented here.
 
 ## [Unreleased]
 
+- Added an opt-in producer-owned applicability contract for ordinary local
+  checks. Strict bounded declarations, native source/location pins, immutable
+  attempt UUIDs and exact terminal retry references are retained before launch,
+  copied into terminal evidence and exposed through the separate closed
+  `operation evidence --contract-version 2` envelope. The compatibility v1
+  response remains the default and intentionally keeps candidate/attempt
+  assurance unknown. The new contract proves declaration binding, not executed
+  checkout bytes or criteria fulfillment.
 - Added a provider-neutral typed `release-upgrade` resource recipe. It runs one
   captured repository adapter under one exclusive lease, binds an exact previous
   boundary and candidate input snapshot, rejects raw recipe commands, validates

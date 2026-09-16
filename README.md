@@ -21,7 +21,9 @@ Use OrchestratorEngine when you want to:
 - preserve deterministic events, results, evidence and delivery receipts;
 - route parallel completions back to their originating chats;
 - monitor local checks, GitHub Actions or pull-request readiness without an AI
-  process interpreting progress.
+  process interpreting progress;
+- bind a bounded caller-declared candidate and criteria set to one native local
+  check attempt while keeping executed-source and acceptance claims explicit.
 
 It is deliberately not an AI runtime, planner or autonomous coding framework.
 It does not choose product requirements, replace the host agent, manage

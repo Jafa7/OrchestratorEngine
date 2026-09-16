@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_OPERATION_APPLICABILITY_DECLARATION",
+  "project": "sample-project",
+  "work": "sample-work",
+  "revision": "revision-2",
+  "candidate": "0123456789abcdef",
+  "criteria": [
+    {"id": "criterion-1", "revision": "revision-1"}
+  ],
+  "retry_of": null
+}

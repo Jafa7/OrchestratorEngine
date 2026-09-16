@@ -264,9 +264,25 @@ def _diagnostics(
 
 
 def operation_evidence(
-    project_root: Path, *, target: str, state_dir: str = core.DEFAULT_STATE_DIR
+    project_root: Path,
+    *,
+    target: str,
+    state_dir: str = core.DEFAULT_STATE_DIR,
+    contract_version: int = 1,
+    _reader: _Reader | None = None,
+    _capture: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return observations, never execution authority or acceptance."""
+    if contract_version == 2:
+        from . import operation_evidence_v2
+
+        return operation_evidence_v2.operation_evidence_v2(
+            project_root,
+            target=target,
+            state_dir=state_dir,
+        )
+    if contract_version != 1:
+        raise ValueError(f"unsupported operation evidence contract: {contract_version}")
     target_argument(target)
     target_kind, operation_id = target.split(":", 1)
     report: dict[str, Any] = {
@@ -290,7 +306,7 @@ def operation_evidence(
         return report
     project = project_root.resolve()
     state = core.state_root(project, state_dir=state_dir).resolve()
-    reader = _Reader(project, state, MAX_READ_BYTES)
+    reader = _reader or _Reader(project, state, MAX_READ_BYTES)
     directory = state / "checks" / operation_id
     descriptor_path = reader.path(str(directory / "check.json"), None)
     descriptor_raw, descriptor_presence = reader.read(descriptor_path, None)
@@ -361,6 +377,7 @@ def operation_evidence(
             if paths["event"] is None:
                 reader.error("metadata_missing", "event", omission=True)
     raw: dict[str, bytes | None] = {}
+    presences: dict[str, str] = {}
     objects: dict[str, dict[str, Any] | None] = {}
     headers = {
         "result": "ORCHESTRATOR_VERIFICATION_RESULT",
@@ -385,6 +402,7 @@ def operation_evidence(
             reader.error("artifact_missing", role, omission=True)
         else:
             raw[role], presence = reader.read(paths[role], role)
+        presences[role] = presence
         objects[role] = reader.object(raw[role], role, headers[role])
         if objects[role] is not None and not _producer_shape(
             objects[role], shape_names[role]
@@ -541,4 +559,24 @@ def operation_evidence(
     assert (
         len(json.dumps(report, ensure_ascii=True).encode("utf-8")) <= MAX_ENVELOPE_BYTES
     )
+    if _capture is not None:
+        _capture.update(
+            {
+                "project": project,
+                "state": state,
+                "directory": directory,
+                "descriptor_path": descriptor_path,
+                "descriptor_raw": descriptor_raw,
+                "descriptor_presence": descriptor_presence,
+                "descriptor": descriptor,
+                "owner_path": owner_path,
+                "owner_raw": owner_raw,
+                "owner_presence": owner_presence,
+                "owner": owner,
+                "paths": dict(paths),
+                "raw": dict(raw),
+                "presences": presences,
+                "objects": dict(objects),
+            }
+        )
     return report

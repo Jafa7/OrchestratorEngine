@@ -26,6 +26,7 @@ from . import (
     binding,
     core,
     delivery_preflight,
+    operation_applicability,
     platform_runtime,
     verification,
     worker_lease,
@@ -66,6 +67,16 @@ class CommandSpec:
     cwd: Path
     required: bool = True
     timeout_seconds: float | None = None
+
+
+@dataclass(frozen=True)
+class _PreparedCheck:
+    descriptor: dict[str, Any]
+    path: Path
+    directory: Path
+    execution: str
+    completion_delivery: dict[str, Any]
+    popen_factory: Any
 
 
 def validate_id(value: str, *, field: str) -> str:
@@ -726,6 +737,7 @@ def _replay_check(
     long_threshold_seconds: float,
     wake_target: dict[str, Any] | None,
     completion_delivery_mode: str | None,
+    applicability_input: Path | None,
     state_dir: str,
 ) -> dict[str, Any]:
     existing = load_check_descriptor(path)
@@ -746,6 +758,15 @@ def _replay_check(
         wake_target = capture_wake_target(
             project, state_dir=state_dir, wake_policy=retained_policy
         )
+    try:
+        applicability_matches = operation_applicability.replay_matches(
+            project,
+            state_dir=state_dir,
+            descriptor=existing,
+            declaration_path=applicability_input,
+        )
+    except operation_applicability.ApplicabilityError as error:
+        raise LocalCheckError(str(error)) from error
     if not (
         existing.get("suite") == spec["suite"]
         and existing.get("fingerprint") == spec["fingerprint"]
@@ -756,6 +777,7 @@ def _replay_check(
         == float(long_threshold_seconds)
         and existing.get("wake_policy") == retained_policy
         and binding.same_wake_destination(existing.get("wake_target"), wake_target)
+        and applicability_matches
     ):
         raise LocalCheckError(
             f"check already exists with different options: {existing.get('check_id')}"
@@ -792,13 +814,59 @@ def start_check(
     long_threshold_seconds: float = DEFAULT_LONG_THRESHOLD_SECONDS,
     popen_factory=subprocess.Popen,
     wake_target: dict[str, Any] | None = None,
+    applicability_input: Path | None = None,
 ) -> dict[str, Any]:
-    if execution not in EXECUTION_MODES:
-        raise LocalCheckError(f"unsupported execution mode: {execution}")
     project = project_root.expanduser().resolve()
     check_id = validate_id(check_id, field="check id")
+    lock = operation_applicability.admission_lock(
+        project, check_id, state_dir=state_dir
+    )
+    with file_lock(lock):
+        prepared = _prepare_check_locked(
+            project,
+            check_id=check_id,
+            suite=suite,
+            state_dir=state_dir,
+            execution=execution,
+            wake_policy=wake_policy,
+            completion_delivery_mode=completion_delivery_mode,
+            long_threshold_seconds=long_threshold_seconds,
+            popen_factory=popen_factory,
+            wake_target=wake_target,
+            applicability_input=applicability_input,
+        )
+    if isinstance(prepared, dict):
+        return prepared
+    return _launch_prepared_check(
+        project,
+        check_id=check_id,
+        state_dir=state_dir,
+        prepared=prepared,
+    )
+
+
+def _prepare_check_locked(
+    project: Path,
+    *,
+    check_id: str,
+    suite: str,
+    state_dir: str,
+    execution: str,
+    wake_policy: str,
+    completion_delivery_mode: str | None,
+    long_threshold_seconds: float,
+    popen_factory,
+    wake_target: dict[str, Any] | None,
+    applicability_input: Path | None,
+) -> dict[str, Any] | _PreparedCheck:
+    if execution not in EXECUTION_MODES:
+        raise LocalCheckError(f"unsupported execution mode: {execution}")
     spec = read_suite(project, suite=suite, state_dir=state_dir)
     if spec.get("resource_recipe"):
+        if applicability_input is not None:
+            raise LocalCheckError(
+                "applicability input is unsupported for resource-managed checks"
+            )
         from . import resource_checks
 
         return resource_checks.start(
@@ -824,7 +892,9 @@ def start_check(
             project, path=path, spec=spec, execution=execution,
             wake_policy=wake_policy, long_threshold_seconds=long_threshold_seconds,
             wake_target=requested_wake_target,
-            completion_delivery_mode=completion_delivery_mode, state_dir=state_dir,
+            completion_delivery_mode=completion_delivery_mode,
+            applicability_input=applicability_input,
+            state_dir=state_dir,
         )
     plan = plan_check(
         project,
@@ -896,14 +966,52 @@ def start_check(
     if wake_target is not None:
         descriptor["wake_target"] = wake_target
     directory.mkdir(parents=True, exist_ok=True)
-    if not core.claim_json(path, descriptor):
+    if applicability_input is not None:
+        try:
+            descriptor["applicability"] = operation_applicability.prepare(
+                project,
+                state_dir=state_dir,
+                operation_id=check_id,
+                directory=directory,
+                suite_fingerprint=spec["fingerprint"],
+                declaration_path=applicability_input,
+            )
+        except operation_applicability.ApplicabilityError as error:
+            raise LocalCheckError(str(error)) from error
+        claimed = operation_applicability.claim_json(path, descriptor)
+    else:
+        claimed = core.claim_json(path, descriptor)
+    if not claimed:
         return _replay_check(
             project, path=path, spec=spec, execution=execution,
             wake_policy=wake_policy, long_threshold_seconds=long_threshold_seconds,
             wake_target=requested_wake_target,
-            completion_delivery_mode=completion_delivery_mode, state_dir=state_dir,
+            completion_delivery_mode=completion_delivery_mode,
+            applicability_input=applicability_input,
+            state_dir=state_dir,
         )
-    if selected_execution == "foreground":
+    return _PreparedCheck(
+        descriptor=descriptor,
+        path=path,
+        directory=directory,
+        execution=selected_execution,
+        completion_delivery=completion_delivery,
+        popen_factory=popen_factory,
+    )
+
+
+def _launch_prepared_check(
+    project: Path,
+    *,
+    check_id: str,
+    state_dir: str,
+    prepared: _PreparedCheck,
+) -> dict[str, Any]:
+    descriptor = prepared.descriptor
+    path = prepared.path
+    directory = prepared.directory
+    completion_delivery = prepared.completion_delivery
+    if prepared.execution == "foreground":
         result = supervise_check(project, check_id=check_id, state_dir=state_dir)
         return delivery_preflight.attach(
             {**result, "descriptor_path": str(path), "idempotent": False},
@@ -913,7 +1021,7 @@ def start_check(
     try:
         with supervisor_log.open("ab") as log:
             process = platform_runtime.spawn(
-                popen_factory,
+                prepared.popen_factory,
                 supervisor_command(project, check_id=check_id, state_dir=state_dir),
                 cwd=str(project),
                 stdin=subprocess.DEVNULL,
@@ -998,14 +1106,32 @@ def supervise_check(
             return descriptor
         if descriptor.get("status") == "running":
             raise LocalCheckError("check is already owned by a supervisor")
-        identity = worker_lease.process_identity(os.getpid())
-        descriptor.update(
-            status="running",
-            supervisor_pid=os.getpid(),
-            supervisor_identity=identity,
-            started_at=core.utc_now(),
+        try:
+            operation_applicability.validate_descriptor_binding(
+                project,
+                state_dir=state_dir,
+                descriptor=descriptor,
+            )
+        except operation_applicability.ApplicabilityError as error:
+            validation_error = str(error)
+        else:
+            validation_error = None
+        if validation_error is None:
+            identity = worker_lease.process_identity(os.getpid())
+            descriptor.update(
+                status="running",
+                supervisor_pid=os.getpid(),
+                supervisor_identity=identity,
+                started_at=core.utc_now(),
+            )
+            core.atomic_json(path, descriptor)
+    if validation_error is not None:
+        return finalize_launch_failure(
+            project,
+            descriptor,
+            state_dir=state_dir,
+            error=f"invalid applicability binding: {validation_error}",
         )
-        core.atomic_json(path, descriptor)
     spec = read_suite(project, suite=str(descriptor["suite"]), state_dir=state_dir)
     if spec["fingerprint"] != descriptor.get("fingerprint"):
         return finalize_launch_failure(
@@ -1051,6 +1177,9 @@ def supervise_check(
         "execution": descriptor["execution"],
         "fingerprint": descriptor["fingerprint"],
     }
+    applicability = operation_applicability.terminal_binding(descriptor)
+    if applicability is not None:
+        result["applicability"] = applicability
     summary_path.write_text(build_summary(result), encoding="utf-8")
     core.atomic_json(result_path, result)
     evidence: dict[str, Any] = {
@@ -1072,6 +1201,8 @@ def supervise_check(
     }
     if isinstance(descriptor.get("wake_target"), dict):
         evidence["wake_target"] = descriptor["wake_target"]
+    if applicability is not None:
+        evidence["applicability"] = applicability
     core.atomic_json(evidence_path, evidence)
     record_history(
         project,
@@ -1148,6 +1279,9 @@ def finalize_launch_failure(
         "summary_path": relative_path(summary_path, project),
         "log_path": relative_path(directory / "supervisor.log", project),
     }
+    applicability = operation_applicability.terminal_binding(descriptor)
+    if applicability is not None:
+        result["applicability"] = applicability
     summary_path.write_text(
         f"Status: errored\nCheck: {descriptor['check_id']}\nError: {error[:1000]}\n",
         encoding="utf-8",
@@ -1171,6 +1305,8 @@ def finalize_launch_failure(
     }
     if isinstance(descriptor.get("wake_target"), dict):
         evidence["wake_target"] = descriptor["wake_target"]
+    if applicability is not None:
+        evidence["applicability"] = applicability
     core.atomic_json(evidence_path, evidence)
     event = core.write_followup_event(
         project,
@@ -1246,6 +1382,14 @@ def recover_completed_check(
         or status not in TERMINAL_STATUSES
         or evidence.get("kind") != "ORCHESTRATOR_LOCAL_CHECK_EVIDENCE"
         or evidence.get("check_id") != descriptor.get("check_id")
+        or not operation_applicability.metadata_matches(
+            result.get("applicability"),
+            operation_applicability.terminal_binding(descriptor),
+        )
+        or not operation_applicability.metadata_matches(
+            evidence.get("applicability"),
+            operation_applicability.terminal_binding(descriptor),
+        )
     ):
         return None
     emit_signal = descriptor.get("wake_policy") == "always" or (

@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_OPERATION_APPLICABILITY",
+  "applicability_version": 1,
+  "attempt_id": "123e4567-e89b-12d3-a456-426614174000",
+  "captured_at": "2026-09-16T10:00:00Z",
+  "operation_kind": "check",
+  "operation_id": "CHECK-1",
+  "source": {
+    "binding_version": 1,
+    "project_id": "sample-project",
+    "source_namespace": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "native_location_binding": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "producer": {"engine_version": "1.11.0", "python_version": "3.11.14"},
+  "suite_fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "input_raw_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "declaration_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "declaration": {
+    "schema_version": 1,
+    "kind": "ORCHESTRATOR_OPERATION_APPLICABILITY_DECLARATION",
+    "project": "sample-project",
+    "work": "sample-work",
+    "revision": "revision-2",
+    "candidate": "0123456789abcdef",
+    "criteria": [{"id": "criterion-1", "revision": "revision-1"}],
+    "retry_of": null
+  },
+  "retry_of": null,
+  "request_fingerprint": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "assurance": {
+    "declaration_binding": "retained",
+    "executed_candidate": "unknown",
+    "criteria_fulfillment": "unknown"
+  }
+}

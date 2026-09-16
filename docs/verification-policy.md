@@ -96,6 +96,13 @@ orchestrator-engine --project-root /path/to/project check run \
   --check-id FINAL-1 --suite full --execution auto --wake-policy auto
 ```
 
+An adopter that needs a durable declaration-to-attempt binding can add
+`--applicability-input FILE` and later query
+`operation evidence --target check:FINAL-1 --contract-version 2`. This opt-in
+does not turn a mutable checkout into verified candidate provenance and does not
+prove acceptance criteria. Keep those decisions in the adopter's acceptance
+policy or use a verified snapshot adapter.
+
 `wake-policy auto` means no follow-up for foreground execution and one
 follow-up for a detached terminal result. This avoids waking an already active
 chat for a short command.

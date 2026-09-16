@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-engine://schemas/operation-evidence-v2",
+  "title": "Bounded operation evidence with declaration applicability",
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_OPERATION_EVIDENCE_V2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "contract_version", "engine_version", "target", "operation", "terminal_evidence", "applicability", "snapshot", "completeness", "errors", "omissions", "diagnostics_truncated"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "ORCHESTRATOR_OPERATION_EVIDENCE_V2"},
+    "contract_version": {"const": 2},
+    "engine_version": {"type": "string", "minLength": 1, "maxLength": 64},
+    "target": {"$ref": "orchestrator-engine://schemas/operation-evidence#/$defs/target"},
+    "operation": {"$ref": "orchestrator-engine://schemas/operation-evidence#/properties/operation"},
+    "terminal_evidence": {"$ref": "orchestrator-engine://schemas/operation-evidence"},
+    "applicability": {"$ref": "#/$defs/applicability"},
+    "snapshot": {"$ref": "orchestrator-engine://schemas/operation-evidence#/properties/snapshot"},
+    "completeness": {"enum": ["complete", "partial", "unavailable", "unsupported", "conflicted"]},
+    "errors": {"$ref": "#/$defs/diagnostics"},
+    "omissions": {"$ref": "#/$defs/diagnostics"},
+    "diagnostics_truncated": {"type": "boolean"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"completeness": {"const": "complete"}}},
+      "then": {
+        "properties": {
+          "applicability": {
+            "properties": {
+              "state": {"const": "retained"},
+              "terminal_binding": {"properties": {"result": {"const": "matched"}, "evidence": {"const": "matched"}}}
+            }
+          },
+          "snapshot": {"properties": {"consistency": {"const": "stable"}}},
+          "terminal_evidence": {"properties": {"completeness": {"const": "complete"}}},
+          "errors": {"maxItems": 0},
+          "omissions": {"maxItems": 0},
+          "diagnostics_truncated": {"const": false}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"completeness": {"const": "unsupported"}}},
+      "then": {"properties": {"applicability": {"properties": {"state": {"const": "unsupported"}}}}}
+    }
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "nullableDigest": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]},
+    "applicability": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "attempt_id", "captured_at", "source", "declaration", "declaration_sha256", "input_raw_sha256", "artifact_sha256", "request_fingerprint", "suite_fingerprint", "retry_of", "terminal_binding", "assurance"],
+      "properties": {
+        "state": {"enum": ["retained", "unsupported", "unknown", "conflicted"]},
+        "attempt_id": {"type": ["string", "null"], "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+        "captured_at": {"type": ["string", "null"], "format": "date-time", "maxLength": 40},
+        "source": {
+          "type": "object", "additionalProperties": false,
+          "required": ["project_id", "source_namespace", "native_location_binding", "binding_state"],
+          "properties": {
+            "project_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 256},
+            "source_namespace": {"$ref": "#/$defs/nullableDigest"},
+            "native_location_binding": {"$ref": "#/$defs/nullableDigest"},
+            "binding_state": {"enum": ["retained", "mismatch", "unknown"]}
+          }
+        },
+        "declaration": {"anyOf": [{"type": "null"}, {"$ref": "orchestrator-engine://schemas/operation-applicability-declaration"}]},
+        "declaration_sha256": {"$ref": "#/$defs/nullableDigest"},
+        "input_raw_sha256": {"$ref": "#/$defs/nullableDigest"},
+        "artifact_sha256": {"$ref": "#/$defs/nullableDigest"},
+        "request_fingerprint": {"$ref": "#/$defs/nullableDigest"},
+        "suite_fingerprint": {"$ref": "#/$defs/nullableDigest"},
+        "retry_of": {"anyOf": [{"type": "null"}, {"$ref": "orchestrator-engine://schemas/operation-applicability-declaration#/$defs/retry"}]},
+        "terminal_binding": {
+          "type": "object", "additionalProperties": false, "required": ["result", "evidence"],
+          "properties": {"result": {"enum": ["matched", "missing", "mismatch", "not_terminal", "unknown"]}, "evidence": {"enum": ["matched", "missing", "mismatch", "not_terminal", "unknown"]}}
+        },
+        "assurance": {
+          "type": "object", "additionalProperties": false,
+          "required": ["declaration_binding", "executed_candidate", "criteria_fulfillment"],
+          "properties": {"declaration_binding": {"enum": ["retained", "unknown"]}, "executed_candidate": {"const": "unknown"}, "criteria_fulfillment": {"const": "unknown"}}
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"state": {"const": "retained"}}},
+          "then": {
+            "properties": {
+              "attempt_id": {"type": "string"},
+              "captured_at": {"type": "string"},
+              "source": {"properties": {"project_id": {"type": "string"}, "source_namespace": {"$ref": "#/$defs/digest"}, "native_location_binding": {"$ref": "#/$defs/digest"}, "binding_state": {"const": "retained"}}},
+              "declaration": {"$ref": "orchestrator-engine://schemas/operation-applicability-declaration"},
+              "declaration_sha256": {"$ref": "#/$defs/digest"},
+              "input_raw_sha256": {"$ref": "#/$defs/digest"},
+              "artifact_sha256": {"$ref": "#/$defs/digest"},
+              "request_fingerprint": {"$ref": "#/$defs/digest"},
+              "suite_fingerprint": {"$ref": "#/$defs/digest"},
+              "assurance": {"properties": {"declaration_binding": {"const": "retained"}}}
+            }
+          }
+        }
+      ]
+    },
+    "diagnostics": {
+      "type": "array", "maxItems": 16, "uniqueItems": true,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["code"],
+        "properties": {"code": {"enum": ["target_missing", "descriptor_unreadable", "descriptor_invalid", "unsupported_producer", "legacy_without_applicability", "applicability_missing", "applicability_invalid", "source_mismatch", "terminal_binding_missing", "terminal_binding_mismatch", "snapshot_changed", "artifact_missing", "artifact_unreadable", "read_budget_exceeded", "invalid_json", "unsupported_schema", "unsupported_value", "identity_mismatch", "path_outside_state", "digest_mismatch", "conflicting_retained_bindings", "publication_incomplete", "metadata_missing", "diagnostics_truncated"]}}
+      }
+    }
+  }
+}

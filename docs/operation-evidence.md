@@ -10,6 +10,81 @@ orchestrator-engine --project-root /path/to/project operation evidence \
   --target check:CHECK-001
 ```
 
+The default is the compatibility contract v1. An opt-in v2 envelope adds a
+producer-owned applicability declaration for local checks that were dispatched
+with one:
+
+```bash
+orchestrator-engine --project-root /path/to/project operation evidence \
+  --target check:CHECK-001 --contract-version 2
+```
+
+The v2 envelope embeds the complete v1 terminal-evidence report and adds a
+separately validated applicability graph. It does not reinterpret or strengthen
+the v1 result. Its closed response schema is
+[`operation-evidence-v2.json`](../src/orchestrator_engine/schemas/operation-evidence-v2.json).
+
+## Applicability Declaration
+
+An ordinary local check may retain a bounded declaration before launch:
+
+```bash
+orchestrator-engine --project-root /path/to/project check run \
+  --check-id CHECK-001 --suite full --execution auto --wake-policy auto \
+  --applicability-input /path/to/applicability.json
+```
+
+```json
+{
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_OPERATION_APPLICABILITY_DECLARATION",
+  "project": "sample-project",
+  "work": "sample-work",
+  "revision": "revision-4",
+  "candidate": "0123456789abcdef",
+  "criteria": [{"id": "criterion-1", "revision": "revision-2"}],
+  "retry_of": null
+}
+```
+
+The declaration is inert data: identifiers do not grant authority, fetch a URI,
+select files or alter the configured suite. Input is strict bounded UTF-8 JSON.
+Duplicate keys, non-integer schema versions, non-finite or ambiguous numeric
+forms, duplicate criteria, symlinks and oversized input fail before descriptor
+publication. Resource-managed checks and other producer kinds do not support
+this opt-in and reject it before submission.
+
+Admission retains the original bytes once and publishes a canonical declaration
+digest, a raw-byte digest, a producer-assigned attempt UUID, the suite
+fingerprint and a versioned native source/location binding. Same-ID semantic
+replay reuses the retained attempt. Any declaration or retry change conflicts;
+terminal operations cannot be enriched later. An interrupted one-file
+preparation has no execution authority and requires explicit recovery.
+
+An exact retry names one supported terminal predecessor by operation ID,
+attempt UUID, applicability digest and source/location binding. Project and
+logical work declarations must match; candidate, revision and criteria may
+change. There is no global lineage scan or inference from timestamps.
+
+The applicability metadata is copied into result and evidence before the
+terminal event hashes them. Foreground and detached supervisors revalidate the
+retained input, artifact, descriptor, source and suite binding before the first
+command. The v2 reader then reports `retained`, `unsupported`, `unknown` or
+`conflicted`, and fences the descriptor, applicability files and terminal
+artifacts with one bounded reread.
+
+`retained` means only that the caller declaration was preserved and bound to
+the producer attempt. It does **not** prove that the declared candidate equals
+the source bytes used by commands, that a mutable checkout stayed unchanged, or
+that declared criteria were fulfilled. Those assurance fields remain
+`unknown`. Exact executed-candidate proof requires a separate verified snapshot
+or execution boundary supplied by an explicit adapter or adopter policy.
+
+The native location digest hides literal paths from the response but is neither
+anonymous nor a portable project identity. Moving the project or state root
+causes a source mismatch; historical files are not rewritten. `complete`
+describes complete observation of this bounded graph, not product acceptance.
+
 ## Supported Producer
 
 The initial implementation supports native `ORCHESTRATOR_LOCAL_CHECK` artifacts
@@ -27,7 +102,7 @@ one; its absence is checked again at the snapshot fence.
 Missing native state returns `unavailable`, not an invented successful check.
 IDs use ASCII `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}`.
 
-The closed response schema is packaged as
+The closed v1 response schema is packaged as
 [`operation-evidence.json`](../src/orchestrator_engine/schemas/operation-evidence.json).
 The initial native producer has no proved candidate or retry identity, so
 `candidate` and `attempt` are explicitly unknown with null values. Generic

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-engine://schemas/operation-applicability",
+  "title": "Producer-owned operation applicability artifact",
+  "schema_version": 1,
+  "kind": "ORCHESTRATOR_OPERATION_APPLICABILITY",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "applicability_version", "attempt_id", "captured_at", "operation_kind", "operation_id", "source", "producer", "suite_fingerprint", "input_raw_sha256", "declaration_sha256", "declaration", "retry_of", "request_fingerprint", "assurance"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "ORCHESTRATOR_OPERATION_APPLICABILITY"},
+    "applicability_version": {"const": 1},
+    "attempt_id": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "captured_at": {"type": "string", "format": "date-time", "maxLength": 40},
+    "operation_kind": {"const": "check"},
+    "operation_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"},
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["binding_version", "project_id", "source_namespace", "native_location_binding"],
+      "properties": {
+        "binding_version": {"const": 1},
+        "project_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "source_namespace": {"$ref": "#/$defs/digest"},
+        "native_location_binding": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "producer": {
+      "type": "object", "additionalProperties": false, "required": ["engine_version", "python_version"],
+      "properties": {"engine_version": {"type": "string", "minLength": 1, "maxLength": 256}, "python_version": {"type": "string", "minLength": 1, "maxLength": 256}}
+    },
+    "suite_fingerprint": {"$ref": "#/$defs/digest"},
+    "input_raw_sha256": {"$ref": "#/$defs/digest"},
+    "declaration_sha256": {"$ref": "#/$defs/digest"},
+    "declaration": {"$ref": "orchestrator-engine://schemas/operation-applicability-declaration"},
+    "retry_of": {"anyOf": [{"type": "null"}, {"$ref": "orchestrator-engine://schemas/operation-applicability-declaration#/$defs/retry"}]},
+    "request_fingerprint": {"$ref": "#/$defs/digest"},
+    "assurance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["declaration_binding", "executed_candidate", "criteria_fulfillment"],
+      "properties": {"declaration_binding": {"const": "retained"}, "executed_candidate": {"const": "unknown"}, "criteria_fulfillment": {"const": "unknown"}}
+    }
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+}

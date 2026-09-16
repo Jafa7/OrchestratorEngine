@@ -1034,6 +1034,20 @@ orchestrator-engine --project-root /path/to/project check run \
   --check-id FINAL-1 --suite full --execution auto --wake-policy auto
 ```
 
+For consumers that need to bind a caller-declared candidate and criteria set to
+one native local-check attempt, `check run --applicability-input FILE` retains a
+strict bounded declaration before command launch. The per-operation artifact,
+attempt UUID, native source/location binding and suite fingerprint are copied to
+terminal result/evidence and are exposed by
+`operation evidence --contract-version 2`. Same-ID semantic replay reuses the
+attempt; changed declarations and exact-retry pins fail closed. Resource-managed
+checks and worker/CI/PR producers reject this opt-in. See
+[Operation Evidence](operation-evidence.md) for the schema and assurance limits.
+
+This contract proves producer binding of retained declarations only. It does
+not prove executed checkout bytes or criteria fulfillment; both remain unknown
+without a separate verified execution snapshot.
+
 The planner fingerprints the exact suite, verification level, argv, cwd,
 required flags and command timeouts. A configured duration estimate takes
 priority; otherwise it uses the median of at most ten successful samples for
